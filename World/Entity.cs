@@ -1,4 +1,4 @@
-﻿using System;
+﻿using System.Numerics;
 using System.Runtime.CompilerServices;
 
 namespace Phalanx;
@@ -21,9 +21,9 @@ public class Entity : SpartanObject
     Quaternion m_rotation_local = Quaternion.Identity;
     Vector3 m_scale_local = Vector3.One;
 
-    Matrix m_matrix = Matrix.Identity;
-    Matrix m_matrix_previous = Matrix.Identity;
-    Matrix m_matrix_local = Matrix.Identity;
+    Matrix4x4 m_matrix = Matrix4x4.Identity;
+    Matrix4x4 m_matrix_previous = Matrix4x4.Identity;
+    Matrix4x4 m_matrix_local = Matrix4x4.Identity;
 
     // computed during UpdateTransform() and cached for performance
     Vector3 m_forward = Vector3.Zero;
@@ -76,7 +76,8 @@ public class Entity : SpartanObject
     private void UpdateTransform()
     {
         // compute local transform
-        m_matrix_local = new Matrix(m_position_local, m_rotation_local, m_scale_local);
+
+        m_matrix_local = Matrix4x4Extensions.CreateTRS(m_position_local, m_rotation_local, m_scale_local);
 
         // compute world transform
         if (m_parent != null)
@@ -88,13 +89,13 @@ public class Entity : SpartanObject
         // row-major layout: row 0 = right (X), row 1 = up (Y), row 2 = forward (Z)
         {
             // x
-            m_right = Vector3.Normalize(new Vector3(m_matrix.m00, m_matrix.m01, m_matrix.m02));
+            m_right = Vector3.Normalize(new Vector3(m_matrix.M11, m_matrix.M12, m_matrix.M13));
             m_left = -m_right;
             // y
-            m_up = Vector3.Normalize(new Vector3(m_matrix.m10, m_matrix.m11, m_matrix.m12));
+            m_up = Vector3.Normalize(new Vector3(m_matrix.M21, m_matrix.M22, m_matrix.M23));
             m_down = -m_up;
             // z
-            m_forward = Vector3.Normalize(new Vector3(m_matrix.m20, m_matrix.m21, m_matrix.m22));
+            m_forward = Vector3.Normalize(new Vector3(m_matrix.M31, m_matrix.M32, m_matrix.M33));
             m_backward = -m_forward;
         }
 
@@ -105,9 +106,9 @@ public class Entity : SpartanObject
         foreach (Entity child in m_children)
             child.UpdateTransform();
     }
-    private Matrix GetParentTransformMatrix()
+    private Matrix4x4 GetParentTransformMatrix()
     {
-        return (GetParent() != null) ? GetParent().GetMatrix() : Matrix.Identity;
+        return (GetParent() != null) ? GetParent().GetMatrix() : Matrix4x4.Identity;
     }
     public bool GetActive()
     {
@@ -123,10 +124,10 @@ public class Entity : SpartanObject
         m_is_active = active;
     }
 
-    public Matrix GetMatrix() { return m_matrix; }
-    public Matrix GetLocalMatrix() { return m_matrix_local; }
-    public Matrix GetMatrixPrevious() { return m_matrix_previous; }
-    void SetMatrixPrevious(Matrix matrix) { m_matrix_previous = matrix; }
+    public Matrix4x4 GetMatrix() { return m_matrix; }
+    public Matrix4x4 GetLocalMatrix() { return m_matrix_local; }
+    public Matrix4x4 GetMatrixPrevious() { return m_matrix_previous; }
+    void SetMatrixPrevious(Matrix4x4 matrix) { m_matrix_previous = matrix; }
     public float GetTimeSinceLastTransform() { return m_time_since_last_transform_sec; }
     public Component?[] GetAllComponents() { return m_components; }
 
@@ -141,7 +142,7 @@ public class Entity : SpartanObject
         if (GetPosition() == position)
             return;
 
-        SetPositionLocal((GetParent() == null)? position : position * GetParent().GetMatrix().Inverted());
+        SetPositionLocal((GetParent() == null)? position : Vector3.Transform(position, GetParent().GetMatrix().Inverted()));
     }
     public void SetPositionLocal(Vector3 position)
     {
@@ -212,9 +213,9 @@ public class Entity : SpartanObject
         m_scale_local = scale;
 
         // a scale of 0 will cause a division by zero when decomposing the world transform matrix
-        m_scale_local.x = (m_scale_local.x == 0.0f) ? float.MinValue : m_scale_local.x;
-        m_scale_local.y = (m_scale_local.y == 0.0f) ? float.MinValue : m_scale_local.y;
-        m_scale_local.z = (m_scale_local.z == 0.0f) ? float.MinValue : m_scale_local.z;
+        m_scale_local.X = (m_scale_local.X == 0.0f) ? float.MinValue : m_scale_local.X;
+        m_scale_local.Y = (m_scale_local.Y == 0.0f) ? float.MinValue : m_scale_local.Y;
+        m_scale_local.Z = (m_scale_local.Z == 0.0f) ? float.MinValue : m_scale_local.Z;
 
         UpdateTransform();
     }
@@ -321,7 +322,7 @@ public class Entity : SpartanObject
         {
             m_children.Clear();
 
-            List<Entity>? entities = null; //TODO = World::GetEntities();
+            List<Entity>? entities = World::GetEntities();
             foreach (Entity? possible_child in entities)
             {
                 if ((possible_child == null) || (possible_child.GetParent() == null) || (possible_child.GetObjectId() == GetObjectId()))
@@ -453,7 +454,7 @@ public class Entity : SpartanObject
     public Entity clone_entity(Entity entity)
     {
         // clone basic properties
-        Entity? clone = null; //TODO World::CreateEntity();
+        Entity? clone = World::CreateEntity();
         clone.SetObjectName(entity.GetObjectName());
         clone.SetActive(entity.GetActive());
         clone.SetPosition(entity.GetPositionLocal());
@@ -502,7 +503,7 @@ public class Entity : SpartanObject
         Component? component;
         switch(type)
         {
-/* TODO           case ComponentType.AudioSource:
+            case ComponentType.AudioSource:
                 component = AddComponent<AudioSource>();
             break;
             case ComponentType.Camera:
@@ -535,7 +536,7 @@ public class Entity : SpartanObject
             case ComponentType.ParticleSystem:
                 component = AddComponent<ParticleSystem>();
             break;
- */           default:
+            default:
                 component = null;
             break;
         }
@@ -574,7 +575,7 @@ public class Entity : SpartanObject
         Component? component;
         switch (type)
         {
-/*TODO            case ComponentType.AudioSource:
+            case ComponentType.AudioSource:
                 component = new AudioSource();
                 break;
             case ComponentType.Camera:
@@ -607,7 +608,7 @@ public class Entity : SpartanObject
             case ComponentType.ParticleSystem:
                 component = new ParticleSystem();
                 break;
-*/            default:
+            default:
                 component = null;
             break;
         }
@@ -683,7 +684,6 @@ public class Entity : SpartanObject
             if (component != null)
                 component.Tick();
         }
-        //TODO ADD TIME
-//        m_time_since_last_transform_sec += Timer.GetDeltaTimeSec());
+        m_time_since_last_transform_sec += (float)Time.GetDeltaTimeSec();
     }
 }

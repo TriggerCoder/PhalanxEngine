@@ -1,4 +1,4 @@
-﻿using System;
+﻿using System.Numerics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 
@@ -7,31 +7,31 @@ namespace Phalanx;
 [Serializable]
 public struct Rectangle : IEquatable<Rectangle>
 {
-    public float x;
-    public float y;
-    public float width;
-    public float height;
+    public float X;
+    public float Y;
+    public float Width;
+    public float Height;
 
     public Rectangle()
     {
-        x = 0;
-        y = 0;
-        width = 0;
-        height = 0;
+        X = 0;
+        Y = 0;
+        Width = 0;
+        Height = 0;
     }
-    public Rectangle(float x, float y, float width, float height)
+    public Rectangle(float X, float Y, float Width, float Height)
     {
-        this.x = x;
-        this.y = y;
-        this.width = width;
-        this.height = height;
+        this.X = X;
+        this.Y = Y;
+        this.Width = Width;
+        this.Height = Height;
     }
     public Rectangle(Rectangle rectangle)
     {
-        x = rectangle.x;
-        y = rectangle.y;
-        width = rectangle.width;
-        height = rectangle.height;
+        X = rectangle.X;
+        Y = rectangle.Y;
+        Width = rectangle.Width;
+        Height = rectangle.Height;
     }
 
     public static bool operator ==(Rectangle l, Rectangle r) { return l.Equals(r); }
@@ -44,46 +44,46 @@ public struct Rectangle : IEquatable<Rectangle>
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public readonly bool Equals(Rectangle other) { return (x == other.x) && (y == other.y) && (width == other.width) && (height == other.height);}
+    public readonly bool Equals(Rectangle other) { return (X == other.X) && (Y == other.Y) && (Width == other.Width) && (Height == other.Height);}
 
-    public override readonly int GetHashCode() { return HashCode.Combine(x, y, width, height); }
+    public override readonly int GetHashCode() { return HashCode.Combine(X, Y, Width, Height); }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public readonly bool IsDefined() { return width > 0.0f && height > 0.0f; }
+    public readonly bool IsDefined() { return Width > 0.0f && Height > 0.0f; }
     public void Merge(Vector2 point)
     {
-        float min_x = x;
-        float min_y = y;
-        float max_x = x + width;
-        float max_y = y + height;
+        float min_x = X;
+        float min_y = Y;
+        float max_x = X + Width;
+        float max_y = Y + Height;
 
-        min_x = Math.Min(min_x, point.x);
-        min_y = Math.Min(min_y, point.y);
-        max_x = Math.Max(max_x, point.x);
-        max_y = Math.Max(max_y, point.y);
+        min_x = Math.Min(min_x, point.X);
+        min_y = Math.Min(min_y, point.Y);
+        max_x = Math.Max(max_x, point.X);
+        max_y = Math.Max(max_y, point.Y);
 
-        x = min_x;
-        y = min_y;
-        width = max_x - min_x;
-        height = max_y - min_y;
+        X = min_x;
+        Y = min_y;
+        Width = max_x - min_x;
+        Height = max_y - min_y;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public readonly bool Intersects(Rectangle other)
     {
-        return !((x + width < other.x) ||
-                 (other.x + other.width < x) ||
-                 (y + height < other.y) ||
-                 (other.y + other.height < y));
+        return !((X + Width < other.X) ||
+                 (other.X + other.Width < X) ||
+                 (Y + Height < other.Y) ||
+                 (other.Y + other.Height < Y));
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public readonly bool Contains(Rectangle other)
     {
-        return (x <= other.x) &&
-               (y <= other.y) &&
-               (x + width >= other.x + other.width) &&
-               (y + height >= other.y + other.height);
+        return (X <= other.X) &&
+               (Y <= other.Y) &&
+               (X + Width >= other.X + other.Width) &&
+               (Y + Height >= other.Y + other.Height);
     }
 
     private static readonly Rectangle zero = new Rectangle(0f, 0f, 0f, 0f);

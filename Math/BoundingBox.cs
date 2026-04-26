@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
+using System.Numerics;
 
 namespace Phalanx;
 
@@ -9,11 +10,10 @@ public struct BoundingBox : IEquatable<BoundingBox>
 {
     private Vector3 m_min;
     private Vector3 m_max;
-
     public BoundingBox()
     {
-        m_min = Vector3.Infinity;
-        m_max = Vector3.InfinityNeg;
+        m_min = Math.Vector3.Infinity;
+        m_max = Math.Vector3.InfinityNeg;
     }
     public BoundingBox(Vector3 min, Vector3 max)
     {
@@ -22,18 +22,18 @@ public struct BoundingBox : IEquatable<BoundingBox>
     }
     public BoundingBox(Vector3[] points, int point_count)
     {
-        m_min = Vector3.Infinity;
-        m_max = Vector3.InfinityNeg;
+        m_min = Math.Vector3.Infinity;
+        m_max = Math.Vector3.InfinityNeg;
 
         for (int i = 0; i < point_count; i++)
         {
-            m_max.x = Math.Max(m_max.x, points[i].x);
-            m_max.y = Math.Max(m_max.y, points[i].y);
-            m_max.z = Math.Max(m_max.z, points[i].z);
+            m_max.X = Math.Max(m_max.X, points[i].X);
+            m_max.Y = Math.Max(m_max.Y, points[i].Y);
+            m_max.Z = Math.Max(m_max.Z, points[i].Z);
 
-            m_min.x = Math.Min(m_min.x, points[i].x);
-            m_min.y = Math.Min(m_min.y, points[i].y);
-            m_min.z = Math.Min(m_min.z, points[i].z);
+            m_min.X = Math.Min(m_min.X, points[i].X);
+            m_min.Y = Math.Min(m_min.Y, points[i].Y);
+            m_min.Z = Math.Min(m_min.Z, points[i].Z);
         }
     }
     public static bool operator ==(BoundingBox l, BoundingBox r) { return l.Equals(r); }
@@ -51,34 +51,34 @@ public struct BoundingBox : IEquatable<BoundingBox>
 
     public readonly Math.Intersection Intersects(Vector3 point)
     {
-        if (point.x < m_min.x || point.x > m_max.x ||
-            point.y < m_min.y || point.y > m_max.y ||
-            point.z < m_min.z || point.z > m_max.z)
+        if (point.X < m_min.X || point.X > m_max.X ||
+            point.Y < m_min.Y || point.Y > m_max.Y ||
+            point.Z < m_min.Z || point.Z > m_max.Z)
             return Math.Intersection.Outside;
 
         return Math.Intersection.Inside;
     }
     public readonly Math.Intersection Intersects(BoundingBox box)
     {
-        if (box.m_max.x < m_min.x || box.m_min.x > m_max.x ||
-            box.m_max.y < m_min.y || box.m_min.y > m_max.y ||
-            box.m_max.z < m_min.z || box.m_min.z > m_max.z)
+        if (box.m_max.X < m_min.X || box.m_min.X > m_max.X ||
+            box.m_max.Y < m_min.Y || box.m_min.Y > m_max.Y ||
+            box.m_max.Z < m_min.Z || box.m_min.Z > m_max.Z)
                 return Math.Intersection.Outside;
-        else if (box.m_min.x < m_min.x || box.m_max.x > m_max.x ||
-                 box.m_min.y < m_min.y || box.m_max.y > m_max.y ||
-                 box.m_min.z < m_min.z || box.m_max.z > m_max.z)
+        else if (box.m_min.X < m_min.X || box.m_max.X > m_max.X ||
+                 box.m_min.Y < m_min.Y || box.m_max.Y > m_max.Y ||
+                 box.m_min.Z < m_min.Z || box.m_max.Z > m_max.Z)
             return Math.Intersection.Intersects;
         return Math.Intersection.Inside;
     }
     public void Merge(BoundingBox box)
     {
-        m_min.x = Math.Min(m_min.x, box.m_min.x);
-        m_min.y = Math.Min(m_min.y, box.m_min.y);
-        m_min.z = Math.Min(m_min.z, box.m_min.z);
+        m_min.X = Math.Min(m_min.X, box.m_min.X);
+        m_min.Y = Math.Min(m_min.Y, box.m_min.Y);
+        m_min.Z = Math.Min(m_min.Z, box.m_min.Z);
 
-        m_max.x = Math.Max(m_max.x, box.m_max.x);
-        m_max.y = Math.Max(m_max.y, box.m_max.y);
-        m_max.z = Math.Max(m_max.z, box.m_max.z);
+        m_max.X = Math.Max(m_max.X, box.m_max.X);
+        m_max.Y = Math.Max(m_max.Y, box.m_max.Y);
+        m_max.Z = Math.Max(m_max.Z, box.m_max.Z);
     }
 
     public Vector3 GetMin() { return m_min; }
@@ -89,24 +89,24 @@ public struct BoundingBox : IEquatable<BoundingBox>
     public readonly float GetVolume()
     {
         Vector3 size = GetSize();
-        return size.x * size.y * size.z;
+        return size.X * size.Y * size.Z;
     }
     public readonly Vector3 GetClosestPoint(Vector3 point)
     {
-        return new Vector3(Math.Max(m_min.x, Math.Min(point.x, m_max.x)),
-                           Math.Max(m_min.y, Math.Min(point.y, m_max.y)),
-                           Math.Max(m_min.z, Math.Min(point.z, m_max.z)));
+        return new Vector3(Math.Max(m_min.X, Math.Min(point.X, m_max.X)),
+                           Math.Max(m_min.Y, Math.Min(point.Y, m_max.Y)),
+                           Math.Max(m_min.Z, Math.Min(point.Z, m_max.Z)));
     }
     public readonly bool Contains(Vector3 point)
     {
-        return  (point.x >= m_min.x && point.x <= m_max.x) &&
-                (point.y >= m_min.y && point.y <= m_max.y) &&
-                (point.z >= m_min.z && point.z <= m_max.z);
+        return  (point.X >= m_min.X && point.X <= m_max.X) &&
+                (point.Y >= m_min.Y && point.Y <= m_max.Y) &&
+                (point.Z >= m_min.Z && point.Z <= m_max.Z);
     }
 
     private static readonly BoundingBox zero = new BoundingBox (Vector3.Zero, Vector3.Zero);
     private static readonly BoundingBox unit = new BoundingBox (Vector3.One * -0.5f, Vector3.One * 0.5f);
-    private static readonly BoundingBox infinite = new BoundingBox(Vector3.InfinityNeg, Vector3.Infinity);
+    private static readonly BoundingBox infinite = new BoundingBox(Math.Vector3.InfinityNeg, Math.Vector3.Infinity);
 
     public static BoundingBox Zero => zero;
     public static BoundingBox Unit => unit;

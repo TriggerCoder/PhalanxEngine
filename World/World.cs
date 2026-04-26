@@ -61,7 +61,7 @@ public class World
         entity_states[id] |= (uint)change;
         resolve = true;
     }
-    /*TODO
+
     private ulong compute_material_hash(Material material)
     {
         ulong hash = 17; // FNV-1a seed
@@ -101,17 +101,17 @@ public class World
         hash = (hash * 31) ^ (ulong)entity.GetActive().GetHashCode();
 
         Vector3 pos = entity.GetPosition();
-        hash = (hash * 31) ^ (ulong)pos.x.GetHashCode();
-        hash = (hash * 31) ^ (ulong)pos.y.GetHashCode();
-        hash = (hash * 31) ^ (ulong)pos.z.GetHashCode();
+        hash = (hash * 31) ^ (ulong)pos.X.GetHashCode();
+        hash = (hash * 31) ^ (ulong)pos.Y.GetHashCode();
+        hash = (hash * 31) ^ (ulong)pos.Z.GetHashCode();
         Vector3 fwd = entity.GetForward();
-        hash = (hash * 31) ^ (ulong)fwd.x.GetHashCode();
-        hash = (hash * 31) ^ (ulong)fwd.y.GetHashCode();
-        hash = (hash * 31) ^ (ulong)fwd.z.GetHashCode();
+        hash = (hash * 31) ^ (ulong)fwd.X.GetHashCode();
+        hash = (hash * 31) ^ (ulong)fwd.Y.GetHashCode();
+        hash = (hash * 31) ^ (ulong)fwd.Z.GetHashCode();
 
         for (uint i = 0; i < light.GetSliceCount(); i++)
         {
-            Matrix vp = light.GetViewProjectionMatrix(i);
+            Matrix4x4 vp = light.GetViewProjectionMatrix(i);
             const float* vp_data = vp.Data();
             for (uint32_t j = 0; j < 16; j++)
             {
@@ -121,7 +121,6 @@ public class World
 
         return hash;
     }
-    */ //END TODO
 }
 
 public struct WorldMetadata

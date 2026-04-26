@@ -37,7 +37,7 @@ public class Component : SpartanObject
     protected Entity? m_entity_ptr = null;
 
     private static readonly Dictionary<Type, ComponentType> s_typeMap = new()
-    {/* TODO
+    {
         [typeof(AudioSource)] = ComponentType.AudioSource,
         [typeof(Camera)] = ComponentType.Camera,
         [typeof(Light)] = ComponentType.Light,
@@ -49,7 +49,7 @@ public class Component : SpartanObject
         [typeof(Volume)] = ComponentType.Volume,
         [typeof(Script)] = ComponentType.Script,
         [typeof(ParticleSystem)] = ComponentType.ParticleSystem,
-*/    };
+    };
 
     public ComponentType GetComponentType() { return m_type; }
     public void SetComponentType(ComponentType type) { m_type = type; }

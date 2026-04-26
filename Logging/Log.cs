@@ -8,4 +8,9 @@ public static class Log
     {
 
     }
+
+    public static void LogInfo(string message)
+    {
+    
+    }
 }

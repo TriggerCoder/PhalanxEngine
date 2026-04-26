@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Numerics;
 
 namespace Phalanx;
 
@@ -23,67 +24,67 @@ public struct Ray
         float distance = float.PositiveInfinity;
 
         // Check for intersecting in the X-direction
-        if (m_origin.x < box.GetMin().x && m_direction.x > 0.0f)
+        if (m_origin.X < box.GetMin().X && m_direction.X > 0.0f)
         {
-            float x = (box.GetMin().x - m_origin.x) / m_direction.x;
+            float x = (box.GetMin().X - m_origin.X) / m_direction.X;
             if (x < distance)
             {
                 Vector3 point = m_origin + x * m_direction;
-                if (point.y >= box.GetMin().y && point.y <= box.GetMax().y && point.z >= box.GetMin().z && point.z <= box.GetMax().z)
+                if (point.Y >= box.GetMin().Y && point.Y <= box.GetMax().Y && point.Z >= box.GetMin().Z && point.Z <= box.GetMax().Z)
                     distance = x;
             }
         }
-        if (m_origin.x > box.GetMax().x && m_direction.x < 0.0f)
+        if (m_origin.X > box.GetMax().X && m_direction.X < 0.0f)
         {
-            float x = (box.GetMax().x - m_origin.x) / m_direction.x;
+            float x = (box.GetMax().X - m_origin.X) / m_direction.X;
             if (x < distance)
             {
                 Vector3 point = m_origin + x * m_direction;
-                if (point.y >= box.GetMin().y && point.y <= box.GetMax().y && point.z >= box.GetMin().z && point.z <= box.GetMax().z)
+                if (point.Y >= box.GetMin().Y && point.Y <= box.GetMax().Y && point.Z >= box.GetMin().Z && point.Z <= box.GetMax().Z)
                     distance = x;
             }
         }
 
         // Check for intersecting in the Y-direction
-        if (m_origin.y < box.GetMin().y && m_direction.y > 0.0f)
+        if (m_origin.Y < box.GetMin().Y && m_direction.Y > 0.0f)
         {
-            float x = (box.GetMin().y - m_origin.y) / m_direction.y;
+            float x = (box.GetMin().Y - m_origin.Y) / m_direction.Y;
             if (x < distance)
             {
                 Vector3 point = m_origin + x * m_direction;
-                if (point.x >= box.GetMin().x && point.x <= box.GetMax().x && point.z >= box.GetMin().z && point.z <= box.GetMax().z)
+                if (point.X >= box.GetMin().X && point.X <= box.GetMax().X && point.Z >= box.GetMin().Z && point.Z <= box.GetMax().Z)
                     distance = x;
             }
         }
-        if (m_origin.y > box.GetMax().y && m_direction.y < 0.0f)
+        if (m_origin.Y > box.GetMax().Y && m_direction.Y < 0.0f)
         {
-            float x = (box.GetMax().y - m_origin.y) / m_direction.y;
+            float x = (box.GetMax().Y - m_origin.Y) / m_direction.Y;
             if (x < distance)
             {
                 Vector3 point = m_origin + x * m_direction;
-                if (point.x >= box.GetMin().x && point.x <= box.GetMax().x && point.z >= box.GetMin().z && point.z <= box.GetMax().z)
+                if (point.X >= box.GetMin().X && point.X <= box.GetMax().X && point.Z >= box.GetMin().Z && point.Z <= box.GetMax().Z)
                     distance = x;
             }
         }
 
         // Check for intersecting in the Z-direction
-        if (m_origin.z < box.GetMin().z && m_direction.z > 0.0f)
+        if (m_origin.Z < box.GetMin().Z && m_direction.Z > 0.0f)
         {
-            float x = (box.GetMin().z - m_origin.z) / m_direction.z;
+            float x = (box.GetMin().Z - m_origin.Z) / m_direction.Z;
             if (x < distance)
             {
                 Vector3 point = m_origin + x * m_direction;
-                if (point.x >= box.GetMin().x && point.x <= box.GetMax().x && point.y >= box.GetMin().y && point.y <= box.GetMax().y)
+                if (point.X >= box.GetMin().X && point.X <= box.GetMax().X && point.Y >= box.GetMin().Y && point.Y <= box.GetMax().Y)
                     distance = x;
             }
         }
-        if (m_origin.z > box.GetMax().z && m_direction.z < 0.0f)
+        if (m_origin.Z > box.GetMax().Z && m_direction.Z < 0.0f)
         {
-            float x = (box.GetMax().z - m_origin.z) / m_direction.z;
+            float x = (box.GetMax().Z - m_origin.Z) / m_direction.Z;
             if (x < distance)
             {
                 Vector3 point = m_origin + x * m_direction;
-                if (point.x >= box.GetMin().x && point.x <= box.GetMax().x && point.y >= box.GetMin().y && point.y <= box.GetMax().y)
+                if (point.X >= box.GetMin().X && point.X <= box.GetMax().X && point.Y >= box.GetMin().Y && point.Y <= box.GetMax().Y)
                     distance = x;
             }
         }
@@ -91,10 +92,10 @@ public struct Ray
     }
     public readonly float HitDistance(Plane plane, ref Vector3 intersection_point)
     {
-        float d = plane.normal.Dot(m_direction);
+        float d = plane.Normal.Dot(m_direction);
         if (Math.Abs(d) >= float.MinValue)
         {
-            float t = -(plane.normal.Dot(m_origin) + plane.d) / d;
+            float t = -(plane.Normal.Dot(m_origin) + plane.D) / d;
             if (t >= 0.0f)
             {
                 intersection_point = m_origin + t * m_direction;
@@ -108,10 +109,10 @@ public struct Ray
     }
     public readonly float HitDistance(Plane plane)
     {
-        float d = plane.normal.Dot(m_direction);
+        float d = plane.Normal.Dot(m_direction);
         if (Math.Abs(d) >= float.MinValue)
         {
-            float t = -(plane.normal.Dot(m_origin) + plane.d) / d;
+            float t = -(plane.Normal.Dot(m_origin) + plane.D) / d;
             if (t >= 0.0f)
                 return t;
             else
@@ -162,8 +163,8 @@ public struct Ray
 
     public readonly float HitDistance(Sphere sphere)
     {
-        Vector3 centeredOrigin = m_origin - sphere.center;
-        float squaredRadius = sphere.radius * sphere.radius;
+        Vector3 centeredOrigin = m_origin - sphere.Center;
+        float squaredRadius = sphere.Radius * sphere.Radius;
 
         // Check if ray originates inside the sphere
         if (centeredOrigin.LengthSquared() <= squaredRadius)

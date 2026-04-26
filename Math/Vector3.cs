@@ -1,228 +1,47 @@
-﻿using System;
-using System.Diagnostics.CodeAnalysis;
+﻿using System.Numerics;
 using System.Runtime.CompilerServices;
 
 namespace Phalanx;
-
-[Serializable]
-public struct Vector3 : IEquatable<Vector3>
+public static class Vector3Extensions
 {
-    public float x;
-    public float y;
-    public float z;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector3 Abs(this Vector3 v) { return Vector3.Abs(v); }
 
-    public Vector3()
-    {
-        x = 0;
-        y = 0;
-        z = 0;
-    }
-    public Vector3(float X)
-    {
-        x = X;
-        y = X;
-        z = X;
-    }
-    public Vector3(float[] vec)
-    {
-        if (vec.Length != 3)
-            throw new ArgumentOutOfRangeException("array dimension is different from Vector3");
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector3 Max(this Vector3 v, float other) { return new Vector3(Math.Max(v.X, other), Math.Max(v.Y, other), Math.Max(v.Z, other)); }
 
-        x = vec[0];
-        y = vec[1];
-        z = vec[2];
-    }
-    public Vector3(float X, float Y, float Z)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector3 Max(this Vector3 v, Vector3 other) { return Vector3.Max(v,other); }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector3 Min(this Vector3 v, float other) { return new Vector3(Math.Min(v.X, other), Math.Min(v.Y, other), Math.Min(v.Z, other)); }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector3 Min(this Vector3 v, Vector3 other) { return Vector3.Min(v, other); }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static float Distance(this Vector3 v, Vector3 other) { return Vector3.Distance(v, other); }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static float DistanceSquared(this Vector3 v, Vector3 other) { return Vector3.DistanceSquared(v, other); }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector3 Normalized(this Vector3 v) { return Vector3.Normalize(v); }
+
+    public static bool IsNormalized(this Vector3 v)
     {
-        x = X;
-        y = Y;
-        z = Z;
-    }
-    public float this[int index]
-    {
-        readonly get
-        {
-            return index switch
-            {
-                0 => x,
-                1 => y,
-                2 => z,
-                _ => throw new ArgumentOutOfRangeException("index"),
-            };
-        }
-        set
-        {
-            switch (index)
-            {
-                case 0:
-                    x = value;
-                    break;
-                case 1:
-                    y = value;
-                    break;
-                case 2:
-                    z = value;
-                    break;
-                default:
-                    throw new ArgumentOutOfRangeException("index");
-            }
-        }
-    }
-    public static Vector3 operator +(Vector3 l, Vector3 r)
-    {
-        l.x += r.x;
-        l.y += r.y;
-        l.z += r.z;
-        return l;
-    }
-    public static Vector3 operator -(Vector3 l, Vector3 r)
-    {
-        l.x -= r.x;
-        l.y -= r.y;
-        l.z -= r.z;
-        return l;
-    }
-    public static Vector3 operator -(Vector3 other)
-    {
-        other.x = 0f - other.x;
-        other.y = 0f - other.y;
-        other.z = 0f - other.z;
-        return other;
-    }
-    public static Vector3 operator *(Vector3 other, float scale)
-    {
-        other.x *= scale;
-        other.y *= scale;
-        other.z *= scale;
-        return other;
-    }
-    public static Vector3 operator *(float scale, Vector3 other)
-    {
-        other.x *= scale;
-        other.y *= scale;
-        other.z *= scale;
-        return other;
-    }
-    public static Vector3 operator *(Vector3 l, Vector3 r)
-    {
-        l.x *= r.x;
-        l.y *= r.y;
-        l.z *= r.z;
-        return l;
-    }
-    public static Vector3 operator /(Vector3 other, float divisor)
-    {
-        other.x /= divisor;
-        other.y /= divisor;
-        other.z /= divisor;
-        return other;
-    }
-    public static Vector3 operator /(Vector3 other, Vector3 divisorv)
-    {
-        other.x /= divisorv.x;
-        other.y /= divisorv.y;
-        other.z /= divisorv.z;
-        return other;
-    }
-    public static Vector3 operator %(Vector3 other, float divisor)
-    {
-        other.x %= divisor;
-        other.y %= divisor;
-        other.z %= divisor;
-        return other;
-    }
-    public static Vector3 operator %(Vector3 other, Vector3 divisorv)
-    {
-        other.x %= divisorv.x;
-        other.y %= divisorv.y;
-        other.z %= divisorv.z;
-        return other;
-    }
-    public static bool operator ==(Vector3 l, Vector3 r) { return l.Equals(r); }
-    public static bool operator !=(Vector3 l, Vector3 r) { return !l.Equals(r); }
-    public override readonly bool Equals([NotNullWhen(true)] object? obj)
-    {
-        if (obj is Vector3 other)
-            return Equals(other);
-        return false;
+        return Math.Abs(v.LengthSquared() - 1f) < 1E-06f;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public readonly bool Equals(Vector3 other){ return Math.ApproximateEquals(x, other.x) && Math.ApproximateEquals(y, other.y) && Math.ApproximateEquals(z, other.z); }
-    public override readonly int GetHashCode() { return HashCode.Combine(x, y, z); }
+    public static float Dot(this Vector3 v, Vector3 other) { return Vector3.Dot(v, other); }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public readonly float Length() { return Math.Sqrt(x * x + y * y + z * z); }
+    public static Vector3 Cross(this Vector3 v, Vector3 other) { return Vector3.Cross(v, other); }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public readonly float LengthSquared() { return x * x + y * y + z * z; }
-    public readonly Vector3 Max(float other) { return new Vector3(Math.Max(x, other), Math.Max(y, other), Math.Max(z, other)); }
-    public readonly Vector3 Max(Vector3 other) { return new Vector3(Math.Max(x, other.x), Math.Max(y, other.y), Math.Max(z, other.z)); }
-    public static Vector3 Max(Vector3 a, Vector3 b) { return new Vector3(Math.Max(a.x, b.x), Math.Max(a.y, b.y), Math.Max(a.z, b.z)); }
-    public readonly Vector3 Min(float other) { return new Vector3(Math.Min(x, other), Math.Min(y, other), Math.Min(z, other)); }
-    public readonly Vector3 Min(Vector3 other) { return new Vector3(Math.Min(x, other.x), Math.Min(y, other.y), Math.Min(z, other.z)); }
-    public static Vector3 Min(Vector3 a, Vector3 b) { return new Vector3(Math.Min(a.x, b.x), Math.Min(a.y, b.y), Math.Min(a.z, b.z)); }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public readonly float Distance(Vector3 other) { return Math.Sqrt((x - other.x) * (x - other.x) + (y - other.y) * (y - other.y) + (z - other.z) * (z - other.z)); }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static float Distance(Vector3 a, Vector3 b) { return Math.Sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z)); }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public readonly float DistanceSquared(Vector3 other) { return (x - other.x) * (x - other.x) + (y - other.y) * (y - other.y) + (z - other.z) * (z - other.z); }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static float DistanceSquared(Vector3 a, Vector3 b) { return (a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z); }
-    internal void Normalize()
+    public static void ClampMagnitude(this Vector3 v, float max_length)
     {
-        float lengthsquared = LengthSquared();
-        if (!Math.ApproximateEquals(lengthsquared, 1.0f) && lengthsquared > 0.0f)
-        {
-            float lengthinverted = 1 / Math.Sqrt(lengthsquared);
-            x *= lengthinverted;
-            y *= lengthinverted;
-            z *= lengthinverted;
-        }
-        else
-        {
-            x = 0.0f;
-            y = 0.0f;
-            z = 0.0f;
-        }
-    }
-
-    public static Vector3 Normalize(Vector3 other)
-    {
-        other.Normalize();
-        return other;
-    }
-    public readonly Vector3 Normalized()
-    {
-        Vector3 result = this;
-        result.Normalize();
-        return result;
-    }
-    public readonly bool IsNormalized()
-    {
-        return Math.Abs(LengthSquared() - 1f) < 1E-06f;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public readonly float Dot(Vector3 other) { return x * other.x + y * other.y + z * other.z; }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static float Dot(Vector3 a, Vector3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public readonly Vector3 Cross(Vector3 other) { return new Vector3(y * other.z - z * other.y, z * other.x - x * other.z, x * other.y - y * other.x); }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Vector3 Cross(Vector3 a, Vector3 b) { return new Vector3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x); }
-
-    public void ClampMagnitude(float max_length)
-    {
-        float sqrmag = LengthSquared();
+        float sqrmag = v.LengthSquared();
 
         if (sqrmag > max_length * max_length)
         {
@@ -232,40 +51,33 @@ public struct Vector3 : IEquatable<Vector3>
             // of float precision. without this, the intermediate result can be of higher
             // precision, which changes behavior.
 
-            float normalized_x = x / mag;
-            float normalized_y = y / mag;
-            float normalized_z = z / mag;
+            float normalized_x = v.X / mag;
+            float normalized_y = v.Y / mag;
+            float normalized_z = v.Z / mag;
 
-            x = normalized_x * max_length;
-            y = normalized_y * max_length;
-            z = normalized_z * max_length;
+            v.X = normalized_x * max_length;
+            v.Y = normalized_y * max_length;
+            v.Z = normalized_z * max_length;
         }
     }
-    public void Floor()
+    public static void Floor(this Vector3 v)
     {
-        x = Math.Floor(x);
-        y = Math.Floor(y);
-        z = Math.Floor(z);
+        v.X = Math.Floor(v.X);
+        v.Y = Math.Floor(v.Y);
+        v.Z = Math.Floor(v.Z);
     }
-    public static Vector3 Floor(Vector3 other) { return new Vector3(Math.Floor(other.x), Math.Floor(other.y), Math.Floor(other.z)); }
-    public void Round()
+    public static void Round(this Vector3 v)
     {
-        x = Math.Round(x);
-        y = Math.Round(y);
-        z = Math.Round(z);
+        v.X = Math.Round(v.X);
+        v.Y = Math.Round(v.Y);
+        v.Z = Math.Round(v.Z);
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Vector3 Round(Vector3 other) { return new Vector3(Math.Round(other.x), Math.Round(other.y), Math.Round(other.z)); }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public readonly Vector3 Abs() { return new Vector3(Math.Abs(x), Math.Abs(y), Math.Abs(z)); }
-
-    public readonly void FindBestAxisVectors(ref Vector3 Axis1, ref Vector3 Axis2)
+    public static void FindBestAxisVectors(this Vector3 v, ref Vector3 Axis1, ref Vector3 Axis2)
     {
-        float NX = Math.Abs(x);
-        float NY = Math.Abs(y);
-        float NZ = Math.Abs(z);
+        float NX = Math.Abs(v.X);
+        float NY = Math.Abs(v.Y);
+        float NZ = Math.Abs(v.Z);
 
         // find best basis vectors
         if (NZ > NX && NZ > NY)	
@@ -273,42 +85,17 @@ public struct Vector3 : IEquatable<Vector3>
         else
             Axis1 = new Vector3(0, 0, 1);
 
-        Axis1 = (Axis1 - this * (Axis1.Dot(this))).Normalized();
-        Axis2 = Axis1.Cross(this);
+        Axis1 = Vector3.Normalize(Axis1 - v * (Axis1.Dot(v)));
+        Axis2 = Axis1.Cross(v);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public readonly Vector3 Lerp(Vector3 other, float t) { return this * (1.0f - t) + other * t; }
+    public static Vector3 Lerp(this Vector3 v, Vector3 other, float t) { return Vector3.Lerp(v, other, t); }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Vector3 Lerp(Vector3 a, Vector3 b, float t) { return a * (1.0f - t) + b * t; }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public readonly bool IsNaN() { return Math.IsNaN(x) || Math.IsNaN(y) || Math.IsNaN(z); }
+    public static bool IsNaN(this Vector3 v) { return Math.IsNaN(v.X) || Math.IsNaN(v.Y) || Math.IsNaN(v.Z); }
     
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public readonly bool IsFinite() { return Math.IsFinite(x) && Math.IsFinite(y) && Math.IsFinite(z); }
-    public override readonly string ToString() { return "X: " + x.ToString() + ", Y:" + y.ToString() + ", Z:" + z.ToString(); }
-
-    private static readonly Vector3 zero = new Vector3(0f, 0f, 0f);
-    private static readonly Vector3 one = new Vector3(1f, 1f, 1f);
-    private static readonly Vector3 left = new Vector3(-1.0f, 0.0f, 0.0f);
-    private static readonly Vector3 right = new Vector3(1.0f, 0.0f, 0.0f);
-    private static readonly Vector3 up = new Vector3(0.0f, 1.0f, 0.0f);
-    private static readonly Vector3 down = new Vector3(0.0f, -1.0f, 0.0f);
-    private static readonly Vector3 forward = new Vector3(0.0f, 0.0f, 1.0f);
-    private static readonly Vector3 backward = new Vector3(0.0f, 0.0f, -1.0f);
-    private static readonly Vector3 infinity = new Vector3(float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity);
-    private static readonly Vector3 infinityneg = new Vector3(float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity);
-
-    public static Vector3 Zero => zero;
-    public static Vector3 One => one;
-    public static Vector3 Left => left;
-    public static Vector3 Right => right;
-    public static Vector3 Up => up;
-    public static Vector3 Down => down;
-    public static Vector3 Forward => forward;
-    public static Vector3 Backward => backward;
-    public static Vector3 Infinity => infinity;
-    public static Vector3 InfinityNeg => infinityneg;
+    public static bool IsFinite(this Vector3 v) { return Math.IsFinite(v.X) && Math.IsFinite(v.Y) && Math.IsFinite(v.Z); }
 }
+

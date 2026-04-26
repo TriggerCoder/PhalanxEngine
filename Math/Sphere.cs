@@ -1,4 +1,4 @@
-﻿using System;
+﻿using System.Numerics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 
@@ -7,17 +7,17 @@ namespace Phalanx;
 [Serializable]
 public struct Sphere : IEquatable<Sphere>
 {
-    public Vector3 center;
-    public float radius;
+    public Vector3 Center;
+    public float Radius;
     public Sphere()
     {
-        center = Vector3.Zero;
-        radius = 1;
+        Center = Vector3.Zero;
+        Radius = 1;
     }
-    public Sphere(Vector3 center, float radius)
+    public Sphere(Vector3 Center, float Radius)
     {
-        this.center = center;
-        this.radius = radius;
+        this.Center = Center;
+        this.Radius = Radius;
     }
 
     public static bool operator ==(Sphere l, Sphere r) { return l.Equals(r); }
@@ -28,8 +28,8 @@ public struct Sphere : IEquatable<Sphere>
             return Equals(other);
         return false;
     }
-    public override readonly int GetHashCode() { return HashCode.Combine(center, radius); }
+    public override readonly int GetHashCode() { return HashCode.Combine(Center, Radius); }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public readonly bool Equals(Sphere other) { return Math.ApproximateEquals(radius, other.radius) && (center == other.center); }
+    public readonly bool Equals(Sphere other) { return Math.ApproximateEquals(Radius, other.Radius) && (Center == other.Center); }
 }
