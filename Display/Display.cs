@@ -1,13 +1,10 @@
-﻿using System;
-using System.Diagnostics.CodeAnalysis;
+﻿using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using Silk.NET.Windowing;
-using Silk.NET.Maths;
 
 namespace Phalanx;
 public static class Display
 {
-    private static readonly IWindow window;
     private static List<DisplayMode> display_modes = new List<DisplayMode>();
     public struct DisplayMode : IEquatable<DisplayMode>
     {
@@ -61,36 +58,33 @@ public static class Display
         display_modes.Sort((a, b) => b.width.CompareTo(a.width));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static IWindow? GetId() { return Window.GetWindow(); }
     public static void Initialize()
     {
         display_modes.Clear();
 
+        IWindow? window = GetId();
         IMonitor monitor = window.Monitor ?? Silk.NET.Windowing.Monitor.GetMainMonitor(window);
 
         int displayId = monitor.Index;
 
-        // Safety check (replaces the SDL_GetFullscreenDisplayModes null/count check)
-        if (displayId >= (uint)monitors.Count || monitors.Count == 0)
+        var videoModes = monitor.GetAllVideoModes();
+
+        foreach (VideoMode mode in videoModes)
         {
-            SP_LOG_ERROR("Failed to get display modes: invalid display ID or no monitors found");
-            return;
+            if ((mode.Resolution != null) && (mode.RefreshRate != null))
+            {
+                RegisterDisplayMode(
+                    (uint)mode.Resolution.Value.X,
+                    (uint)mode.Resolution.Value.Y,
+                    mode.RefreshRate.Value,
+                    (uint)displayId
+                );
+            }
         }
 
-        IMonitor monitor = monitors[(int)displayId];
-
-        // Register all available video modes for this monitor
-        // (this replaces SDL_GetFullscreenDisplayModes + the for-loop)
-        foreach (VideoMode mode in monitor.VideoModes)
-        {
-            RegisterDisplayMode(
-                mode.Resolution.X,          // width
-                mode.Resolution.Y,          // height
-                (int)mode.RefreshRate,      // refresh rate (float → int, same as SDL)
-                displayId
-            );
-        }
-
-        // Log display info (exactly the same format as your C++ code)
+/*
         SP_LOG_INFO(
             "name: {0}, hz: {1:F1}, gamma: {2:F1}, hdr: {3}, max luminance: {4:F0} nits",
             monitor.Name ?? "Unknown",
@@ -99,5 +93,28 @@ public static class Display
             GetHdr() ? "true" : "false",
             GetLuminanceMax()
         );
+*/    }
+
+    public static IReadOnlyList<DisplayMode> GetDisplayModes() { return display_modes; }
+
+    public static uint GetWidth()
+    {
+        IWindow? window = GetId();
+        var vm = window.Monitor?.VideoMode ?? Silk.NET.Windowing.Monitor.GetMainMonitor(window).VideoMode;
+        return (uint)(vm.Resolution != null ? vm.Resolution.Value.X : 0);
+    }
+
+    public static uint GetHeight()
+    {
+        IWindow? window = GetId();
+        var vm = window.Monitor?.VideoMode ?? Silk.NET.Windowing.Monitor.GetMainMonitor(window).VideoMode;
+        return (uint)(vm.Resolution != null ? vm.Resolution.Value.Y : 0);
+    }
+
+    public static float GetRefreshRate()
+    {
+        IWindow? window = GetId();
+        var vm = window.Monitor?.VideoMode ?? Silk.NET.Windowing.Monitor.GetMainMonitor(window).VideoMode;
+        return (float)(vm.RefreshRate != null ? vm.RefreshRate : 0);
     }
 }

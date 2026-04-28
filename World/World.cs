@@ -61,7 +61,7 @@ public class World
         entity_states[id] |= (uint)change;
         resolve = true;
     }
-
+    /*
     private ulong compute_material_hash(Material material)
     {
         ulong hash = 17; // FNV-1a seed
@@ -120,7 +120,7 @@ public class World
         }
 
         return hash;
-    }
+    }*/
 }
 
 public struct WorldMetadata

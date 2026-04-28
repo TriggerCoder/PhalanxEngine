@@ -68,7 +68,7 @@ public static class Time
     {
         if (fps_in < 0.0f) // negative -> match monitor's refresh rate
         {
-            fps_in = static_cast<float>(Display::GetRefreshRate());
+            fps_in = Display.GetRefreshRate();
         }
 
         // clamp to a minimum of 10 FPS to avoid unresponsiveness
@@ -84,7 +84,7 @@ public static class Time
 
     public static FpsLimitType GetFpsLimitType()
     {
-        if (fps_limit == static_cast<float>(Display::GetRefreshRate()))
+        if (fps_limit == Display.GetRefreshRate())
             return FpsLimitType.FixedToMonitor;
 
         if (fps_limit == fps_max)
@@ -97,7 +97,7 @@ public static class Time
         if (enabled)
         {
             fps_limit_previous = fps_limit;
-            SetFpsLimit(static_cast<float>(Display::GetRefreshRate()));
+            SetFpsLimit(Display.GetRefreshRate());
         }
         else
         {

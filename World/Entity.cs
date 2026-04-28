@@ -127,7 +127,7 @@ public class Entity : SpartanObject
     public Matrix4x4 GetMatrix() { return m_matrix; }
     public Matrix4x4 GetLocalMatrix() { return m_matrix_local; }
     public Matrix4x4 GetMatrixPrevious() { return m_matrix_previous; }
-    void SetMatrixPrevious(Matrix4x4 matrix) { m_matrix_previous = matrix; }
+    public void SetMatrixPrevious(Matrix4x4 matrix) { m_matrix_previous = matrix; }
     public float GetTimeSinceLastTransform() { return m_time_since_last_transform_sec; }
     public Component?[] GetAllComponents() { return m_components; }
 
@@ -321,8 +321,8 @@ public class Entity : SpartanObject
         lock (m_mutex_children)
         {
             m_children.Clear();
-
-            List<Entity>? entities = World::GetEntities();
+            //TODO
+            List<Entity>? entities = null; // World::GetEntities();
             foreach (Entity? possible_child in entities)
             {
                 if ((possible_child == null) || (possible_child.GetParent() == null) || (possible_child.GetObjectId() == GetObjectId()))
@@ -454,7 +454,8 @@ public class Entity : SpartanObject
     public Entity clone_entity(Entity entity)
     {
         // clone basic properties
-        Entity? clone = World::CreateEntity();
+        //TODO
+        Entity? clone = null; // World::CreateEntity();
         clone.SetObjectName(entity.GetObjectName());
         clone.SetActive(entity.GetActive());
         clone.SetPosition(entity.GetPositionLocal());
@@ -503,7 +504,8 @@ public class Entity : SpartanObject
         Component? component;
         switch(type)
         {
-            case ComponentType.AudioSource:
+//TODO
+/*           case ComponentType.AudioSource:
                 component = AddComponent<AudioSource>();
             break;
             case ComponentType.Camera:
@@ -536,7 +538,7 @@ public class Entity : SpartanObject
             case ComponentType.ParticleSystem:
                 component = AddComponent<ParticleSystem>();
             break;
-            default:
+*/            default:
                 component = null;
             break;
         }
@@ -575,7 +577,8 @@ public class Entity : SpartanObject
         Component? component;
         switch (type)
         {
-            case ComponentType.AudioSource:
+//TODO
+/*            case ComponentType.AudioSource:
                 component = new AudioSource();
                 break;
             case ComponentType.Camera:
@@ -608,7 +611,7 @@ public class Entity : SpartanObject
             case ComponentType.ParticleSystem:
                 component = new ParticleSystem();
                 break;
-            default:
+*/            default:
                 component = null;
             break;
         }
