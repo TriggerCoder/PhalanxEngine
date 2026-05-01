@@ -59,12 +59,12 @@ public static class Display
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static IWindow? GetId() { return Window.GetWindow(); }
+    public static IWindow? GetWindow() { return Window.GetWindow(); }
     public static void Initialize()
     {
         display_modes.Clear();
 
-        IWindow? window = GetId();
+        IWindow? window = GetWindow();
         IMonitor monitor = window.Monitor ?? Silk.NET.Windowing.Monitor.GetMainMonitor(window);
 
         int displayId = monitor.Index;
@@ -99,21 +99,21 @@ public static class Display
 
     public static uint GetWidth()
     {
-        IWindow? window = GetId();
+        IWindow? window = GetWindow();
         var vm = window.Monitor?.VideoMode ?? Silk.NET.Windowing.Monitor.GetMainMonitor(window).VideoMode;
         return (uint)(vm.Resolution != null ? vm.Resolution.Value.X : 0);
     }
 
     public static uint GetHeight()
     {
-        IWindow? window = GetId();
+        IWindow? window = GetWindow();
         var vm = window.Monitor?.VideoMode ?? Silk.NET.Windowing.Monitor.GetMainMonitor(window).VideoMode;
         return (uint)(vm.Resolution != null ? vm.Resolution.Value.Y : 0);
     }
 
     public static float GetRefreshRate()
     {
-        IWindow? window = GetId();
+        IWindow? window = GetWindow();
         var vm = window.Monitor?.VideoMode ?? Silk.NET.Windowing.Monitor.GetMainMonitor(window).VideoMode;
         return (float)(vm.RefreshRate != null ? vm.RefreshRate : 0);
     }

@@ -26,16 +26,20 @@ public static class Window
             NativeLibrary.Free(user32);
         }
 
-         var options = WindowOptions.Default with
+        var options = WindowOptions.Default with
         {
             Title = "Phalanx",   // TODO
             Size = new Vector2D<int>(width, height),
             WindowBorder = WindowBorder.Hidden,
             WindowState = WindowState.Maximized,
-            // Vulkan support (Silk.NET handles surface creation automatically)
             API =  new GraphicsAPI(ContextAPI.Vulkan, ContextProfile.Core, ContextFlags.Default, new APIVersion(1, 4))
 //                         : GraphicsAPI.Default
         };
         window = Silk.NET.Windowing.Window.Create(options);
+    }
+
+    public static void PumpEvents()
+    {
+        window.DoEvents();
     }
 }
