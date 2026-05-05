@@ -2,7 +2,6 @@
 using System.Collections.Generic;
 using System.Numerics;
 using Silk.NET.Input;
-using Silk.NET.Windowing;
 
 namespace Phalanx;
 public static class Input
