@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 
 namespace Phalanx;
 
+// constant buffer - updates once per frame
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 public struct FrameBufferData
 {
@@ -88,7 +89,13 @@ public struct PassBufferData
     public Vector4 values0;
     public Vector4 values1;
     public Vector4 values2;
-
+    public PassBufferData()
+    {
+        draw_index = 0;
+        material_index = 0;
+        is_transparent = 0;
+        padding = 0;
+    }
     public void SetF3Value(Vector3 value) { SetF3Value(value.X, value.Y, value.Z); }
     public void SetF3Value(float x, float y = 0f, float z = 0f)
     {
@@ -105,7 +112,7 @@ public struct PassBufferData
         values1.Z = z;
     }
 
-    public void SetF4Value(Vector4 value) { values2 = value; }
+    public void SetF4Value(Color value) { values2 = value; }
 
     public void SetF4Value(float x, float y, float z, float w)
     {
@@ -124,7 +131,7 @@ public struct PassBufferData
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 public struct MaterialParameters
 {
-    public Vector4 color;
+    public Color color;
 
     public Vector2 tiling;
     public Vector2 offset;
@@ -136,7 +143,6 @@ public struct MaterialParameters
     public float height;
 
     public uint flags;
-
     public float local_width;
     public float padding;
     public float subsurface_scattering;
@@ -181,7 +187,7 @@ public struct MaterialParameters
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 public struct LightParameters
 {
-    public Vector4 color;
+    public Color color;
     public Vector3 position;
     public float intensity;
     public Vector3 direction;
@@ -230,6 +236,7 @@ public struct Aabb
     public float padding2;
 }
 
+// per-blas-instance offsets into the global geometry buffer (indexed by InstanceIndex() in rt shaders)
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 public struct GeometryInfo
 {
@@ -237,6 +244,7 @@ public struct GeometryInfo
     public uint index_offset;
 }
 
+// gpu-driven indirect draw arguments (matches VkDrawIndexedIndirectCommand layout)
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 public struct IndirectDrawArgs
 {
@@ -255,6 +263,7 @@ public struct IndirectDrawArgs
     }
 }
 
+// per-draw data for gpu-driven rendering (indexed by draw_id in shaders)
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 public struct DrawData
 {
@@ -273,6 +282,7 @@ public struct DrawData
     }
 }
 
+// vertex pulling - global geometry buffer exposed as a structured buffer
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 public struct PulledVertex
 {
@@ -282,10 +292,68 @@ public struct PulledVertex
     public Vector3 tangent;
 }
 
+// vertex pulling - instance buffer exposed as packed uint data (10 bytes per instance)
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 public struct PackedInstance
 {
     public uint pos_xy;       // position_x (half16) | position_y (half16)
     public uint pos_z_norm;   // position_z (half16) | normal_oct (uint16)
     public uint yaw_scale;    // yaw_packed (uint8) | scale_packed (uint8) | padding (uint16)
+}
+
+// gpu particle (64 bytes)
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+public struct Particle
+{
+    public Vector3 position;
+    public float lifetime;          // remaining lifetime
+    public Vector3 velocity;
+    public float max_lifetime;      // initial lifetime
+    public Color color;             // current RGBA
+    public float size;              // current size
+    public Vector3 padding;         // explicit padding to keep 64-byte alignment
+    public Particle()
+    {
+        lifetime = 0.0f;
+        max_lifetime = 0.0f;
+        size = 0.0f;
+    }
+}
+
+// gpu emitter parameters
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+public struct EmitterParams
+{
+    public Vector3 position;
+    public float emission_rate;
+    public float lifetime;
+    public float start_speed;
+    public float start_size;
+    public float end_size;
+    public Color start_color;
+    public Color end_color;
+    public float gravity_modifier;
+    public float radius;
+    public float delta_time;
+    public uint max_particles;
+    public uint frame;
+    public uint emitter_count;
+    public float padding1;
+    public float padding2;
+    public EmitterParams()
+    {
+        emission_rate = 0.0f;
+        lifetime = 0.0f;
+        start_speed = 0.0f;
+        start_size = 0.0f;
+        end_size = 0.0f;
+        gravity_modifier = 0.0f;
+        radius = 0.0f;
+        delta_time = 0.0f;
+        max_particles = 0;
+        frame = 0;
+        emitter_count = 0;
+        padding1 = 0.0f;
+        padding2 = 0.0f;
+    }
 }

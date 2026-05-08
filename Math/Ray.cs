@@ -6,8 +6,8 @@ namespace Phalanx;
 [Serializable]
 public struct Ray
 {
-    private Vector3 m_origin = Vector3.Zero;
-    private Vector3 m_direction = Vector3.Zero;
+    public Vector3 m_origin = Vector3.Zero;
+    public Vector3 m_direction = Vector3.Zero;
 
     public Ray(Vector3 start, Vector3 direction)
     {
@@ -122,6 +122,13 @@ public struct Ray
             return float.PositiveInfinity;
     }
 
+    public readonly float HitDistance(Vector3 v1, Vector3 v2, Vector3 v3)
+    {
+        Vector3 out_normal = Vector3.One;
+        Vector3 out_bary = Vector3.One;
+        return HitDistance(v1, v2, v3, ref out_normal, ref out_bary);
+    }
+
     public readonly float HitDistance(Vector3 v1, Vector3 v2, Vector3 v3, ref Vector3 out_normal, ref Vector3 out_bary)
     {
         // Based on Fast, Minimum Storage Ray/Triangle Intersection by M�ller & Trumbore
@@ -223,4 +230,19 @@ public struct Ray
     public readonly Vector3 GetStart() { return m_origin; }
     public readonly Vector3 GetDirection() { return m_direction; }
     public readonly bool IsDefined() { return m_origin != m_direction && m_direction != Vector3.Zero; }
+}
+
+public class RayHitResult
+{
+    public Entity m_entity;
+    public Vector3 m_position;
+    public float m_distance;
+    public bool m_inside;
+    public RayHitResult(Entity entity, Vector3 position, float distance, bool is_inside)
+    {
+        m_entity = entity;
+        m_position = position;
+        m_distance = distance;
+        m_inside = is_inside;
+    }
 }

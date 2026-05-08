@@ -20,21 +20,36 @@ public enum ComponentType : uint
     Max
 }
 
+public interface IRegisteredAttribute
+{
+    object? GetValue();
+    void SetValue(object? value);
+}
+public struct Attribute<T> : IRegisteredAttribute
+{
+    public required Func<T> getter { get; init; }
+    public required Action<T> setter { get; init; }
+    public object? GetValue() => getter();
+    public void SetValue(object? value) => setter((T)value!);
+}
 public class Component : SpartanObject
 {
-    public struct Attribute
-    {
-        public Func<object?> getter { get; init; }
-        public Action<object?> setter { get; init; }
-    }
-
-    private readonly List<Attribute> m_attributes = new List<Attribute>();
+    private readonly List<IRegisteredAttribute> m_attributes = new List<IRegisteredAttribute>();
     // the type of the component
     protected ComponentType m_type = ComponentType.Max;
     // the state of the component
     protected bool m_enabled = false;
     // the owner of the component
     protected Entity? m_entity_ptr = null;
+
+    protected void RegisterAttribute<T>(Func<T> Getter, Action<T> Setter)
+    {
+        m_attributes.Add(new Attribute<T>
+        {
+            getter = Getter,
+            setter = Setter
+        });
+    }
 
     private static readonly Dictionary<Type, ComponentType> s_typeMap = new()
     {
@@ -52,16 +67,18 @@ public class Component : SpartanObject
         [typeof(ParticleSystem)] = ComponentType.ParticleSystem,
 */    };
 
+    public Entity? GetEntity() { return m_entity_ptr; }
     public ComponentType GetComponentType() { return m_type; }
     public void SetComponentType(ComponentType type) { m_type = type; }
-    public void SetAttributes(List<Attribute> attributes)
+    public void SetAttributes(IReadOnlyList<IRegisteredAttribute> sourceAttributes)
     {
-        foreach (var(target,source) in m_attributes.Zip(attributes))
+        int count = m_attributes.Count;
+        for (int i = 0; i < count; i++)
         {
-            target.setter(source.getter());
+            m_attributes[i].SetValue(sourceAttributes[i].GetValue());
         }
     }
-    public List<Attribute> GetAttributes() { return m_attributes; }
+    public IReadOnlyList<IRegisteredAttribute> GetAttributes() { return m_attributes; }
     public static ComponentType TypeToEnum<T>() where T : Component { return s_typeMap.TryGetValue(typeof(T), out var componentType) ? componentType : ComponentType.Max; }
 
     // called when the component gets added
