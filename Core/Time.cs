@@ -72,7 +72,7 @@ public static class Time
         }
 
         // clamp to a minimum of 10 FPS to avoid unresponsiveness
-        fps_in = System.Math.Clamp(fps_in, fps_min, fps_max);
+        fps_in = Math.Clamp(fps_in, fps_min, fps_max);
 
         if (fps_limit == fps_in)
             return;

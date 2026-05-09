@@ -77,7 +77,7 @@ public class Light : Component
     private Vector2[] m_atlas_offsets = new Vector2[6];
     private Vector2[] m_atlas_scales = new Vector2[6];
 
-    public Light()
+    public Light(Entity entity) : base(entity)
     {
         RegisterAttribute(() => m_flags, v => m_flags = v);
         RegisterAttribute(() => m_range, v => m_range = v);
@@ -209,8 +209,8 @@ public class Light : Component
                         float atlasScale = rectWidth / atlasWidth;                      // proportion of atlas used by cascade
                         float effectiveRes = atlasWidth * atlasScale;                   // effective resolution for cascade
                         float texelSizeWorld = (2.0f * extents[i]) / effectiveRes;      // world units per texel
-                        m_matrix_view[i].M41 = MathF.Round(m_matrix_view[i].M41 / texelSizeWorld) * texelSizeWorld; // snap X
-                        m_matrix_view[i].M42 = MathF.Round(m_matrix_view[i].M42 / texelSizeWorld) * texelSizeWorld; // snap Y
+                        m_matrix_view[i].M41 = Math.Round(m_matrix_view[i].M41 / texelSizeWorld) * texelSizeWorld; // snap X
+                        m_matrix_view[i].M42 = Math.Round(m_matrix_view[i].M42 / texelSizeWorld) * texelSizeWorld; // snap Y
                         // z-translation (M43) remains unchanged for orthographic projection
                     }
                 }
@@ -282,7 +282,7 @@ public class Light : Component
             default:  // spot/point
             {
                 const float aspectRatio = 1.0f;
-                float fovYRadians = m_light_type == LightType.Spot ? m_angle_rad * 2.0f : MathF.PI / 2f + 0.02f; // small epsilon to hide face seams
+                float fovYRadians = m_light_type == LightType.Spot ? m_angle_rad * 2.0f : Math.Pi / 2f + 0.02f; // small epsilon to hide face seams
 
                 int sliceCount = GetSliceCount();
                 for (int i = 0; i < sliceCount; i++)
@@ -312,7 +312,7 @@ public class Light : Component
             break;
             case LightType.Spot:
             {
-                float opposite  = m_range * MathF.Tan(m_angle_rad);
+                float opposite  = m_range * Math.Tan(m_angle_rad);
                 Vector3 tip     = position;
                 Vector3 center  = tip + entity.GetForward()     * m_range;
                 Vector3 up      = center + entity.GetUp()       * opposite;
@@ -547,7 +547,7 @@ public class Light : Component
     // range
     public void SetRange(float range)
     {
-        range = System.Math.Clamp(range, 0.0f, float.MaxValue);
+        range = Math.Clamp(range, 0.0f, float.MaxValue);
 
         if (range == m_range)
             return;
@@ -560,7 +560,7 @@ public class Light : Component
     // angle
     public void SetAngle(float angle)
     {
-        angle = System.Math.Clamp(angle, 0.0f, Math.Pi2);
+        angle = Math.Clamp(angle, 0.0f, Math.Pi2);
         if (angle == m_angle_rad)
             return;
 
@@ -572,7 +572,7 @@ public class Light : Component
     // area light dimensions
     public void SetAreaWidth(float width)
     {
-        width = System.Math.Clamp(width, 0.01f, 100.0f);
+        width = Math.Clamp(width, 0.01f, 100.0f);
         if (width == m_area_width)
             return;
 
@@ -582,7 +582,7 @@ public class Light : Component
     public float GetAreaWidth() { return m_area_width; }
     public void SetAreaHeight(float height)
     {
-        height = System.Math.Clamp(height, 0.01f, 100.0f);
+        height = Math.Clamp(height, 0.01f, 100.0f);
         if (height == m_area_height)
             return;
 

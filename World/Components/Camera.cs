@@ -63,13 +63,22 @@ public class Camera : Component
     Entity m_flashlight = null;
     RHI_Viewport m_last_known_viewport;
     Frustum m_frustum;
-    List<Entity> m_selected_entities;
+    List<Entity> m_selected_entities = new List<Entity>();
 
     // pre-allocated buffers for picking (to avoid heap allocations)
     List<RayHitResult> m_pick_hits;
     List<int> m_pick_indices;
     List<RHI_Vertex_PosTexNorTan> m_pick_vertices;
 
+    public Camera(Entity entity) : base(entity)
+    {
+        m_entity_owner.SetPosition(new Vector3(0.0f, 3.0f, -5.0f));
+        SetFlag(CameraFlags.CanBeControlled, true);
+        SetFlag(CameraFlags.PhysicalBodyAnimation, true);
+        m_pick_hits.EnsureCapacity(256);
+        m_pick_indices.EnsureCapacity(65536);
+        m_pick_vertices.EnsureCapacity(65536);
+    }
     // matrices
     public Matrix4x4 GetViewMatrix() { return m_view; }
     public Matrix4x4 GetProjectionMatrix() { return m_projection; }
@@ -98,7 +107,7 @@ public class Camera : Component
         Ray ray = ComputePickingRay();
         m_pick_hits.Clear();
 
-        List<Entity>entities = WorldGetEntities();
+        List<Entity>entities = World.GetEntities();
         foreach (Entity entity in entities)
         {
             if (!entity.GetComponent<Render>())
@@ -222,7 +231,7 @@ public class Camera : Component
 
                     // convert pick radius from screen pixels to world-space at this depth
                     float viewport_width = Renderer.GetViewport().Width;
-                    float meters_per_pixel = (2.0f * depth * MathF.Tan(GetFovHorizontalRad() * 0.5f)) / viewport_width;
+                    float meters_per_pixel = (2.0f * depth * Math.Tan(GetFovHorizontalRad() * 0.5f)) / viewport_width;
                     float pick_threshold = pick_radius_px * meters_per_pixel;
 
                     if (distance_from_ray > pick_threshold)
@@ -301,7 +310,7 @@ public class Camera : Component
         RHI_Viewport viewport = Renderer.GetViewport();
         position_clip.X = (position_screen.X / viewport.Width) * 2.0f - 1.0f;
         position_clip.Y = (position_screen.Y / viewport.Height) * -2.0f + 1.0f;
-        position_clip.Z = System.Math.Clamp(z, 0.0f, 1.0f);
+        position_clip.Z = Math.Clamp(z, 0.0f, 1.0f);
 
         // compute world space position
         Matrix4x4 view_projection_inverted = m_view_projection_non_reverse_z.Inverted();
@@ -326,13 +335,13 @@ public class Camera : Component
     {
         // computed ev (using squared aperture for photometric accuracy)
         // note: this calculates the exposure scale factor (1/l_avg)
-        float ev100 = MathF.Log2((m_aperture * m_aperture) / m_shutter_speed * 100.0f / m_iso);
+        float ev100 = Math.Log2((m_aperture * m_aperture) / m_shutter_speed * 100.0f / m_iso);
 
         // standard standard output sensitivity (sos) calculation
         // 1.2 is a common calibration constant (matches ue5/frostbite)
         // this maps the average scene luminance to middle grey (0.18)
         const float calibration_constant = 1.2f;
-        float base_exposure = 1.0f / (calibration_constant * MathF.Pow(2.0f, ev100));
+        float base_exposure = 1.0f / (calibration_constant * Math.Pow(2.0f, ev100));
 
         return base_exposure;
     }
@@ -349,7 +358,7 @@ public class Camera : Component
 
     // fov
     public float GetFovHorizontalRad() { return m_fov_horizontal_rad; }
-    public float GetFovVerticalRad() { return 2.0f * MathF.Atan(MathF.Tan(m_fov_horizontal_rad / 2.0f) * (Renderer.GetViewport().Height / Renderer.GetViewport().Width)); }
+    public float GetFovVerticalRad() { return 2.0f * Math.Atan(Math.Tan(m_fov_horizontal_rad / 2.0f) * (Renderer.GetViewport().Height / Renderer.GetViewport().Width)); }
     public float GetFovHorizontalDeg() { return m_fov_horizontal_rad * Math.RadToDeg; }
     public void SetFovHorizontalDeg(float fov)
     {
@@ -476,8 +485,7 @@ public class Camera : Component
         if (Engine.IsFlagSet(EngineMode.Playing))
             return;
 
-        Entity? entity = GetSelectedEntity();
-        if (entity != null)
+        if (GetSelectedEntity() is Entity entity)
         {
             Log.LogInfo("Focusing on entity " + entity.GetObjectName() + "...");
 
@@ -486,8 +494,7 @@ public class Camera : Component
 
             // if the entity has a renderable component, we can get a more accurate target position
             // ...otherwise we apply a simple offset so that the rotation vector doesn't suffer
-            Render renderable = entity.GetComponent<Render>();
-            if (renderable != null)
+            if (entity.GetComponent<Render>() is Render renderable)
                 m_lerp_to_target_position -= target_direction * renderable.GetBoundingBox().GetExtents().Length() * 2.0f;
             else
                 m_lerp_to_target_position -= target_direction;
@@ -501,7 +508,7 @@ public class Camera : Component
             m_lerp_to_target_rotation = QuaternionExtensions.FromLookRotation(entity.GetPosition() - m_lerp_to_target_position).Normalized();
             m_lerp_to_target_distance = Vector3.Distance(m_lerp_to_target_position, m_lerp_from_position);
 
-            float lerp_angle = MathF.Acos(Quaternion.Dot(m_lerp_to_target_rotation.Normalized(), m_lerp_from_rotation.Normalized())) * Math.RadToDeg;
+            float lerp_angle = Math.Acos(Quaternion.Dot(m_lerp_to_target_rotation.Normalized(), m_lerp_from_rotation.Normalized())) * Math.RadToDeg;
 
             m_lerp_to_target_p = m_lerp_to_target_distance > 0.1f ? true : false;
             m_lerp_to_target_r = lerp_angle > 1.0f ? true : false;

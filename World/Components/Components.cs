@@ -40,7 +40,7 @@ public class Component : SpartanObject
     // the state of the component
     protected bool m_enabled = false;
     // the owner of the component
-    protected Entity? m_entity_ptr = null;
+    protected Entity? m_entity_owner = null;
 
     protected void RegisterAttribute<T>(Func<T> Getter, Action<T> Setter)
     {
@@ -67,7 +67,12 @@ public class Component : SpartanObject
         [typeof(ParticleSystem)] = ComponentType.ParticleSystem,
 */    };
 
-    public Entity? GetEntity() { return m_entity_ptr; }
+    public Component(Entity entity)
+    {
+        m_entity_owner = entity;
+        m_enabled    = true;
+    }
+    public Entity? GetEntity() { return m_entity_owner; }
     public ComponentType GetComponentType() { return m_type; }
     public void SetComponentType(ComponentType type) { m_type = type; }
     public void SetAttributes(IReadOnlyList<IRegisteredAttribute> sourceAttributes)

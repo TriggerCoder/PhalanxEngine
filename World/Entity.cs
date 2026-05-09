@@ -112,8 +112,7 @@ public class Entity : SpartanObject
     }
     public bool GetActive()
     {
-        Entity parent = GetParent();
-        if (parent != null)
+        if (GetParent() is Entity parent)
             return m_is_active && parent.GetActive();
         return m_is_active;
     }

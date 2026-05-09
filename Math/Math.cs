@@ -51,6 +51,12 @@ public static class Math
     [MethodImpl(MethodImplOptions.AggressiveInlining)] 
     public static int Sign(double x) { return System.Math.Sign(x); }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static float Rand(float from = 0f, float to = 1f) { return Random.Shared.NextSingle() * (to - from) + from; }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static double Rand(double from = 0.0, double to = 1.0) { return Random.Shared.NextDouble() * (to - from) + from; }
+
     public static int PowerOfTwoPrevious(int x)
     {
         x = x | (x >> 1);
@@ -110,6 +116,24 @@ public static class Math
     public static double Abs(double s) { return System.Math.Abs(s); }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static float Clamp(float value, float min, float max) { return System.Math.Clamp(value, min, max); }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static double Clamp(double value, double min, double max) { return System.Math.Clamp(value, min, max); }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static float Log(float s) { return MathF.Log(s); }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static double Log(double s) { return System.Math.Log(s); }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static float Log2(float s) { return MathF.Log2(s); }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static double Log2(double s) { return System.Math.Log2(s); }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int Min(int a, int b) { return System.Math.Min(a, b); }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -132,6 +156,12 @@ public static class Math
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static double Floor(double s) { return System.Math.Floor(s); }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static float Pow(float x, float y) { return MathF.Pow(x, y); }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static double Pow(double x, double y) { return System.Math.Pow(x, y); }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static float Round(float s) { return MathF.Round(s); }

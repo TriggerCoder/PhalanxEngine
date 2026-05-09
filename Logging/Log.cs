@@ -13,4 +13,8 @@ public static class Log
     {
     
     }
+    public static void LogWarning(string message)
+    {
+
+    }
 }
