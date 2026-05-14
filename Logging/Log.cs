@@ -17,4 +17,8 @@ public static class Log
     {
 
     }
+    public static void LogError(string message)
+    {
+
+    }
 }

@@ -142,7 +142,7 @@ public static class Input
     private static Controller? gamepadController;
     private static Controller? steeringWheelController;
 
-    private static HashSet<IInputDevice> knownDevices = new();
+    private static List<IInputDevice> knownDevices = new();
     private static int previousDeviceCount = -1;
     private static Vector2 mousePosition = Vector2.Zero;
     private static Vector2 mouseDelta = Vector2.Zero;
@@ -310,7 +310,7 @@ public static class Input
         if (currentCount == previousDeviceCount)
             return;
 
-        var currentDevices = new HashSet<IInputDevice>(inputContext.Gamepads.Cast<IInputDevice>().Concat(inputContext.Joysticks));
+        var currentDevices = new List<IInputDevice>(inputContext.Gamepads.Cast<IInputDevice>().Concat(inputContext.Joysticks));
 
         // New devices
         foreach (var device in currentDevices)
