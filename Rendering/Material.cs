@@ -43,8 +43,23 @@ public enum MaterialProperty
     AnisotropicRotation,        // anisotropy direction
     Sheen,                      // velvet-like reflection at grazing angles
     SubsurfaceScattering,       // light scattering through surface
+    FlakeStrength,              // automotive metallic flake intensity
+    FlakeScale,                 // automotive metallic flake density
+    PearlStrength,              // view dependent pearl color shift
+    PearlColorR,                // pearl color red
+    PearlColorG,                // pearl color green
+    PearlColorB,                // pearl color blue
+    CoatTintR,                  // tinted clearcoat red
+    CoatTintG,                  // tinted clearcoat green
+    CoatTintB,                  // tinted clearcoat blue
+    CoatTintStrength,           // tinted clearcoat strength
+    Ior,                        // index of refraction
+    Absorption,                 // beer lambert dye density for glass, independent of alpha
+    Thickness,                  // glass shell thickness in meters
+    PaintPreset,                // selected paint preset
+    SurfacePreset,              // selected surface preset
     NormalFromAlbedo,           // derive normal from albedo
-    EmissiveFromAlbedo,         // derive emissive from albedo
+    EmissiveFromAlbedo,         // derive emissive from albedo, value is 0-1 intensity
 
     // texture transforms
     TextureTilingX,             // tiling along x axis
@@ -53,6 +68,7 @@ public enum MaterialProperty
     TextureOffsetY,             // offset along y axis
     TextureInvertX,             // invert texture along x axis (mirror horizontally)
     TextureInvertY,             // invert texture along y axis (mirror vertically)
+    TextureRotation,            // rotate texture in 90 degree increments (0, 90, 180, 270)
 
     // special effects
     IsTerrain,                  // slope-based texture mapping
@@ -61,9 +77,19 @@ public enum MaterialProperty
     WindAnimation,              // vertex wind animation
     ColorVariationFromInstance, // per-instance color variation
     IsWater,                    // water flow animation
+    MotionBlurRadial,           // rotational motion blur instead of linear (wheels)
+    IsSkidMark,                 // ribbon fade stored in the tangent, full width alpha in and out
+    TerrainBlend,               // how far the terrain creeps over this surface, 0 opts out
+    TerrainBlendSharpness,      // 0 is a long gradient, 1 is a hard waterline
+    TerrainCoating,             // terrain cover on upward-facing ledges, 0 opts out
+    TerrainCoatingScale,        // metres per coating patch
 
     // render settings
     CullMode,                   // face culling mode
+
+    IsFoliage,                  // thin leaves/petals, allows light through the back side
+    IsRoadSurface,              // subtle world-space asphalt weathering
+    IsRoadPaint,                // worn mineral road paint
 
     // sentinel
     Max                         // total number of properties
@@ -83,9 +109,14 @@ public enum MaterialIor
 [Serializable]
 public class Material : IResource
 {
+    public Material()
+    {
+        m_resource_type = ResourceType.Material;
+    }
+
     public const uint slots_per_texture = 4;
 
-    private RHI_Texture[] m_textures = new RHI_Texture[(int)MaterialTextureType.Max * slots_per_texture];
+    private RHI_Texture?[] m_textures = new RHI_Texture?[(int)MaterialTextureType.Max * slots_per_texture];
     private float[] m_properties = new float[(int)MaterialProperty.Max];
     private uint m_index = 0;
     private bool m_needs_repack = true; // starts true so first PrepareForGpu() packs textures
@@ -108,41 +139,60 @@ public class Material : IResource
         }
     }
 
-    // textures
-    private void SetProperty(MaterialProperty property_type, float value)
+    // properties
+    public float GetProperty(MaterialProperty property_type) { return m_properties[(int)property_type]; }
+
+    public void SetProperty(MaterialProperty property_type, float value)
     {
-        if (m_properties[(uint)(property_type)] == value)
+        // mesh dimensions are derived when a render binds this material; shared materials can change
+        // dimensions thousands of times during a load and none of those updates is an asset edit
+        bool derived = property_type == MaterialProperty.WorldWidth ||
+                       property_type == MaterialProperty.WorldHeight;
+        SetPropertyInternal(property_type, value, !derived);
+    }
+
+    private void SetPropertyInternal(MaterialProperty property_type, float value, bool save)
+    {
+        if (m_properties[(int)property_type] == value)
             return;
 
         if (property_type == MaterialProperty.ColorA)
         {
             // if an object switches from opaque to transparent or vice versa, make the world update so that the renderer
             // goes through the entities and makes the ones that use this material, render in the correct mode.
-            float current_alpha = m_properties[(uint)(property_type)];
+            float current_alpha = m_properties[(int)property_type];
             if ((current_alpha != 1.0f && value == 1.0f) || (current_alpha == 1.0f && value != 1.0f))
             {
-                RHI_CullMode cull_mode = value < 1.0f ? RHI_CullMode::None : RHI_CullMode::Back;
-                m_properties[(uint)(MaterialProperty.CullMode)] = (uint)(cull_mode);
+                RHI_CullMode cull_mode = value < 1.0f ? RHI_CullMode.None : RHI_CullMode.Back;
+                m_properties[(int)MaterialProperty.CullMode] = (float)cull_mode;
             }
-
-            // transparent objects are typically see-through (low roughness) so use the alpha as the roughness multiplier.
-            m_properties[(uint)(MaterialProperty.Roughness)] = value * 0.5f;
         }
 
-        m_properties[(uint)(property_type)] = value;
+        m_properties[(int)property_type] = value;
+        // TODO(port): bump_revision()
 
         // save on change
-        SaveToFile(GetResourceFilePath());
+        if (save)
+            SaveToFile(GetResourceFilePath());
     }
-    public void SetTexture(MaterialTextureType texture_type, RHI_Texture texture, uint slot = 0, bool auto_adjust_multipler = true)
+
+    // TODO(port): Material::PrepareForGpu (texture packing + gpu upload)
+    public void PrepareForGpu()
+    {
+        m_needs_repack = false;
+        m_resource_state = ResourceState.PreparedForGpu;
+    }
+
+    // textures
+    public void SetTexture(MaterialTextureType texture_type, RHI_Texture? texture, uint slot = 0, bool auto_adjust_multipler = true)
     {
         Helpers.PLXAssert(slot < slots_per_texture);
 
         // calculate the actual array index based on texture type and slot
-        uint array_index = ((uint)(texture_type) * slots_per_texture) + slot;
+        int array_index = (int)(((uint)texture_type * slots_per_texture) + slot);
 
         // check if the texture is actually changing
-        RHI_Texture previous_texture = m_textures[array_index];
+        RHI_Texture? previous_texture = m_textures[array_index];
         bool texture_changed = (previous_texture != texture);
 
         m_textures[array_index] = texture;

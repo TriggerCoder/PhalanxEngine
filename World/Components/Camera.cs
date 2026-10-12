@@ -67,7 +67,7 @@ public class Camera : Component
 
     // pre-allocated buffers for picking (to avoid heap allocations)
     readonly List<RayHitResult> m_pick_hits = new List<RayHitResult>();
-    readonly List<int> m_pick_indices = new List<int>();
+    readonly List<uint> m_pick_indices = new List<uint>();
     readonly List<RHI_Vertex_PosTexNorTan> m_pick_vertices = new List<RHI_Vertex_PosTexNorTan>();
 
     public Camera(Entity entity) : base(entity)
@@ -156,9 +156,9 @@ public class Camera : Component
 
                 for (int i = 0; i < m_pick_indices.Count; i += 3)
                 {
-                    Vector3 p1 = m_pick_vertices[m_pick_indices[i]].pos;
-                    Vector3 p2 = m_pick_vertices[m_pick_indices[i + 1]].pos;
-                    Vector3 p3 = m_pick_vertices[m_pick_indices[i + 2]].pos;
+                    Vector3 p1 = m_pick_vertices[(int)m_pick_indices[i]].pos;
+                    Vector3 p2 = m_pick_vertices[(int)m_pick_indices[i + 1]].pos;
+                    Vector3 p3 = m_pick_vertices[(int)m_pick_indices[i + 2]].pos;
 
                     p1 = Vector3.Transform(p1, transform);
                     p2 = Vector3.Transform(p2, transform);

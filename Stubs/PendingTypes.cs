@@ -2,6 +2,7 @@
 // Each type mirrors only the members already referenced by ported code. Replace with the real
 // port of the named SpartanEngine file and delete the stub.
 using System.Numerics;
+using System.Runtime.InteropServices;
 
 namespace Phalanx;
 
@@ -18,16 +19,22 @@ public struct RHI_Viewport
 }
 
 // TODO(port): source/rhi/RHI_Vertex.h (RHI_Vertex_PosTexNorTan)
+// NOTE: Spartan stores this packed (float pos[3] + half2 uv + oct-snorm16 normal/tangent = 24 bytes).
+// This stub is unpacked (44 bytes). Geometry code uses Unsafe.SizeOf<RHI_Vertex_PosTexNorTan>() as the
+// stride and requires pos to be the first field, so it keeps working when the packed layout is ported.
+[StructLayout(LayoutKind.Sequential)]
 public struct RHI_Vertex_PosTexNorTan
 {
-    public Vector3 pos;
+    public Vector3 pos; // must stay first: meshoptimizer reads positions at offset 0 with the vertex stride
     public Vector2 tex;
     public Vector3 nor;
     public Vector3 tan;
-}
 
-// TODO(port): source/rendering/Material.h
-public class Material : SpartanObject { }
+    public RHI_Vertex_PosTexNorTan(Vector3 position, Vector2 texcoord, Vector3 normal = default, Vector3 tangent = default)
+    {
+        pos = position; tex = texcoord; nor = normal; tan = tangent;
+    }
+}
 
 // TODO(port): source/world/components/Render.h
 public class Render : Component
@@ -38,7 +45,7 @@ public class Render : Component
     public BoundingBox GetBoundingBox() { return m_bounding_box; }
     public int GetIndexCount() { return 0; }
     public int GetVertexCount() { return 0; }
-    public void GetGeometry(List<int> indices, List<RHI_Vertex_PosTexNorTan> vertices) { }
+    public void GetGeometry(List<uint> indices, List<RHI_Vertex_PosTexNorTan> vertices) { }
     public Material? GetMaterial() { return m_material; }
     public void SetMaterial(Material? material) { m_material = material; }
     public void SetMesh(MeshType type) { }
@@ -57,8 +64,16 @@ public class RHI_Texture
 // TODO(port): source/rendering/Renderer_Definitions.h (only the targets referenced so far)
 public enum Renderer_RenderTarget { shadow_atlas, max }
 
-// TODO(port): source/geometry/Mesh.h (MeshType)
-public enum MeshType { Custom, Cube, Quad, Grid, Sphere, Cylinder, Cone, Max }
+// TODO(port): source/rhi/RHI_Definitions.h (RHI_CullMode)
+public enum RHI_CullMode { Back, Front, None, Max }
+
+// TODO(port): source/rhi/RHI_AccelerationStructure.h
+public class RHI_AccelerationStructure : IDisposable { public void Dispose() { } }
+
+// TODO(port): source/animation/Skeleton.h, SkeletalMeshBinding.h, AnimationClip.h
+public class Skeleton { }
+public class SkeletalMeshBinding { }
+public class AnimationClip { }
 
 // TODO(port): the remaining components, see source/world/components/*.h
 public class AudioSource    : Component { public AudioSource(Entity e) : base(e) { } }

@@ -1,291 +1,324 @@
-﻿using System.Collections.Generic;
-using System.Linq;
+using System.Buffers;
+using System.Numerics;
+using System.Runtime.CompilerServices; //Only for the Calls
 using System.Runtime.InteropServices;
-using System.Text;
-using System.Threading.Tasks;
-using MeshOptimizer;
-public static class GeometryProcessing
+using MeshOptimizer; // Alimer.Bindings.MeshOptimizer
+
+namespace Phalanx;
+
+// port of source/geometry/GeometryProcessing.cpp (Spartan 4c07baa)
+// all meshoptimizer calls use the pointer overloads on pinned List<T> storage: positions are read straight from
+// RHI_Vertex_PosTexNorTan.pos (offset 0) with the full vertex stride, exactly like &vertices[0].pos[0] in Spartan
+public static unsafe class GeometryProcessing
 {
-    public static void simplify(
-                                List<uint> indices,
-                                List<RHI_Vertex_PosTexNorTan> vertices,
-                                int target_index_count,
-                                bool preserve_uvs,
-                                bool preserve_edges
-                               )
+    // meshopt_SimplifyPrune (1 << 3); the binding's SimplificationOptions enum doesn't name it
+    private const SimplificationOptions SimplifyPrune = (SimplificationOptions)(1 << 3);
+
+    // strategic error thresholds - fewer iterations with larger steps (same table as Spartan)
+    private static readonly float[] s_error_thresholds = { 0.02f, 0.05f, 0.1f, 0.2f, 0.5f, 1.0f };
+    private static readonly float[] s_uv_weights       = { 0.5f, 0.5f };
+
+    private static nuint VertexStride => (nuint)Unsafe.SizeOf<RHI_Vertex_PosTexNorTan>();
+
+    public static void Simplify(
+        List<uint> indices,
+        List<RHI_Vertex_PosTexNorTan> vertices,
+        int target_index_count,
+        bool preserve_uvs,          // typically true, false for non-rendered geometry like physics meshes
+        bool preserve_edges,        // for terrain tiles where edges must match neighboring tiles
+        bool prune_components = false // distance LODs may remove small disconnected details
+    )
     {
-        int index_count = indices.Count;
+        int index_count  = indices.Count;
         int vertex_count = vertices.Count;
 
+        // early exit conditions
         if (target_index_count >= index_count)
             return;
 
         if (vertex_count <= 16 || index_count < 12)
             return;
 
-        target_index_count = Math.Max(target_index_count, 12);
+        target_index_count = System.Math.Max(target_index_count, 12);
+        nuint target = (nuint)target_index_count;
 
-        Span<uint> indices_simplified = new uint[index_count];
+        uint[]  indices_simplified = ArrayPool<uint>.Shared.Rent(index_count);
+        uint[]? best_indices       = null;
+        byte[]? vertex_locks       = null;
+        float[]? attr_buffer       = null;
 
-        Span<byte> vertex_locks = null;
-        if (preserve_edges)
+        try
         {
-            vertex_locks = new byte[vertex_count];
+            ReadOnlySpan<RHI_Vertex_PosTexNorTan> verts = CollectionsMarshal.AsSpan(vertices);
 
-            float min_x = float.MaxValue;
-            float max_x = float.MinValue;
-            float min_z = float.MaxValue;
-            float max_z = float.MinValue;
-
-            for (int i = 0; i < vertex_count; i++)
+            // build vertex lock array for edge preservation (terrain tiles)
+            if (preserve_edges)
             {
-                float x = vertices[i].pos[0];
-                float z = vertices[i].pos[2];
-                min_x = Math.Min(min_x, x);
-                max_x = Math.Max(max_x, x);
-                min_z = Math.Min(min_z, z);
-                max_z = Math.Max(max_z, z);
-            }
+                vertex_locks = ArrayPool<byte>.Shared.Rent(vertex_count);
+                Array.Clear(vertex_locks, 0, vertex_count);
 
-            const float edge_tolerance = 0.01f;
-            for (int i = 0; i < vertex_count; i++)
-            {
-                float x = vertices[i].pos[0];
-                float z = vertices[i].pos[2];
-                if (Math.Abs(x - min_x) < edge_tolerance || Math.Abs(x - max_x) < edge_tolerance ||
-                    Math.Abs(z - min_z) < edge_tolerance || Math.Abs(z - max_z) < edge_tolerance)
+                float min_x = float.MaxValue, max_x = float.MinValue;
+                float min_z = float.MaxValue, max_z = float.MinValue;
+                foreach (ref readonly RHI_Vertex_PosTexNorTan v in verts)
                 {
-                    vertex_locks[i] = 1;
+                    min_x = MathF.Min(min_x, v.pos.X);
+                    max_x = MathF.Max(max_x, v.pos.X);
+                    min_z = MathF.Min(min_z, v.pos.Z);
+                    max_z = MathF.Max(max_z, v.pos.Z);
+                }
+
+                // lock vertices on bounding box perimeter
+                const float edge_tolerance = 0.01f;
+                for (int i = 0; i < vertex_count; i++)
+                {
+                    float x = verts[i].pos.X;
+                    float z = verts[i].pos.Z;
+                    if (MathF.Abs(x - min_x) < edge_tolerance || MathF.Abs(x - max_x) < edge_tolerance ||
+                        MathF.Abs(z - min_z) < edge_tolerance || MathF.Abs(z - max_z) < edge_tolerance)
+                    {
+                        vertex_locks[i] = 1;
+                    }
                 }
             }
-        }
 
-        Span<float> attr_buffer = null;
-        Span<float> vertex_attributes = null;
-        nuint attr_stride = 0;
-        nuint attr_count = 0;
-        Span<float> attr_weights = null;
-
-        if (preserve_uvs)
-        {
-            attr_buffer = new float[vertex_count * 2];
-            for (int i = 0; i < vertex_count; i++)
+            // prepare uv attribute buffer for attribute-aware simplification
+            nuint attr_stride = 0;
+            nuint attr_count  = 0;
+            if (preserve_uvs)
             {
-                attr_buffer[i * 2 + 0] = vertices[i].tex[0];
-                attr_buffer[i * 2 + 1] = vertices[i].tex[1];
+                attr_buffer = ArrayPool<float>.Shared.Rent(vertex_count * 2);
+                for (int i = 0; i < vertex_count; i++)
+                {
+                    attr_buffer[i * 2 + 0] = verts[i].tex.X;
+                    attr_buffer[i * 2 + 1] = verts[i].tex.Y;
+                }
+                attr_stride = sizeof(float) * 2;
+                attr_count  = 2;
             }
-            vertex_attributes = attr_buffer;
-            attr_stride = (nuint)(sizeof(float) * 2);
-            attr_weights = new float[] { 0.5f, 0.5f };
-            attr_count = 2;
-        }
 
-        Span<byte> locks = preserve_edges ? vertex_locks : null;
+            float  lod_error      = 0.0f;
+            nuint  result_count   = (nuint)index_count;
+            bool   target_reached = false;
+            SimplificationOptions options = prune_components && !preserve_edges ? SimplifyPrune : SimplificationOptions.None;
 
-        float[] error_thresholds = { 0.02f, 0.05f, 0.1f, 0.2f, 0.5f, 1.0f };
-        int threshold_count = error_thresholds.Length;
-
-        float lod_error = 0.0f;
-        nuint result_count = (nuint)index_count;
-        nuint best_count = (nuint)index_count;
-        bool target_reached = false;
-
-        // We need a float[] of positions for the binding
-        float[] vertex_positions = GetVertexPositionArray(vertices);
-
-        for (int i = 0; i < threshold_count && !target_reached; i++)
-        {
-            result_count = Meshopt.SimplifyWithAttributes(
-                indices_simplified,
-                indices.ToArray(),
-                vertex_positions,
-                (nuint)Marshal.SizeOf<RHI_Vertex_PosTexNorTan>(),
-                vertex_attributes,
-                attr_stride,
-                attr_weights,
-                attr_count,
-                locks,
-                (nuint)target_index_count,
-                error_thresholds[i],
-                SimplificationOptions.None,
-                out lod_error
-            );
-
-            if (result_count <= (nuint)target_index_count)
+            fixed (uint* dst = indices_simplified)
+            fixed (uint* src = CollectionsMarshal.AsSpan(indices))
+            fixed (RHI_Vertex_PosTexNorTan* vtx = verts)
+            fixed (float* attrs = attr_buffer)
+            fixed (float* weights = s_uv_weights)
+            fixed (byte* locks = vertex_locks)
             {
-                target_reached = true;
+                float* positions   = (float*)vtx; // pos is the first field
+                float* attr_ptr    = preserve_uvs ? attrs : null;
+                float* weights_ptr = preserve_uvs ? weights : null;
+                byte*  locks_ptr   = preserve_edges ? locks : null;
+
+                for (int i = 0; i < s_error_thresholds.Length && !target_reached; i++)
+                {
+                    result_count = Meshopt.SimplifyWithAttributes(
+                        dst, src, (nuint)index_count,
+                        positions, (nuint)vertex_count, VertexStride,
+                        attr_ptr, attr_stride, weights_ptr, attr_count,
+                        locks_ptr, target, s_error_thresholds[i], options, &lod_error);
+
+                    // pruning may cross several disconnected components at once, refine the
+                    // error bound instead of accepting a nearly empty distant canopy
+                    if (prune_components && result_count < target * 4 / 5)
+                    {
+                        best_indices ??= ArrayPool<uint>.Shared.Rent(index_count);
+                        Array.Copy(indices_simplified, best_indices, (int)result_count);
+                        nuint closest_count = result_count;
+                        nuint closest_delta = target - result_count;
+                        float lower_error   = i > 0 ? s_error_thresholds[i - 1] : 0.0f;
+                        float upper_error   = s_error_thresholds[i];
+                        for (int refinement = 0; refinement < 10; refinement++)
+                        {
+                            float error = (lower_error + upper_error) * 0.5f;
+                            nuint count = Meshopt.SimplifyWithAttributes(
+                                dst, src, (nuint)index_count,
+                                positions, (nuint)vertex_count, VertexStride,
+                                attr_ptr, attr_stride, weights_ptr, attr_count,
+                                locks_ptr, target, error, preserve_edges ? SimplificationOptions.None : SimplifyPrune, &lod_error);
+                            nuint delta = count > target ? count - target : target - count;
+                            if (count > 0 && delta < closest_delta)
+                            {
+                                closest_delta = delta;
+                                closest_count = count;
+                                Array.Copy(indices_simplified, best_indices, (int)count);
+                            }
+                            if (count < target) upper_error = error;
+                            else lower_error = error;
+                        }
+                        Array.Copy(best_indices, indices_simplified, (int)closest_count);
+                        result_count = closest_count;
+                        // close above-target results are preferable to stripping extra detail
+                        target_reached = result_count <= target * 6 / 5;
+                    }
+
+                    // a plateau at one error bound does not prove a topology limit, later bounds can
+                    // permit collapses that the earlier bound rejected, so keep going (no early break)
+                    if (result_count <= target)
+                        target_reached = true;
+                }
+
+                // sloppy reduction ignores uv seams and can join separate leaf cards into long
+                // triangles, never use it when the caller requested uv preservation
+                if (result_count > target && !preserve_uvs && !preserve_edges && target_index_count >= 12)
+                {
+                    best_indices ??= ArrayPool<uint>.Shared.Rent(index_count);
+                    fixed (uint* sloppy = best_indices)
+                    {
+                        nuint sloppy_count = Meshopt.SimplifySloppy(
+                            sloppy, src, (nuint)index_count,
+                            positions, (nuint)vertex_count, VertexStride,
+                            null, target, float.MaxValue, &lod_error);
+
+                        if (sloppy_count > 0 && sloppy_count < result_count)
+                        {
+                            Array.Copy(best_indices, indices_simplified, (int)sloppy_count);
+                            result_count = sloppy_count;
+                        }
+                    }
+                }
             }
-            else if (result_count < best_count)
+
+            // safeguard: if simplification collapsed to zero indices, keep original mesh
+            if (result_count == 0)
             {
-                best_count = result_count;
+                Log.LogWarning("simplification collapsed mesh to zero indices, keeping original");
+                return;
             }
-            else
-            {
-                break;
-            }
-        }
 
-        // Fallback sloppy
-        if (result_count > (nuint)target_index_count && !preserve_edges && target_index_count >= 12)
+            // commit simplified indices (in place, no reallocation since the count only shrinks)
+            CollectionsMarshal.SetCount(indices, (int)result_count);
+            indices_simplified.AsSpan(0, (int)result_count).CopyTo(CollectionsMarshal.AsSpan(indices));
+
+            // optimize vertex buffer: removes unused vertices and reorders for cache efficiency
+            OptimizeVertexFetchInPlace(vertices, indices);
+        }
+        finally
         {
-            nuint sloppy_count = Meshopt.SimplifySloppy(
-                indices_simplified,
-                indices.ToArray(),
-                vertex_positions,
-                (nuint)Marshal.SizeOf<RHI_Vertex_PosTexNorTan>(),
-                (nuint)target_index_count,
-                float.MaxValue,
-                out lod_error
-            );
-
-            if (sloppy_count > 0 && sloppy_count < result_count)
-                result_count = sloppy_count;
+            ArrayPool<uint>.Shared.Return(indices_simplified);
+            if (best_indices != null) ArrayPool<uint>.Shared.Return(best_indices);
+            if (vertex_locks != null) ArrayPool<byte>.Shared.Return(vertex_locks);
+            if (attr_buffer != null)  ArrayPool<float>.Shared.Return(attr_buffer);
         }
-
-        if (result_count == 0)
-        {
-            // SP_LOG_WARNING(...)
-            Console.WriteLine("WARNING: simplification collapsed mesh to zero indices, keeping original");
-            return;
-        }
-
-        // commit simplified indices
-        indices.Clear();
-        for (int i = 0; i < (int)result_count; i++)
-            indices.Add(indices_simplified[i]);
-
-        // optimize vertex buffer
-        RHI_Vertex_PosTexNorTan[] optimized_vertices = new RHI_Vertex_PosTexNorTan[vertex_count];
-        nuint optimized_vertex_count = Meshopt.OptimizeVertexFetch(
-            optimized_vertices,
-            indices.ToArray(),
-            vertices.ToArray()
-        );
-
-        vertices.Clear();
-        for (int i = 0; i < (int)optimized_vertex_count; i++)
-            vertices.Add(optimized_vertices[i]);
     }
 
-    public static void optimize(List<RHI_Vertex_PosTexNorTan> vertices, List<uint> indices)
+    // optimizes vertices and indices in place (the lists are resized), returns the new vertex count
+    public static int Optimize(List<RHI_Vertex_PosTexNorTan> vertices, List<uint> indices)
     {
         int vertex_count = vertices.Count;
-        int index_count = indices.Count;
+        int index_count  = indices.Count;
+        if (vertex_count == 0 || index_count == 0)
+            return vertex_count;
 
-        // step 1: vertex remapping
+        // step 1: vertex remapping (welds identical vertices)
         {
-            uint[] remap = new uint[vertex_count];
-            nuint vertex_count_optimized = Meshopt.GenerateVertexRemap(
-                remap,
-                indices.ToArray(),
-                vertices.ToArray()
-            );
+            uint[] remap = ArrayPool<uint>.Shared.Rent(vertex_count);
+            RHI_Vertex_PosTexNorTan[] scratch = ArrayPool<RHI_Vertex_PosTexNorTan>.Shared.Rent(vertex_count);
+            try
+            {
+                nuint vertex_count_optimized;
+                fixed (uint* remap_ptr = remap)
+                fixed (uint* idx = CollectionsMarshal.AsSpan(indices))
+                fixed (RHI_Vertex_PosTexNorTan* vtx = CollectionsMarshal.AsSpan(vertices))
+                fixed (RHI_Vertex_PosTexNorTan* dst = scratch)
+                {
+                    vertex_count_optimized = Meshopt.GenerateVertexRemap(remap_ptr, idx, (nuint)index_count, vtx, (nuint)vertex_count, VertexStride);
+                    Meshopt.RemapIndexBuffer(idx, idx, (nuint)index_count, remap_ptr); // in place is supported
+                    Meshopt.RemapVertexBuffer(dst, vtx, (nuint)vertex_count, VertexStride, remap_ptr);
+                }
 
-            uint[] indices_remapped = new uint[index_count];
-            Meshopt.RemapIndexBuffer(indices_remapped, indices.ToArray(), remap);
-            indices = new List<uint>(indices_remapped);
-
-            RHI_Vertex_PosTexNorTan[] vertices_remapped = new RHI_Vertex_PosTexNorTan[(int)vertex_count_optimized];
-            Meshopt.RemapVertexBuffer(vertices_remapped, vertices.ToArray(), remap);
-            vertices = new List<RHI_Vertex_PosTexNorTan>(vertices_remapped);
-            vertex_count = (int)vertex_count_optimized;
+                vertex_count = (int)vertex_count_optimized;
+                CollectionsMarshal.SetCount(vertices, vertex_count);
+                scratch.AsSpan(0, vertex_count).CopyTo(CollectionsMarshal.AsSpan(vertices));
+            }
+            finally
+            {
+                ArrayPool<uint>.Shared.Return(remap);
+                ArrayPool<RHI_Vertex_PosTexNorTan>.Shared.Return(scratch);
+            }
         }
 
-        // step 2: density-based simplification (unchanged logic)
+        // step 2: simplify with density-based targeting
         if (index_count > 30000)
         {
-            float min_x = float.MaxValue, max_x = float.MinValue;
-            float min_y = float.MaxValue, max_y = float.MinValue;
-            float min_z = float.MaxValue, max_z = float.MinValue;
-
-            foreach (var v in vertices)
+            Vector3 min = Math.Vector3.Infinity;
+            Vector3 max = Math.Vector3.InfinityNeg;
+            foreach (ref readonly RHI_Vertex_PosTexNorTan v in CollectionsMarshal.AsSpan(vertices))
             {
-                min_x = MathF.Min(min_x, v.pos[0]);
-                max_x = MathF.Max(max_x, v.pos[0]);
-                min_y = MathF.Min(min_y, v.pos[1]);
-                max_y = MathF.Max(max_y, v.pos[1]);
-                min_z = MathF.Min(min_z, v.pos[2]);
-                max_z = MathF.Max(max_z, v.pos[2]);
+                min = Vector3.Min(min, v.pos);
+                max = Vector3.Max(max, v.pos);
             }
-
-            float extent_x = max_x - min_x;
-            float extent_y = max_y - min_y;
-            float extent_z = max_z - min_z;
-            float volume = extent_x * extent_y * extent_z;
+            Vector3 extent = max - min;
+            float volume   = extent.X * extent.Y * extent.Z;
 
             if (volume > 0.0f)
             {
+                // triangles per unit volume; ratio = 0.8 at density 500, 0.2 at density 1000
                 int triangle_count = index_count / 3;
-                float density = (float)triangle_count / volume;
-
-                float ratio = 0.8f - (density - 500.0f) * (0.6f / 500.0f);
-                ratio = MathF.Max(0.2f, MathF.Min(0.8f, ratio));
+                float density      = triangle_count / volume;
+                float ratio        = 0.8f - (density - 500.0f) * (0.6f / 500.0f);
+                ratio              = MathF.Max(0.2f, MathF.Min(0.8f, ratio));
                 int target_index_count = (int)(index_count * ratio);
 
-                simplify(indices, vertices, target_index_count, true, false);
+                Simplify(indices, vertices, target_index_count, true, false);
 
-                index_count = indices.Count;
+                index_count  = indices.Count;
                 vertex_count = vertices.Count;
             }
         }
 
-        // step 3-5
-        Meshopt.OptimizeVertexCache(indices.ToArray(), indices.ToArray(), (nuint)vertex_count);
+        fixed (uint* idx = CollectionsMarshal.AsSpan(indices))
+        fixed (RHI_Vertex_PosTexNorTan* vtx = CollectionsMarshal.AsSpan(vertices))
+        {
+            // step 3: vertex cache optimization (in place)
+            Meshopt.OptimizeVertexCache(idx, idx, (nuint)index_count, (nuint)vertex_count);
 
-        float[] positions = GetVertexPositionArray(vertices);
-        Meshopt.OptimizeOverdraw(
-            indices.ToArray(),
-            indices.ToArray(),
-            positions,
-            (nuint)Marshal.SizeOf<RHI_Vertex_PosTexNorTan>(),
-            1.05f
-        );
+            // step 4: overdraw optimization (in place)
+            Meshopt.OptimizeOverdraw(idx, idx, (nuint)index_count, (float*)vtx, (nuint)vertex_count, VertexStride, 1.05f);
+        }
 
-        Meshopt.OptimizeVertexFetch(
-            vertices.ToArray(),
-            indices.ToArray(),
-            vertices.ToArray()
-        );
+        // step 5: vertex fetch optimization, trims unreferenced vertices
+        return OptimizeVertexFetchInPlace(vertices, indices);
     }
 
-    // split_surface_into_tiles stays almost identical to previous version
-    // (only the Parallel.For part and lock(object) are C# specific)
-    public static void split_surface_into_tiles(
+    private static int OptimizeVertexFetchInPlace(List<RHI_Vertex_PosTexNorTan> vertices, List<uint> indices)
+    {
+        int vertex_count = vertices.Count;
+        RHI_Vertex_PosTexNorTan[] scratch = ArrayPool<RHI_Vertex_PosTexNorTan>.Shared.Rent(vertex_count);
+        try
+        {
+            nuint optimized_vertex_count;
+            fixed (uint* idx = CollectionsMarshal.AsSpan(indices))
+            fixed (RHI_Vertex_PosTexNorTan* vtx = CollectionsMarshal.AsSpan(vertices))
+            fixed (RHI_Vertex_PosTexNorTan* dst = scratch)
+            {
+                optimized_vertex_count = Meshopt.OptimizeVertexFetch(dst, idx, (nuint)indices.Count, vtx, (nuint)vertex_count, VertexStride);
+            }
+
+            int count = (int)optimized_vertex_count;
+            CollectionsMarshal.SetCount(vertices, count);
+            scratch.AsSpan(0, count).CopyTo(CollectionsMarshal.AsSpan(vertices));
+            return count;
+        }
+        finally
+        {
+            ArrayPool<RHI_Vertex_PosTexNorTan>.Shared.Return(scratch);
+        }
+    }
+
+    // NOTE: not present in Spartan 4c07baa's GeometryProcessing (it comes from an older revision); port it
+    // from the revision you're following, or drop it
+    public static void SplitSurfaceIntoTiles(
         List<RHI_Vertex_PosTexNorTan> terrain_vertices,
         List<uint> terrain_indices,
         uint tile_count,
         List<List<RHI_Vertex_PosTexNorTan>> tiled_vertices,
         List<List<uint>> tiled_indices,
-        List<math.Vector3> tile_offsets)
+        List<Vector3> tile_offsets)
     {
-        // ... (same bounding box + tile calculation as before)
-
-        // Parallel processing with lock (object)
-        object[] tile_mutexes = new object[tile_count * tile_count];
-        for (int i = 0; i < tile_mutexes.Length; i++)
-            tile_mutexes[i] = new object();
-
-        List<Dictionary<uint, uint>> global_to_local_indices = new();
-        for (int i = 0; i < tile_mutexes.Length; i++)
-            global_to_local_indices.Add(new Dictionary<uint, uint>());
-
-        Parallel.For(0, (int)(terrain_indices.Count / 3), tri =>
-        {
-            // ... exact same triangle processing logic as the previous version ...
-            // (I kept the variable names: tri_min_x, tile_min_x, global_idx, local_idx, etc.)
-        });
+        throw new NotImplementedException("GeometryProcessing.SplitSurfaceIntoTiles is not ported yet");
     }
-
-    private static float[] GetVertexPositionArray(List<RHI_Vertex_PosTexNorTan> vertices)
-    {
-        float[] pos = new float[vertices.Count * 3];
-        for (int i = 0; i < vertices.Count; i++)
-        {
-            pos[i * 3 + 0] = vertices[i].pos[0];
-            pos[i * 3 + 1] = vertices[i].pos[1];
-            pos[i * 3 + 2] = vertices[i].pos[2];
-        }
-        return pos;
-    }
-}
 }

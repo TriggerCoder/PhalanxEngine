@@ -69,4 +69,8 @@ public abstract class IResource : SpartanObject
     public void SetFlags(uint flags) { m_flags = flags; }
     public virtual ResourceType TypeToEnum<T>() where T : IResource { return ResourceType.Unknown; }
     public ResourceState GetResourceState() { return m_resource_state; }
+
+    // io (Spartan IResource virtuals)
+    public virtual void SaveToFile(string file_path) { }
+    public virtual bool LoadFromFile(string file_path) { return false; }
 }

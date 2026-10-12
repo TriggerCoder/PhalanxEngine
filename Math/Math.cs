@@ -226,7 +226,7 @@ public static class Math
         private static System.Numerics.Vector3 forward = new System.Numerics.Vector3(0.0f, 0.0f, 1.0f);
         private static System.Numerics.Vector3 backward = new System.Numerics.Vector3(0.0f, 0.0f, -1.0f);
         private static System.Numerics.Vector3 infinity = new System.Numerics.Vector3(PositiveInfinity, PositiveInfinity, PositiveInfinity);
-        private static System.Numerics.Vector3 infinityneg = new System.Numerics.Vector3(PositiveInfinity, PositiveInfinity, NegativeInfinity);
+        private static System.Numerics.Vector3 infinityneg = new System.Numerics.Vector3(NegativeInfinity, NegativeInfinity, NegativeInfinity);
 
         public static System.Numerics.Vector3 Zero => System.Numerics.Vector3.Zero;
         public static System.Numerics.Vector3 One => System.Numerics.Vector3.One;

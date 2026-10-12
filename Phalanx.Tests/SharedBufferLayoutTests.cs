@@ -103,10 +103,10 @@ public class SharedBufferLayoutTests
     {
         // the source generator hashes the header it consumed; this proves the build picked up the current file
         string? dir = AppContext.BaseDirectory;
-        while (dir != null && !File.Exists(Path.Combine(dir, "shaders", "shared_buffers.glsl")))
+        while (dir != null && !File.Exists(Path.Combine(dir, "Shaders", "shared_buffers.glsl")))
             dir = Path.GetDirectoryName(dir);
         Assert.NotNull(dir);
-        string text = File.ReadAllText(Path.Combine(dir!, "shaders", "shared_buffers.glsl"));
+        string text = File.ReadAllText(Path.Combine(dir!, "Shaders", "shared_buffers.glsl"));
         string hash = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
         Assert.Equal(SharedBuffers.HeaderSha256, hash);
     }

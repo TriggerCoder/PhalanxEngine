@@ -1,7 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <!-- net9.0 needs Visual Studio 2022 17.12 or later (or the .NET 9 SDK); required by Alimer.Bindings.MeshOptimizer -->
+    <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IncludeSymbols>True</IncludeSymbols>
@@ -24,17 +25,19 @@
     <PackageReference Include="Silk.NET.Shaderc" Version="2.23.0" />
     <!-- XxHash64 for the shader cache key -->
     <PackageReference Include="System.IO.Hashing" Version="8.0.0" />
+    <!-- meshoptimizer bindings (namespace MeshOptimizer, class Meshopt); ships runtimes/win-x64/native/meshoptimizer.dll (+ win-arm64, linux, osx) -->
+    <PackageReference Include="Alimer.Bindings.MeshOptimizer" Version="1.2.1" />
   </ItemGroup>
 
   <ItemGroup>
-    <!-- build-time generator: shaders/shared_buffers.glsl -> SharedBuffers.g.cs (std140/std430 structs) -->
+    <!-- build-time generator: Shaders/shared_buffers.glsl -> SharedBuffers.g.cs (std140/std430 structs) -->
     <ProjectReference Include="Phalanx.Generators/Phalanx.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
-    <AdditionalFiles Include="shaders/shared_buffers.glsl" />
+    <AdditionalFiles Include="Shaders/shared_buffers.glsl" />
   </ItemGroup>
 
   <ItemGroup>
     <!-- GLSL sources are compiled at runtime by ShaderCompiler; ship them next to the binaries -->
-    <None Include="shaders/**/*.glsl;shaders/**/*.vert;shaders/**/*.frag;shaders/**/*.comp" Exclude="shaders/bin/**" CopyToOutputDirectory="PreserveNewest" LinkBase="shaders" />
+    <None Include="Shaders/**/*.glsl;Shaders/**/*.vert;Shaders/**/*.frag;Shaders/**/*.comp" Exclude="Shaders/bin/**" CopyToOutputDirectory="PreserveNewest" Link="shaders/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 
 </Project>

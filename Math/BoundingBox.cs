@@ -2,6 +2,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Numerics;
+using System.Runtime.InteropServices;
 
 namespace Phalanx;
 
@@ -20,37 +21,28 @@ public struct BoundingBox : IEquatable<BoundingBox>
         m_min = min;
         m_max = max;
     }
-    public BoundingBox(Vector3[] points, int point_count)
+    public BoundingBox(Vector3[] points, int point_count) : this(new ReadOnlySpan<Vector3>(points, 0, point_count)) { }
+    public BoundingBox(ReadOnlySpan<Vector3> points)
     {
         m_min = Math.Vector3.Infinity;
         m_max = Math.Vector3.InfinityNeg;
 
-        for (int i = 0; i < point_count; i++)
+        foreach (Vector3 p in points)
         {
-            m_max.X = Math.Max(m_max.X, points[i].X);
-            m_max.Y = Math.Max(m_max.Y, points[i].Y);
-            m_max.Z = Math.Max(m_max.Z, points[i].Z);
-
-            m_min.X = Math.Min(m_min.X, points[i].X);
-            m_min.Y = Math.Min(m_min.Y, points[i].Y);
-            m_min.Z = Math.Min(m_min.Z, points[i].Z);
+            m_min = Vector3.Min(m_min, p);
+            m_max = Vector3.Max(m_max, p);
         }
     }
-    public BoundingBox(List<RHI_Vertex_PosTexNorTan> vertices)
+    public BoundingBox(List<RHI_Vertex_PosTexNorTan> vertices) : this(CollectionsMarshal.AsSpan(vertices)) { }
+    public BoundingBox(ReadOnlySpan<RHI_Vertex_PosTexNorTan> vertices)
     {
         m_min = Math.Vector3.Infinity;
         m_max = Math.Vector3.InfinityNeg;
 
-        int vertex_count = vertices.Count();
-        for (int i = 0; i < vertex_count; i++)
+        foreach (ref readonly RHI_Vertex_PosTexNorTan v in vertices)
         {
-            m_max.X = Math.Max(m_max.X, vertices[i].pos[0]);
-            m_max.Y = Math.Max(m_max.Y, vertices[i].pos[1]);
-            m_max.Z = Math.Max(m_max.Z, vertices[i].pos[2]);
-
-            m_min.X = Math.Min(m_min.X, vertices[i].pos[0]);
-            m_min.Y = Math.Min(m_min.Y, vertices[i].pos[1]);
-            m_min.Z = Math.Min(m_min.Z, vertices[i].pos[2]);
+            m_min = Vector3.Min(m_min, v.pos);
+            m_max = Vector3.Max(m_max, v.pos);
         }
     }
     public static bool operator ==(BoundingBox l, BoundingBox r) { return l.Equals(r); }
@@ -89,17 +81,12 @@ public struct BoundingBox : IEquatable<BoundingBox>
     }
     public void Merge(BoundingBox box)
     {
-        m_min.X = Math.Min(m_min.X, box.m_min.X);
-        m_min.Y = Math.Min(m_min.Y, box.m_min.Y);
-        m_min.Z = Math.Min(m_min.Z, box.m_min.Z);
-
-        m_max.X = Math.Max(m_max.X, box.m_max.X);
-        m_max.Y = Math.Max(m_max.Y, box.m_max.Y);
-        m_max.Z = Math.Max(m_max.Z, box.m_max.Z);
+        m_min = Vector3.Min(m_min, box.m_min);
+        m_max = Vector3.Max(m_max, box.m_max);
     }
 
-    public Vector3 GetMin() { return m_min; }
-    public Vector3 GetMax() { return m_max; }
+    public readonly Vector3 GetMin() { return m_min; }
+    public readonly Vector3 GetMax() { return m_max; }
     public readonly Vector3 GetCenter() { return (m_max + m_min) * 0.5f; }
     public readonly Vector3 GetSize() { return m_max - m_min; }
     public readonly Vector3 GetExtents() { return (m_max - m_min) * 0.5f; }
@@ -110,9 +97,7 @@ public struct BoundingBox : IEquatable<BoundingBox>
     }
     public readonly Vector3 GetClosestPoint(Vector3 point)
     {
-        return new Vector3(Math.Max(m_min.X, Math.Min(point.X, m_max.X)),
-                           Math.Max(m_min.Y, Math.Min(point.Y, m_max.Y)),
-                           Math.Max(m_min.Z, Math.Min(point.Z, m_max.Z)));
+        return Vector3.Clamp(point, m_min, m_max);
     }
     public readonly bool Contains(Vector3 point)
     {

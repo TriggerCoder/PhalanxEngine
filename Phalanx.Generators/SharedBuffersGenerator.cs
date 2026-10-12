@@ -21,7 +21,7 @@ public sealed class SharedBuffersGenerator : IIncrementalGenerator
     }.ToImmutableDictionary(d => d.Id);
 
     static readonly DiagnosticDescriptor Missing = new DiagnosticDescriptor("PLX005", "shared_buffers.glsl not found",
-        "shaders/shared_buffers.glsl is not an AdditionalFiles item; no shared GPU structs were generated", "Phalanx.SharedBuffers",
+        "Shaders/shared_buffers.glsl is not an AdditionalFiles item; no shared GPU structs were generated", "Phalanx.SharedBuffers",
         DiagnosticSeverity.Warning, isEnabledByDefault: true);
 
     public void Initialize(IncrementalGeneratorInitializationContext context)
