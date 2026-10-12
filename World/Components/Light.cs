@@ -200,8 +200,8 @@ public class Light : Component
                 // move the light in world units per texel to avoid shimmering
                 {
                     // compute shadow extents (both fixed sizes)
-                    float[] extents = { cascade_near_extent, cascade_far_extent };
-                    float atlasWidth = (float)Renderer.GetRenderTarget(RendererRenderTarget.ShadowAtlas).GetWidth();
+                    Span<float> extents = stackalloc float[2] { cascade_near_extent, cascade_far_extent };
+                    float atlasWidth = (float)Renderer.GetRenderTarget(Renderer_RenderTarget.shadow_atlas).GetWidth();
 
                     for (int i = 0; i < 2; i++)
                     {
@@ -250,13 +250,13 @@ public class Light : Component
             case LightType.Directional:
             {
                 // near cascade (tight, camera following)
-                m_matrix_projection[0] = Matrix4x4.CreateOrthographicOffCenterLeftHanded(
+                m_matrix_projection[0] = Matrix4x4Extensions.CreateOrthoOffCenterLH(
                         -cascade_near_extent, cascade_near_extent,
                         -cascade_near_extent, cascade_near_extent,
                         cascade_depth, 0.0f);
 
                 // far cascade (camera following, fixed size, bigger than near cascade)
-                m_matrix_projection[1] = Matrix4x4.CreateOrthographicOffCenterLeftHanded(
+                m_matrix_projection[1] = Matrix4x4Extensions.CreateOrthoOffCenterLH(
                         -cascade_far_extent, cascade_far_extent,
                         -cascade_far_extent, cascade_far_extent,
                         cascade_depth, 0.0f);
@@ -271,7 +271,7 @@ public class Light : Component
                 float halfWidth = m_area_width * 0.5f;
                 float halfHeight = m_area_height * 0.5f;
 
-                m_matrix_projection[0] = Matrix4x4.CreateOrthographicOffCenterLeftHanded(
+                m_matrix_projection[0] = Matrix4x4Extensions.CreateOrthoOffCenterLH(
                         -halfWidth, halfWidth,
                         -halfHeight, halfHeight,
                         m_range, 0.05f);
@@ -287,7 +287,7 @@ public class Light : Component
                 int sliceCount = GetSliceCount();
                 for (int i = 0; i < sliceCount; i++)
                 {
-                    m_matrix_projection[i] = Matrix4x4.CreatePerspectiveFieldOfViewLeftHanded(fovYRadians, aspectRatio, m_range, 0.05f);
+                    m_matrix_projection[i] = Matrix4x4Extensions.CreatePerspectiveFieldOfViewLH(fovYRadians, aspectRatio, m_range, 0.05f);
                     m_frustums[i] = new Frustum(m_matrix_view[i], m_matrix_projection[i]);
                 }
             }
@@ -597,7 +597,7 @@ public class Light : Component
     // frustum
     public bool IsInViewFrustum(Render renderable, uint array_index)
     {
-        BoundingBox bounding_box = renderable->GetBoundingBox();
+        BoundingBox bounding_box = renderable.GetBoundingBox();
         Vector3 center = bounding_box.GetCenter();
         Vector3 extents = bounding_box.GetExtents();
         bool ignore_depth = m_light_type == LightType.Directional; // orthographic
@@ -659,9 +659,9 @@ public class Light : Component
     public void SetAtlasRectangle(uint slice, Rectangle rectangle)
     {
         m_atlas_rectangles[slice] = rectangle;
-        float atlas_w = (float)(Renderer.GetRenderTarget(Renderer_RenderTarget.shadow_atlas)->GetWidth());
-        float atlas_h = (float)(Renderer.GetRenderTarget(Renderer_RenderTarget.shadow_atlas)->GetHeight());
-        m_atlas_offsets[slice] = new Vector2(rectangle.X / atlas_w, rectangle.y / atlas_h);
+        float atlas_w = (float)Renderer.GetRenderTarget(Renderer_RenderTarget.shadow_atlas).GetWidth();
+        float atlas_h = (float)Renderer.GetRenderTarget(Renderer_RenderTarget.shadow_atlas).GetHeight();
+        m_atlas_offsets[slice] = new Vector2(rectangle.X / atlas_w, rectangle.Y / atlas_h);
         m_atlas_scales[slice] = new Vector2(rectangle.Width / atlas_w, rectangle.Height / atlas_h);
     }
     public void ClearAtlasRectangles()

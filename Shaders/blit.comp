@@ -1,0 +1,51 @@
+// GLSL port of SpartanEngine data/shaders/blit.hlsl (worked example, see the port plan's GLSL section).
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "common_resources.glsl"
+
+#ifndef THREAD_GROUP_COUNT_X
+#define THREAD_GROUP_COUNT_X 8
+#define THREAD_GROUP_COUNT_Y 8
+#endif
+
+// [numthreads(X, Y, 1)] void main_cs(uint3 thread_id : SV_DispatchThreadID)
+layout(local_size_x = THREAD_GROUP_COUNT_X, local_size_y = THREAD_GROUP_COUNT_Y, local_size_z = 1) in;
+
+void main()
+{
+    uvec2 thread_id = gl_GlobalInvocationID.xy;
+
+    uvec2 size_out = uvec2(imageSize(tex_uav));      // tex_uav.GetDimensions
+    if (any(greaterThanEqual(thread_id, size_out)))  // any(thread_id.xy >= size_out)
+        return;
+
+    uvec2 size_in = uvec2(textureSize(tex, 0));      // tex.GetDimensions
+
+    // a same size blit stays an exact texel copy, depth to float relies on it
+    if (all(equal(size_in, size_out)))
+    {
+        imageStore(tex_uav, ivec2(thread_id), texelFetch(tex, ivec2(thread_id), 0)); // tex.Load
+        return;
+    }
+
+    // differing sizes are a rescale, loading by texel would crop to the top left
+    const vec2 uv    = (vec2(thread_id) + 0.5) / vec2(size_out);
+    const vec2 ratio = vec2(size_in) / vec2(size_out);
+
+    // box filter the destination texel footprint, a single bilinear tap aliases hard
+    // once the source is several times larger
+    const ivec2 taps = clamp(ivec2(ceil(ratio)), ivec2(1), ivec2(4));
+    vec4 sum = vec4(0.0);
+    for (int y = 0; y < taps.y; y++)       // [loop] has no GLSL equivalent (compiler decides)
+    {
+        for (int x = 0; x < taps.x; x++)
+        {
+            const vec2 offset = (vec2(x, y) + 0.5) / vec2(taps) - 0.5;
+            // tex.SampleLevel(sampler, uv, 0) -> textureLod(sampler2D(texture, sampler), uv, 0)
+            sum += textureLod(sampler2D(tex, GET_SAMPLER(sampler_bilinear_clamp)), uv + offset / vec2(size_out), 0.0);
+        }
+    }
+
+    imageStore(tex_uav, ivec2(thread_id), sum / float(taps.x * taps.y));
+}

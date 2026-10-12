@@ -36,6 +36,23 @@ public struct BoundingBox : IEquatable<BoundingBox>
             m_min.Z = Math.Min(m_min.Z, points[i].Z);
         }
     }
+    public BoundingBox(List<RHI_Vertex_PosTexNorTan> vertices)
+    {
+        m_min = Math.Vector3.Infinity;
+        m_max = Math.Vector3.InfinityNeg;
+
+        int vertex_count = vertices.Count();
+        for (int i = 0; i < vertex_count; i++)
+        {
+            m_max.X = Math.Max(m_max.X, vertices[i].pos[0]);
+            m_max.Y = Math.Max(m_max.Y, vertices[i].pos[1]);
+            m_max.Z = Math.Max(m_max.Z, vertices[i].pos[2]);
+
+            m_min.X = Math.Min(m_min.X, vertices[i].pos[0]);
+            m_min.Y = Math.Min(m_min.Y, vertices[i].pos[1]);
+            m_min.Z = Math.Min(m_min.Z, vertices[i].pos[2]);
+        }
+    }
     public static bool operator ==(BoundingBox l, BoundingBox r) { return l.Equals(r); }
     public static bool operator !=(BoundingBox l, BoundingBox r) { return !l.Equals(r); }
     public override readonly bool Equals([NotNullWhen(true)] object? obj)

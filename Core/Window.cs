@@ -16,7 +16,8 @@ public static class Window
     public static IWindow? GetWindow() { return window; }
     public static void Initialize()
     {
-        if (NativeLibrary.TryLoad("user32.dll", out var user32))
+        // per-monitor dpi awareness is a Windows-only api
+        if (OperatingSystem.IsWindows() && NativeLibrary.TryLoad("user32.dll", out var user32))
         {
             if (NativeLibrary.TryGetExport(user32, "SetThreadDpiAwarenessContext", out var export))
             {
@@ -40,6 +41,12 @@ public static class Window
 
     public static void PumpEvents()
     {
+        // Initialize() must run first; a missing window is a startup-order bug, report it instead of a NullReferenceException
+        if (window == null)
+        {
+            Log.LogError("Window.PumpEvents called before Window.Initialize");
+            return;
+        }
         window.DoEvents();
     }
 }

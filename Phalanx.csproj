@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
@@ -6,11 +6,35 @@
     <Nullable>enable</Nullable>
     <IncludeSymbols>True</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <!-- write source-generator output to obj/.../generated so it can be inspected (VS also shows it under Dependencies > Analyzers) -->
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- sub-projects live in subfolders; keep their sources out of the engine assembly -->
+    <Compile Remove="Phalanx.Tests/**;Phalanx.Generators/**" />
+    <None Remove="Phalanx.Tests/**;Phalanx.Generators/**" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Silk.NET.Input" Version="2.23.0" />
     <PackageReference Include="Silk.NET.Windowing" Version="2.23.0" />
+    <!-- runtime GLSL -> SPIR-V; pulls Silk.NET.Shaderc.Native (win-x64/x86/arm64, linux, osx shaderc_shared binaries) -->
+    <PackageReference Include="Silk.NET.Shaderc" Version="2.23.0" />
+    <!-- XxHash64 for the shader cache key -->
+    <PackageReference Include="System.IO.Hashing" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- build-time generator: shaders/shared_buffers.glsl -> SharedBuffers.g.cs (std140/std430 structs) -->
+    <ProjectReference Include="Phalanx.Generators/Phalanx.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    <AdditionalFiles Include="shaders/shared_buffers.glsl" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- GLSL sources are compiled at runtime by ShaderCompiler; ship them next to the binaries -->
+    <None Include="shaders/**/*.glsl;shaders/**/*.vert;shaders/**/*.frag;shaders/**/*.comp" Exclude="shaders/bin/**" CopyToOutputDirectory="PreserveNewest" LinkBase="shaders" />
   </ItemGroup>
 
 </Project>

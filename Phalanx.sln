@@ -5,6 +5,10 @@ VisualStudioVersion = 17.14.37111.16 d17.14
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Phalanx", "Phalanx.csproj", "{D158861D-57C4-4F2C-A902-A513F858C6FC}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Phalanx.Tests", "Phalanx.Tests\Phalanx.Tests.csproj", "{C22BF3F9-B4F0-407A-AB7B-F522C2DB327F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Phalanx.Generators", "Phalanx.Generators\Phalanx.Generators.csproj", "{7E4CC355-5974-4D39-BBB5-F71B8344AF06}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -15,6 +19,14 @@ Global
 		{D158861D-57C4-4F2C-A902-A513F858C6FC}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{D158861D-57C4-4F2C-A902-A513F858C6FC}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{D158861D-57C4-4F2C-A902-A513F858C6FC}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C22BF3F9-B4F0-407A-AB7B-F522C2DB327F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C22BF3F9-B4F0-407A-AB7B-F522C2DB327F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C22BF3F9-B4F0-407A-AB7B-F522C2DB327F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C22BF3F9-B4F0-407A-AB7B-F522C2DB327F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7E4CC355-5974-4D39-BBB5-F71B8344AF06}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7E4CC355-5974-4D39-BBB5-F71B8344AF06}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7E4CC355-5974-4D39-BBB5-F71B8344AF06}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7E4CC355-5974-4D39-BBB5-F71B8344AF06}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

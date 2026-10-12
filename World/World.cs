@@ -164,15 +164,28 @@ public static class World
     {
         lock (entity_access_mutex)
         {
-            foreach (Entity? entity in entities)
+            for (int i = 0; i < entities.Count; i++)
             {
+                Entity? entity = entities[i];
                 if ((entity != null) && (entity.GetObjectId() == id))
                     return entity;
             }
         }
         return null;
     }
-    public static List<Entity> GetEntities() { return entities; }
+    // threading model:
+    // - entities/entities_lights/entities_renderables and the entity hierarchy are owned by the main thread
+    //   (Tick, editor, gameplay). GetEntities() returns the live list, only read it on the main thread.
+    // - CreateEntity/RemoveEntity may be called from other threads (loading, tools); they only touch the
+    //   pending_add/pending_remove queues under entity_access_mutex, which the main thread drains in Tick.
+    private static int main_thread_id = Environment.CurrentManagedThreadId;
+    public static void SetMainThread() { main_thread_id = Environment.CurrentManagedThreadId; }
+    [System.Diagnostics.Conditional("DEBUG")]
+    public static void AssertMainThread()
+    {
+        Helpers.PLXAssertMsg(Environment.CurrentManagedThreadId == main_thread_id, "World/entity hierarchy accessed off the main thread");
+    }
+    public static IReadOnlyList<Entity> GetEntities() { AssertMainThread(); return entities; }
     public static Camera? GetCamera() { return (camera != null) ? camera.GetComponent<Camera>() : null; }
     public static float GetTimeOfDay(bool use_real_world_time) { return WorldTime.GetTimeOfDay(use_real_world_time); }
     public static void SetTimeOfDay(float TimeOfDay)
@@ -201,20 +214,19 @@ public static class World
         lock (entity_access_mutex)
         {
             // keep track of the local camera pointer so we don't have a dangling pointer
-            if (entity_to_remove.GetComponent<Camera>() == null)
+            if (camera == entity_to_remove)
                 camera = null;
 
             // remove the entity and all of its children
 
             // get the root entity and its descendants
             List<Entity> entities_to_remove = new List<Entity>() { entity_to_remove }; // add the root entity
-            entity_to_remove.GetDescendants(ref entities_to_remove); // get descendants
+            entity_to_remove.GetDescendants(entities_to_remove); // get descendants
 
             // create a set containing the object ids of entities to remove
-            HashSet<ulong> ids_to_remove = new HashSet<ulong>(entities_to_remove.Select(e => e.GetObjectId()));
-
             // defer removal
-            pending_remove.UnionWith(ids_to_remove);
+            for (int i = 0; i < entities_to_remove.Count; i++)
+                pending_remove.Add(entities_to_remove[i].GetObjectId());
 
             // detach from parent so it won't hold a dangling pointer after deferred deletion
             if (entity_to_remove.GetParent() is Entity parent)

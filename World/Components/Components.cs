@@ -53,8 +53,7 @@ public class Component : SpartanObject
 
     private static readonly Dictionary<Type, ComponentType> s_typeMap = new()
     {
-//TODO
-/*        [typeof(AudioSource)] = ComponentType.AudioSource,
+        [typeof(AudioSource)] = ComponentType.AudioSource,
         [typeof(Camera)] = ComponentType.Camera,
         [typeof(Light)] = ComponentType.Light,
         [typeof(Physics)] = ComponentType.Physics,
@@ -65,7 +64,7 @@ public class Component : SpartanObject
         [typeof(Volume)] = ComponentType.Volume,
         [typeof(Script)] = ComponentType.Script,
         [typeof(ParticleSystem)] = ComponentType.ParticleSystem,
-*/    };
+    };
 
     public Component(Entity entity)
     {

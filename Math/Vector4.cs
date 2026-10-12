@@ -11,7 +11,7 @@ public static class Vector4Extensions
     public static Vector4 Max(this Vector4 v, Vector4 other) { return Vector4.Max(v, other); }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Vector4 Min(this Vector4 v, float other) { return new Vector4(Math.Min(v.X, other), Math.Min(v.Y, other), Math.Min(v.Z, other), Math.Max(v.W, other)); }
+    public static Vector4 Min(this Vector4 v, float other) { return new Vector4(Math.Min(v.X, other), Math.Min(v.Y, other), Math.Min(v.Z, other), Math.Min(v.W, other)); }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector4 Min(this Vector4 v, Vector4 other) { return Vector4.Min(v, other); }

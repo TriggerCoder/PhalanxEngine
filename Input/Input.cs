@@ -142,7 +142,7 @@ public static class Input
     private static Controller? gamepadController;
     private static Controller? steeringWheelController;
 
-    private static List<IInputDevice> knownDevices = new();
+    private static HashSet<IInputDevice> knownDevices = new();
     private static int previousDeviceCount = -1;
     private static Vector2 mousePosition = Vector2.Zero;
     private static Vector2 mouseDelta = Vector2.Zero;
@@ -152,7 +152,17 @@ public static class Input
     public static Vector2 GetMousePosition() { return mousePosition; }
     public static Vector2 GetMouseDelta() { return mouseDelta; }
     public static Vector2 GetMouseWheelDelta() { return mouseWheelDelta; }
-
+    // TODO(port): source/input/InputMouse.cpp, the editor viewport rect comes from the editor's Viewport widget;
+    // until the editor exists the whole window is treated as the viewport
+    private static Vector2 editorViewportPosition = Vector2.Zero;
+    public static void SetEditorViewportPosition(Vector2 position) { editorViewportPosition = position; }
+    public static Vector2 GetMousePositionRelativeToEditorViewport() { return mousePosition - editorViewportPosition; }
+    public static bool GetMouseIsInViewport()
+    {
+        Vector2 p = GetMousePositionRelativeToEditorViewport();
+        RHI_Viewport v = Renderer.GetViewport();
+        return p.X >= 0.0f && p.Y >= 0.0f && p.X < v.Width && p.Y < v.Height;
+    }
     public static void Initialize()
     {
         Array.Fill(keys, false);

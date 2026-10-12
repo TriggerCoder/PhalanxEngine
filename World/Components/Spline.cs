@@ -63,7 +63,7 @@ public class Spline : Component
     private string m_saved_material_name = string.Empty;
 
     // generated mesh
-    private Mesh m_mesh;
+    private Mesh? m_mesh;
 
     // snapshot of previous state for auto-regeneration
     private bool m_prev_closed_loop = false;
@@ -424,10 +424,14 @@ public class Spline : Component
                 m_entity_owner.RemoveComponent<Physics>();
                 m_entity_owner.RemoveComponent<Render>();
             }
-            m_mesh.reset();
+            m_mesh.Dispose();
+            m_mesh = null;
         }
     }
     public bool HasRoadMesh() { return m_mesh != null; }
+
+    // TODO(port): Spline::GenerateMesh in source/world/components/Spline.cpp (needs geometry/Mesh)
+    private void GenerateMesh(List<Vector3> spline_points, List<Vector2> profile_points, bool close_profile) { }
 
     // mesh generation toggle
     public bool GetMeshEnabled() { return m_mesh_enabled; }
@@ -516,9 +520,11 @@ public class Spline : Component
                     instance.SetScaleLocal(new Vector3(scale, scale, scale));
                 }
 
-                Render renderable = instance.AddComponent<Render>();
-                renderable->SetMesh(MeshType.Cylinder);
-                renderable->SetDefaultMaterial();
+                if (instance.AddComponent<Render>() is Render renderable)
+                {
+                    renderable.SetMesh(MeshType.Cylinder);
+                    renderable.SetDefaultMaterial();
+                }
 
                 spawned++;
                 next_spawn_distance += m_instance_spacing;

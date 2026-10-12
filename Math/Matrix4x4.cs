@@ -113,18 +113,41 @@ public static class Matrix4x4Extensions
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Matrix4x4 CreateLookAtLH(Vector3 position, Vector3 target, Vector3 up) { return Matrix4x4.CreateLookAtLeftHanded(position, target, up); }
     
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Matrix4x4 CreateOrthographicLH(float width, float height, float zNearPlane, float zFarPlane) { return Matrix4x4.CreateOrthographicLeftHanded(width, height, zNearPlane, zFarPlane); }
+    // Projection helpers ported from SpartanEngine source/math/Matrix.h.
+    // System.Numerics' *LeftHanded factories throw when near >= far, but Spartan uses reverse-z
+    // (Camera.cpp calls ComputeProjection(far, near), Light.cpp passes (range, 0.05)), so these are
+    // written out by hand without argument checks. Row-vector convention (v * M), translation in row 4.
+    public static Matrix4x4 CreatePerspectiveFieldOfViewLH(float fov_y_radians, float aspect_ratio, float near_plane, float far_plane)
+    {
+        // (f / aspect, f, far / range, -near * far / range) with f = 1 / tan(fov / 2)
+        float f     = 1.0f / MathF.Tan(fov_y_radians * 0.5f);
+        float range = far_plane - near_plane;
+        return new Matrix4x4(
+            f / aspect_ratio, 0.0f, 0.0f,                              0.0f,
+            0.0f,             f,    0.0f,                              0.0f,
+            0.0f,             0.0f, far_plane / range,                 1.0f,
+            0.0f,             0.0f, -near_plane * far_plane / range,   0.0f);
+    }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Matrix4x4 CreateOrthoOffCenterLH(float left, float right, float bottom, float top, float zNearPlane, float zFarPlane) { return Matrix4x4.CreateOrthographicOffCenterLeftHanded(left, right, bottom, top, zNearPlane, zFarPlane); }
+    public static Matrix4x4 CreateOrthographicLH(float width, float height, float z_near, float z_far)
+    {
+        return new Matrix4x4(
+            2.0f / width, 0.0f,          0.0f,                       0.0f,
+            0.0f,         2.0f / height, 0.0f,                       0.0f,
+            0.0f,         0.0f,          1.0f / (z_far - z_near),    0.0f,
+            0.0f,         0.0f,          z_near / (z_near - z_far),  1.0f);
+    }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Matrix4x4 CreatePerspectiveFieldOfViewLH(float fov_y_radians, float aspect_ratio, float near_plane, float far_plane) { return Matrix4x4.CreatePerspectiveFieldOfViewLeftHanded(fov_y_radians, aspect_ratio, near_plane, far_plane); }
+    public static Matrix4x4 CreateOrthoOffCenterLH(float left, float right, float bottom, float top, float z_near, float z_far)
+    {
+        return new Matrix4x4(
+            2.0f / (right - left),           0.0f,                            0.0f,                       0.0f,
+            0.0f,                            2.0f / (top - bottom),           0.0f,                       0.0f,
+            0.0f,                            0.0f,                            1.0f / (z_far - z_near),    0.0f,
+            (left + right) / (left - right), (top + bottom) / (bottom - top), z_near / (z_near - z_far),  1.0f);
+    }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Matrix4x4 Transpose(this Matrix4x4 m) { return m = Matrix4x4.Transpose(m); }
-
+    // note: an in-place Transpose() extension cannot work on a by-value struct receiver; use m = m.Transposed()
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Matrix4x4 Transposed(this Matrix4x4 m) { return Matrix4x4.Transpose(m); }
 

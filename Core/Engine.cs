@@ -19,7 +19,7 @@ public static class Engine
         SetFlag(EngineMode.EditorVisible, true);
         SetFlag(EngineMode.Playing, true);
     }
-
+    public static bool IsFlagSet(EngineMode flag) { return (flags & (uint)flag) != 0; }
     public static void SetFlag(EngineMode flag, bool enabled)
     {
         if (enabled)

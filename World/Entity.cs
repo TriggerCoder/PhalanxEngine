@@ -37,8 +37,8 @@ public class Entity : SpartanObject
     private readonly List<Entity> m_children = new List<Entity>();
 
     // misc
-    private readonly object m_mutex_children = new object();
-    private readonly object m_mutex_parent = new object();
+    // threading: the entity hierarchy (parent/children/transforms) is main-thread only, like the
+    // C++ editor/world flow. World guards its own entity lists; see World.AssertMainThread.
     private float m_time_since_last_transform_sec = 0.0f;
 
     // prefab data (if this entity was created from a prefab)
@@ -130,7 +130,25 @@ public class Entity : SpartanObject
     public float GetTimeSinceLastTransform() { return m_time_since_last_transform_sec; }
     public Component?[] GetAllComponents() { return m_components; }
 
-    public int GetComponentCount() { return m_components.Count(c => c != null); }
+    public int GetComponentCount()
+    {
+        int count = 0;
+        for (int i = 0; i < m_components.Length; i++)
+            if (m_components[i] != null)
+                count++;
+        return count;
+    }
+
+    // world rotation composed from local rotations, matches Entity::GetHierarchyRotation in Entity.cpp:
+    // walking up, rotation = ancestor_local * rotation, i.e. root_local * ... * parent_local * this_local
+    // (Hamilton product, same as Spartan's Quaternion::Multiply and System.Numerics' operator *)
+    public Quaternion GetHierarchyRotation()
+    {
+        Quaternion rotation = Quaternion.Identity;
+        for (Entity? ancestor = this; ancestor != null; ancestor = ancestor.GetParent())
+            rotation = ancestor.GetRotationLocal() * rotation;
+        return rotation;
+    }
     public bool IsActive() { return m_is_active; }
 
 #region POSITION ======================================================================
@@ -164,21 +182,7 @@ public class Entity : SpartanObject
             local_rotation = rotation;
         else
         {
-            // compute parent's world rotation by composing local rotations up the hierarchy
-            // world_rot = root_local * ... * parent_local (compose from root down)
-            List<Quaternion> rotations = new List<Quaternion>();
-            Entity ancestor = GetParent();
-            while (ancestor != null)
-            {
-                rotations.Add(ancestor.GetRotationLocal());
-                ancestor = ancestor.GetParent();
-            }
-
-            // compose from root (back of vector) to parent (front of vector)
-            Quaternion parent_world_rotation = Quaternion.Identity;
-            foreach (Quaternion it in rotations)
-                parent_world_rotation = parent_world_rotation * it;
-
+            Quaternion parent_world_rotation = GetParent()!.GetHierarchyRotation();
             local_rotation = parent_world_rotation.Inverse() * rotation;
         }
 
@@ -254,48 +258,46 @@ public class Entity : SpartanObject
 #region HIERARCHY ===================================================================================
     public void SetParent(Entity? new_parent)
     {
+        World.AssertMainThread();
 
-        lock (m_mutex_parent)
+        if (new_parent != null)
         {
-            if (new_parent != null)
+            // early exit if the parent is this entity
+            if (GetObjectId() == new_parent.GetObjectId())
+                return;
+
+            // early exit if the parent is already set
+            if ((m_parent != null) && (m_parent.GetObjectId() == new_parent.GetObjectId()))
+                return;
+
+            // if the new parent is a descendant of this transform (e.g. dragging and dropping an entity onto one of it's children)
+            if (new_parent.IsDescendantOf(this))
             {
-                // early exit if the parent is this entity
-                if (GetObjectId() == new_parent.GetObjectId())
-                    return;
-
-                // early exit if the parent is already set
-                if ((m_parent != null) && (m_parent.GetObjectId() == new_parent.GetObjectId()))
-                    return;
-
-                // if the new parent is a descendant of this transform (e.g. dragging and dropping an entity onto one of it's children)
-                if (new_parent.IsDescendantOf(this))
+                foreach (Entity child in m_children)
                 {
-                    foreach (Entity child in m_children)
-                    {
-                        child.m_parent = m_parent; // directly setting parent
-                        child.UpdateTransform();   // update transform if needed
-                    }
-
-                    m_children.Clear();
+                    child.m_parent = m_parent; // directly setting parent
+                    child.UpdateTransform();   // update transform if needed
                 }
-            }
 
-            // remove the this as a child from the existing parent
-            if (m_parent != null)
-            {
-                bool update_child_with_null_parent = false;
-                m_parent.RemoveChild(this, update_child_with_null_parent);
+                m_children.Clear();
             }
-
-            // add this is a child to new parent
-            if (new_parent != null)
-            {
-                new_parent.AddChild(this);
-            }
-
-            m_parent = new_parent;
-            UpdateTransform();
         }
+
+        // remove the this as a child from the existing parent
+        if (m_parent != null)
+        {
+            bool update_child_with_null_parent = false;
+            m_parent.RemoveChild(this, update_child_with_null_parent);
+        }
+
+        // add this is a child to new parent
+        if (new_parent != null)
+        {
+            new_parent.AddChild(this);
+        }
+
+        m_parent = new_parent;
+        UpdateTransform();
     }
     public Entity? GetChildByIndex(int index)
     {
@@ -317,25 +319,23 @@ public class Entity : SpartanObject
     // this is a recursive function, the children will also find their own children and so on
     public void AcquireChildren()
     {
-        lock (m_mutex_children)
+        World.AssertMainThread();
+        m_children.Clear();
+        IReadOnlyList<Entity> entities = World.GetEntities();
+        for (int i = 0; i < entities.Count; i++)
         {
-            m_children.Clear();
-            //TODO
-            List<Entity>? entities = null; // World::GetEntities();
-            foreach (Entity? possible_child in entities)
+            Entity? possible_child = entities[i];
+            if ((possible_child == null) || (possible_child.GetParent() == null) || (possible_child.GetObjectId() == GetObjectId()))
+                continue;
+
+            // if it's parent matches this transform
+            if (possible_child.GetParent()!.GetObjectId() == GetObjectId())
             {
-                if ((possible_child == null) || (possible_child.GetParent() == null) || (possible_child.GetObjectId() == GetObjectId()))
-                    continue;
+                // welcome home son
+                m_children.Add(possible_child);
 
-                // if it's parent matches this transform
-                if (possible_child.GetParent().GetObjectId() == GetObjectId())
-                {
-                    // welcome home son
-                    m_children.Add(possible_child);
-
-                    // make the child do the same thing all over, essentially resolving the entire hierarchy
-                    possible_child.AcquireChildren();
-                }
+                // make the child do the same thing all over, essentially resolving the entire hierarchy
+                possible_child.AcquireChildren();
             }
         }
     }
@@ -347,15 +347,16 @@ public class Entity : SpartanObject
         if (child.GetObjectId() == GetObjectId())
             return;
 
-        lock (m_mutex_children)
+        // remove the child
+        for (int i = m_children.Count - 1; i >= 0; i--)
         {
-            // remove the child
-            m_children.RemoveAll(c => c.GetObjectId() == child.GetObjectId());
-
-            // remove the child's parent
-            if (update_child_with_null_parent)
-                child.SetParent(null);
+            if (m_children[i].GetObjectId() == child.GetObjectId())
+                m_children.RemoveAt(i);
         }
+
+        // remove the child's parent
+        if (update_child_with_null_parent)
+            child.SetParent(null);
     }
     public void AddChild(Entity child)
     {
@@ -365,39 +366,33 @@ public class Entity : SpartanObject
         if (child.GetObjectId() == GetObjectId())
             return;
 
-        lock (m_mutex_children)
-        {
-            // if this is not already a child, add it
-            if (!m_children.Contains(child))
-                m_children.Add(child);
-        }
+        // if this is not already a child, add it
+        if (!m_children.Contains(child))
+            m_children.Add(child);
     }
     public void MoveChildToIndex(Entity child, int index)
     {
         Helpers.PLXAssert(child != null);
-        lock (m_mutex_children)
-        {
-            // find the child in the list and get current position before removing
-            int currentIndex = m_children.IndexOf(child);
+        // find the child in the list and get current position before removing
+        int currentIndex = m_children.IndexOf(child);
 
-            if (currentIndex == -1)
-                return; // child not found
+        if (currentIndex == -1)
+            return; // child not found
 
-            // Remove from current position (shifts everything after it)
-            m_children.RemoveAt(currentIndex);
+        // Remove from current position (shifts everything after it)
+        m_children.RemoveAt(currentIndex);
 
-            // Adjust target index if the removed child was before the desired position
-            // (removing it shifts all subsequent indices down by 1)
-            if (currentIndex < index && index > 0)
-                index--;
+        // Adjust target index if the removed child was before the desired position
+        // (removing it shifts all subsequent indices down by 1)
+        if (currentIndex < index && index > 0)
+            index--;
 
-            // Clamp index to valid range [0, Count]
-            if (index > m_children.Count)
-                index = m_children.Count;
+        // Clamp index to valid range [0, Count]
+        if (index > m_children.Count)
+            index = m_children.Count;
 
-            // Insert at the new position
-            m_children.Insert(index, child);
-        }
+        // Insert at the new position
+        m_children.Insert(index, child);
     }
     public bool IsDescendantOf(Entity transform)
     {
@@ -410,33 +405,35 @@ public class Entity : SpartanObject
         if (m_parent.GetObjectId() == transform.GetObjectId())
             return true;
 
-        List<Entity> childrens = transform.GetChildren();
-        foreach (Entity child in childrens)
+        List<Entity> childrens = transform.m_children;
+        for (int i = 0; i < childrens.Count; i++)
         {
-            if (IsDescendantOf(child))
+            if (IsDescendantOf(childrens[i]))
                 return true;
         }
 
         return false;
     }
-    public void GetDescendants(ref List<Entity> descendants)
+    public void GetDescendants(List<Entity> descendants)
     {
-        foreach (Entity child in m_children)
+        for (int i = 0; i < m_children.Count; i++)
         {
+            Entity child = m_children[i];
             descendants.Add(child);
             if (child.HasChildren())
-                child.GetDescendants(ref descendants);
+                child.GetDescendants(descendants);
         }
     }
     public Entity? GetDescendantByName(string name)
     {
-        List<Entity> descendants = new List<Entity>();
-        GetDescendants(ref descendants);
-
-        foreach (Entity entity in descendants)
+        // depth-first search without building a temporary list
+        for (int i = 0; i < m_children.Count; i++)
         {
-            if (entity.GetObjectName() == name)
-                return entity;
+            Entity child = m_children[i];
+            if (child.GetObjectName() == name)
+                return child;
+            if (child.GetDescendantByName(name) is Entity found)
+                return found;
         }
         return null;
     }
@@ -444,7 +441,7 @@ public class Entity : SpartanObject
     public int GetChildrenCount() { return m_children.Count; }
     public Entity GetRoot() { return (m_parent != null) ? GetParent().GetRoot() : this; }
     public Entity GetParent() { return m_parent; }
-    public List<Entity> GetChildren() { return m_children; }
+    public IReadOnlyList<Entity> GetChildren() { return m_children; }
     #endregion
     public void SetTransient(bool transient) { m_transient = transient; }
     public bool IsTransient() { return m_transient; }
@@ -546,7 +543,7 @@ public class Entity : SpartanObject
 
         return component;
     }
-    public T? AddComponent<T>() where T : Component, new()
+    public T? AddComponent<T>() where T : Component
     {
         ComponentType type = Component.TypeToEnum<T>();
 
@@ -554,8 +551,8 @@ public class Entity : SpartanObject
         if (GetComponent<T>() is T existing)
             return existing;
 
-        // create new component
-        T component = new T();
+        // create new component (components take their owning entity in the constructor)
+        T component = (T)Activator.CreateInstance(typeof(T), this)!;
 
         // save new component (same as your m_components array)
         m_components[(int)type] = component;
@@ -576,41 +573,40 @@ public class Entity : SpartanObject
         Component? component;
         switch (type)
         {
-//TODO
-/*            case ComponentType.AudioSource:
-                component = new AudioSource();
+            case ComponentType.AudioSource:
+                component = new AudioSource(this);
                 break;
             case ComponentType.Camera:
-                component = new Camera();
+                component = new Camera(this);
                 break;
             case ComponentType.Light:
-                component = new Light();
+                component = new Light(this);
                 break;
             case ComponentType.Physics:
-                component = new Physics();
+                component = new Physics(this);
                 break;
             case ComponentType.Render:
-                component = new Render();
+                component = new Render(this);
                 break;
             case ComponentType.Spline:
-                component = new Spline();
+                component = new Spline(this);
                 break;
             case ComponentType.SplineFollower:
-                component = new SplineFollower();
+                component = new SplineFollower(this);
                 break;
             case ComponentType.Terrain:
-                component = new Terrain();
+                component = new Terrain(this);
                 break;
             case ComponentType.Volume:
-                component = new Volume();
+                component = new Volume(this);
             break;
             case ComponentType.Script:
-                component = new Script();
+                component = new Script(this);
             break;
             case ComponentType.ParticleSystem:
-                component = new ParticleSystem();
+                component = new ParticleSystem(this);
                 break;
-*/            default:
+            default:
                 component = null;
             break;
         }
@@ -632,7 +628,7 @@ public class Entity : SpartanObject
     public void RemoveComponent<T>() where T : Component { RemoveComponentByType(Component.TypeToEnum<T>()); }
     public void RemoveComponentById(ulong id)
     {
-        for (int i = 0; i < m_components.Count(); i++)
+        for (int i = 0; i < m_components.Length; i++)
         {
             Component? component = m_components[i];
             if (component != null)

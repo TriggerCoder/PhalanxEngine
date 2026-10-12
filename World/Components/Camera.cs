@@ -66,9 +66,9 @@ public class Camera : Component
     List<Entity> m_selected_entities = new List<Entity>();
 
     // pre-allocated buffers for picking (to avoid heap allocations)
-    List<RayHitResult> m_pick_hits;
-    List<int> m_pick_indices;
-    List<RHI_Vertex_PosTexNorTan> m_pick_vertices;
+    readonly List<RayHitResult> m_pick_hits = new List<RayHitResult>();
+    readonly List<int> m_pick_indices = new List<int>();
+    readonly List<RHI_Vertex_PosTexNorTan> m_pick_vertices = new List<RHI_Vertex_PosTexNorTan>();
 
     public Camera(Entity entity) : base(entity)
     {
@@ -107,13 +107,13 @@ public class Camera : Component
         Ray ray = ComputePickingRay();
         m_pick_hits.Clear();
 
-        List<Entity>entities = World.GetEntities();
+        IReadOnlyList<Entity> entities = World.GetEntities();
         foreach (Entity entity in entities)
         {
-            if (!entity.GetComponent<Render>())
+            if (entity.GetComponent<Render>() is not Render render)
                 continue;
 
-            BoundingBox aabb = entity.GetComponent<Render>().GetBoundingBox();
+            BoundingBox aabb = render.GetBoundingBox();
             float distance = ray.HitDistance(aabb);
             if (float.IsInfinity(distance))
                 continue;
@@ -208,8 +208,7 @@ public class Camera : Component
 
             foreach (Entity entity in entities)
             {
-                Spline spline = entity.GetComponent<Spline>();
-                if (!spline)
+                if (entity.GetComponent<Spline>() is not Spline spline)
                     continue;
 
                 for (int i = 0; i < entity.GetChildrenCount(); i++)
@@ -281,7 +280,7 @@ public class Camera : Component
         Vector3 min = bounding_box.GetMin();
         Vector3 max = bounding_box.GetMax();
 
-        Vector3[] corners = new Vector3[8];
+        Span<Vector3> corners = stackalloc Vector3[8]; // no per-call heap allocation
 
         corners[0] = min;
         corners[1] = new Vector3(max.X, min.Y, min.Z);
@@ -472,9 +471,9 @@ public class Camera : Component
     public Matrix4x4 ComputeProjection(float near_plane, float far_plane)
     {
         if (m_projection_type == ProjectionType.Projection_Perspective)
-            return Matrix4x4.CreatePerspectiveFieldOfViewLeftHanded(GetFovVerticalRad(), GetAspectRatio(), near_plane, far_plane);
+            return Matrix4x4Extensions.CreatePerspectiveFieldOfViewLH(GetFovVerticalRad(), GetAspectRatio(), near_plane, far_plane);
         else if (m_projection_type == ProjectionType.Projection_Orthographic)
-            return Matrix4x4.CreateOrthographicLeftHanded(Renderer.GetViewport().Width, Renderer.GetViewport().Height, near_plane, far_plane);
+            return Matrix4x4Extensions.CreateOrthographicLH(Renderer.GetViewport().Width, Renderer.GetViewport().Height, near_plane, far_plane);
 
         return Matrix4x4.Identity;
     }
@@ -482,7 +481,7 @@ public class Camera : Component
     public void FocusOnSelectedEntity()
     {
         // only do this in editor mode
-        if (Engine.IsFlagSet(EngineMode.Playing))
+        if (Engine.IsFlagSet(Engine.EngineMode.Playing))
             return;
 
         if (GetSelectedEntity() is Entity entity)
