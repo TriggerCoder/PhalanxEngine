@@ -554,7 +554,7 @@ public class Entity : SpartanObject
         // create new component (components take their owning entity in the constructor)
         T component = (T)Activator.CreateInstance(typeof(T), this)!;
 
-        // save new component (same as your m_components array)
+        // save new component
         m_components[(int)type] = component;
 
         // initialize
@@ -566,7 +566,6 @@ public class Entity : SpartanObject
 
     public Component? AddComponentByType(ComponentType type)
     {
-        // Early exit if it already exists (exact same logic as your C++)
         if (GetComponentByType(type) is Component existing)
             return existing;
 

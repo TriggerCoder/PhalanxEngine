@@ -40,9 +40,40 @@ public struct MeshLod
 }
 
 // class (not struct): it owns a list, and a struct copy out of List<SubMesh> would hide writes
+public sealed class MeshImpostor
+{
+    public MeshLod lod;                            // the card, it lives in the regular geometry streams
+    public uint[] texels = Array.Empty<uint>();    // two words per layer (see GeometryProcessing.BakeImpostor)
+    public uint texel_offset = 0;                  // into the global impostor texel buffer (set at gpu upload)
+    public uint resolution   = Mesh.MeshImpostorResolution;
+    public Vector3 center    = Vector3.Zero;
+    public float radius      = 0.0f;
+    public Vector2 uv_min    = Vector2.Zero;
+    public Vector2 uv_scale  = Vector2.One;
+
+    // DrawData.impostor_layout, as packed by Renderer.cpp (frames | resolution << 8 | layers << 24)
+    public uint GetLayout() { return Mesh.MeshImpostorFrames | (resolution << 8) | (Mesh.MeshImpostorLayers << 24); }
+
+    // the impostor part of Spartan's indirect draw setup (Renderer.cpp, lod == mesh_lod_count): the card turns to face
+    // the camera, so winding and meshlet cones mean nothing for it (flag bits 3, 4), and its silhouette is cut per texel
+    // so it takes the alpha tested path; bit 14 is draw_flag_impostor in the shaders
+    public void WriteDrawData(ref DrawData draw_data)
+    {
+        draw_data.flags                |= (1u << 14) | 8u | 16u;
+        draw_data.impostor_texel_offset = texel_offset;
+        draw_data.impostor_layout       = GetLayout();
+        draw_data.impostor_center       = center;
+        draw_data.impostor_radius       = radius;
+        draw_data.impostor_uv_min       = uv_min;
+        draw_data.impostor_uv_scale     = uv_scale;
+    }
+}
+
 public sealed class SubMesh
 {
     public readonly List<MeshLod> lods = new List<MeshLod>(Mesh.MeshLodCount); // lod levels for this sub-mesh
+    // not one of the lods, serialization and the cpu lod pick never see it, the gpu lod pick addresses it as index lods.Count
+    public MeshImpostor? impostor;
 }
 
 [Serializable]
@@ -50,6 +81,14 @@ public class Mesh : IResource, IDisposable
 {
     public const int MeshLodCount = 5;
     public const float MeshLodMinReduction = 0.9f; // a lod must be at least 10% cheaper than the one above it
+
+    // foliage impostors (Mesh.h): an atlas is frames^2 * resolution^2 * layers * 8 bytes, 4 MB at 64 px and 16 MB at 128 px
+    public const uint  MeshImpostorFrames        = 8;
+    public const uint  MeshImpostorResolution    = 64;
+    public const uint  MeshImpostorLayers        = 2;
+    // every crown swaps at the same screen size, but trees carry the skyline, so they get the sharper frames
+    public const uint  MeshImpostorResolutionLarge = 128;
+    public const float MeshImpostorLargeRadius     = 3.0f;
 
     private static readonly uint s_vertex_size = (uint)Unsafe.SizeOf<RHI_Vertex_PosTexNorTan>();
 
@@ -185,7 +224,7 @@ public class Mesh : IResource, IDisposable
     }
 
     // creates a new sub-mesh, returns its index
-    public int AddGeometry(List<RHI_Vertex_PosTexNorTan> vertices, List<uint> indices, bool generate_lods)
+    public int AddGeometry(List<RHI_Vertex_PosTexNorTan> vertices, List<uint> indices, bool generate_lods, bool preserve_lod0 = false, bool foliage_cards = false, bool impostor = false)
     {
         int sub_mesh_index;
         lock (m_mutex)
@@ -194,12 +233,12 @@ public class Mesh : IResource, IDisposable
             m_sub_meshes.Add(new SubMesh());
         }
 
-        AddGeometry(vertices, indices, generate_lods, sub_mesh_index);
+        AddGeometry(vertices, indices, generate_lods, sub_mesh_index, preserve_lod0, foliage_cards, impostor);
         return sub_mesh_index;
     }
 
     // fills a sub-mesh slot that already exists; vertices/indices are modified in place when optimizing (as in Spartan)
-    public void AddGeometry(List<RHI_Vertex_PosTexNorTan> vertices, List<uint> indices, bool generate_lods, int sub_mesh_index, bool preserve_lod0 = false)
+    public void AddGeometry(List<RHI_Vertex_PosTexNorTan> vertices, List<uint> indices, bool generate_lods, int sub_mesh_index, bool preserve_lod0 = false, bool foliage_cards = false, bool impostor = false)
     {
         Helpers.PLXAssert(sub_mesh_index < m_sub_meshes.Count);
 
@@ -231,7 +270,6 @@ public class Mesh : IResource, IDisposable
         bool preserve_edges = HasFlag(MeshFlags.PostProcessPreserveTerrainEdges);
 
         // two working buffers reused across levels: lod = copy(prev), simplify lod, then swap
-        // (TODO(port): generated_cache lod caching and thin_foliage_cards)
         List<RHI_Vertex_PosTexNorTan> prev_vertices = new List<RHI_Vertex_PosTexNorTan>(vertices);
         List<uint> prev_indices                     = new List<uint>(indices);
         List<RHI_Vertex_PosTexNorTan> lod_vertices  = new List<RHI_Vertex_PosTexNorTan>(vertices.Count);
@@ -253,7 +291,27 @@ public class Mesh : IResource, IDisposable
             int target_index_count = System.Math.Max(64, (int)(original_index_count * target_ratio));
 
             // disconnected branches/cards need component pruning, terrain borders stay untouched
-            GeometryProcessing.Simplify(lod_indices, lod_vertices, target_index_count, preserve_uvs, preserve_edges, !preserve_edges);
+            // reuse the exact simplification for repeated imports: hash the actual input geometry, target and policy
+            // so asset edits and terrain-border protection can't reuse an incompatible result
+            GeneratedCache.Hash lod_hash = new GeneratedCache.Hash();
+            lod_hash.Add(foliage_cards ? 2u : 1u); // simplification policy/cache version
+            lod_hash.Add(lod_vertices);
+            lod_hash.Add(lod_indices);
+            lod_hash.Add((ulong)target_index_count);
+            lod_hash.Add(preserve_uvs);
+            lod_hash.Add(preserve_edges);
+            string? lod_path = GeneratedCache.Path("lods", lod_hash.value);
+            bool cache_lods  = !HasFlag(MeshFlags.PostProcessSkipCache);
+            if (!cache_lods || !GeneratedCache.Load(lod_path, lod_hash.value, lod_vertices, lod_indices))
+            {
+                // leaf cards (imported from "_foliage" materials) are thinned as whole cards instead of simplified
+                if (foliage_cards)
+                    GeometryProcessing.ThinFoliageCards(lod_indices, lod_vertices, target_index_count);
+                else
+                    GeometryProcessing.Simplify(lod_indices, lod_vertices, target_index_count, preserve_uvs, preserve_edges, !preserve_edges);
+                if (cache_lods)
+                    GeneratedCache.Save<RHI_Vertex_PosTexNorTan, uint>(lod_path, lod_hash.value, CollectionsMarshal.AsSpan(lod_vertices), CollectionsMarshal.AsSpan(lod_indices));
+            }
 
             // stop unless this level is meaningfully cheaper than the one above it
             if (lod_indices.Count >= (int)(prev_indices.Count * MeshLodMinReduction))
@@ -264,7 +322,128 @@ public class Mesh : IResource, IDisposable
             (prev_vertices, lod_vertices) = (lod_vertices, prev_vertices);
             (prev_indices, lod_indices)   = (lod_indices, prev_indices);
         }
+
+        // the impostor is baked from lod 0 (the geometry as it was added), after the lod chain, like Spartan
+        if ((foliage_cards || impostor) && m_skeleton == null)
+            AddImpostor(vertices, indices, sub_mesh_index);
     }
+
+    // makes sure sub-mesh slots [0, count) exist, for callers that fill slots by index (the model importer)
+    public void ReserveSubMeshes(int count)
+    {
+        lock (m_mutex)
+        {
+            while (m_sub_meshes.Count < count)
+                m_sub_meshes.Add(new SubMesh());
+        }
+    }
+
+    public Skeleton? GetSkeleton() { return m_skeleton; }
+
+    public MeshImpostor? GetImpostor(int sub_mesh_index)
+    {
+        lock (m_mutex)
+            return (uint)sub_mesh_index < (uint)m_sub_meshes.Count ? m_sub_meshes[sub_mesh_index].impostor : null;
+    }
+
+    public void AddImpostor(List<RHI_Vertex_PosTexNorTan> vertices, List<uint> indices, int sub_mesh_index)
+    {
+        if (vertices.Count == 0 || indices.Count < 3)
+            return;
+
+        MeshImpostor impostor = new MeshImpostor();
+
+        // the card spans the bounding sphere so every frame fits whichever way the crown is turned
+        BoundingBox aabb = new BoundingBox(vertices);
+        impostor.center  = aabb.GetCenter();
+        Vector2 uv_lo = new Vector2(float.MaxValue, float.MaxValue);
+        Vector2 uv_hi = new Vector2(-float.MaxValue, -float.MaxValue);
+        foreach (ref readonly RHI_Vertex_PosTexNorTan vertex in CollectionsMarshal.AsSpan(vertices))
+        {
+            impostor.radius = System.Math.Max(impostor.radius, (vertex.pos - impostor.center).Length());
+            uv_lo = Vector2.Min(uv_lo, vertex.tex);
+            uv_hi = Vector2.Max(uv_hi, vertex.tex);
+        }
+        if (impostor.radius <= 0.0f)
+            return;
+
+        impostor.uv_min     = uv_lo;
+        impostor.uv_scale   = new Vector2(System.Math.Max(uv_hi.X - uv_lo.X, 1e-6f), System.Math.Max(uv_hi.Y - uv_lo.Y, 1e-6f));
+        impostor.resolution = impostor.radius >= MeshImpostorLargeRadius ? MeshImpostorResolutionLarge : MeshImpostorResolution;
+
+        GeneratedCache.Hash hash = new GeneratedCache.Hash();
+        hash.Add(1u); // impostor bake version
+        hash.Add(MeshImpostorFrames);
+        hash.Add(impostor.resolution);
+        hash.Add(MeshImpostorLayers);
+        hash.Add(vertices);
+        hash.Add(indices);
+        string? path = GeneratedCache.Path("impostors", hash.value);
+        bool cache   = !HasFlag(MeshFlags.PostProcessSkipCache);
+        long expected_words = (long)MeshImpostorFrames * MeshImpostorFrames * impostor.resolution * impostor.resolution * MeshImpostorLayers * 2;
+        List<uint> cached = new List<uint>();
+        if (cache && GeneratedCache.Load(path, hash.value, cached) && cached.Count == expected_words)
+        {
+            impostor.texels = cached.ToArray();
+        }
+        else
+        {
+            impostor.texels = GeometryProcessing.BakeImpostor(
+                CollectionsMarshal.AsSpan(vertices),
+                CollectionsMarshal.AsSpan(indices),
+                MeshImpostorFrames,
+                impostor.resolution,
+                MeshImpostorLayers,
+                impostor.center,
+                impostor.radius,
+                impostor.uv_min,
+                impostor.uv_scale);
+            if (cache)
+                GeneratedCache.Save<uint>(path, hash.value, impostor.texels);
+        }
+
+        // the corners ride in the uv, the vertex stage turns the card toward the camera, the positions only have to
+        // give the lod aabb (and, once ported, the meshlet sphere) a volume that holds the card in any orientation
+        float r   = impostor.radius;
+        Vector3 c = impostor.center;
+        Vector3 forward = Math.Vector3.Forward;
+        Vector3 right   = Math.Vector3.Right;
+        List<RHI_Vertex_PosTexNorTan> card = new List<RHI_Vertex_PosTexNorTan>(4)
+        {
+            new RHI_Vertex_PosTexNorTan(c + new Vector3(-r, -r, -r), new Vector2(0.0f, 0.0f), forward, right),
+            new RHI_Vertex_PosTexNorTan(c + new Vector3( r, -r,  r), new Vector2(1.0f, 0.0f), forward, right),
+            new RHI_Vertex_PosTexNorTan(c + new Vector3( r,  r, -r), new Vector2(1.0f, 1.0f), forward, right),
+            new RHI_Vertex_PosTexNorTan(c + new Vector3(-r,  r,  r), new Vector2(0.0f, 1.0f), forward, right),
+        };
+        uint[] card_indices = { 0, 2, 1, 0, 3, 2 };
+
+        // TODO(port): geometry_processing::build_meshlets(card, card_indices, ...) + offset_meshlet_unique_ranges, the
+        // card's meshlet goes into m_meshlets/m_meshlet_vertices/m_meshlet_micro_indices and lod.meshlet_offset/count;
+        // its lod aabb is the aabb of the 4 card vertices, which is what build_meshlets returns
+        BoundingBox card_aabb = new BoundingBox(card);
+
+        lock (m_mutex)
+        {
+            impostor.lod = new MeshLod
+            {
+                vertex_offset = (uint)m_vertices.Count,
+                vertex_count  = (uint)card.Count,
+                index_offset  = (uint)m_indices.Count,
+                index_count   = (uint)card_indices.Length,
+                aabb          = card_aabb
+            };
+            m_vertices.AddRange(card);
+            m_indices.AddRange(card_indices);
+            m_sub_meshes[sub_mesh_index].impostor = impostor;
+        }
+    }
+
+    // TODO(port): Mesh::PrepareForGpu uploads every sub-mesh impostor atlas with
+    //   impostor.texel_offset = GeometryBuffer::AppendImpostorTexels(impostor.texels.data(), (uint32_t)impostor.texels.size());
+    // GeometryBuffer keeps one growable StructuredBuffer<uint> ("geometry_buffer_impostor_texels", bound at t76 /
+    // Renderer_BindingsSrv::impostor_texels = 76) and returns the base word offset of the appended atlas; the renderer then
+    // calls MeshImpostor.WriteDrawData for the extra gpu lod (index lods.Count) of instanced foliage, gated by
+    // cvar_foliage_impostors and mesh_lod_count < 7 (the lod count has to fit three DrawData.flags bits, flag bit 15)
 
     public bool HasFlag(MeshFlags flag) { return (m_flags & (uint)flag) != 0; }
     public void SetFlag(MeshFlags flag, bool enabled = true) { SetFlag((uint)flag, enabled); }

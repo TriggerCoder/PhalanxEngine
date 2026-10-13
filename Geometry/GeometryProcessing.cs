@@ -9,7 +9,7 @@ namespace Phalanx;
 // port of source/geometry/GeometryProcessing.cpp (Spartan 4c07baa)
 // all meshoptimizer calls use the pointer overloads on pinned List<T> storage: positions are read straight from
 // RHI_Vertex_PosTexNorTan.pos (offset 0) with the full vertex stride, exactly like &vertices[0].pos[0] in Spartan
-public static unsafe class GeometryProcessing
+public static unsafe partial class GeometryProcessing
 {
     // meshopt_SimplifyPrune (1 << 3); the binding's SimplificationOptions enum doesn't name it
     private const SimplificationOptions SimplifyPrune = (SimplificationOptions)(1 << 3);
@@ -310,6 +310,150 @@ public static unsafe class GeometryProcessing
         }
     }
 
+    // port of geometry_processing::thin_foliage_cards: distance lod for leaf cards. error driven simplification prunes
+    // every card at once because each one is smaller than the error bound, this keeps a nested subset of whole cards
+    // instead and grows them about their centre so the crown keeps its cover; large connected pieces pass through untouched
+    // works in place (the lists are resized), returns nothing (like Spartan)
+    public static void ThinFoliageCards(List<uint> indices, List<RHI_Vertex_PosTexNorTan> vertices, int target_index_count)
+    {
+        // a card is a handful of triangles, anything bigger is a branchlet or a sheet that must not be scaled
+        const uint card_triangles_max = 64;
+        // thinned cards win back most but not all of the lost cover, a full compensation reads as inflated
+        const float cover     = 0.92f;
+        const float scale_max = 1.6f;
+
+        int index_count  = indices.Count;
+        int vertex_count = vertices.Count;
+        if (target_index_count >= index_count || index_count < 12)
+            return;
+
+        // per-vertex scratch, card data lives at the card's root vertex (replaces Spartan's unordered_map<root, Card>)
+        uint[]    parent     = ArrayPool<uint>.Shared.Rent(vertex_count);
+        uint[]    triangles  = ArrayPool<uint>.Shared.Rent(vertex_count);
+        uint[]    card_verts = ArrayPool<uint>.Shared.Rent(vertex_count);
+        Vector3[] center     = ArrayPool<Vector3>.Shared.Rent(vertex_count);
+        bool[]    keep_card  = ArrayPool<bool>.Shared.Rent(vertex_count);
+        (uint rank, uint root)[] small = ArrayPool<(uint, uint)>.Shared.Rent(vertex_count);
+        try
+        {
+            Span<uint> idx = CollectionsMarshal.AsSpan(indices);
+            Span<RHI_Vertex_PosTexNorTan> verts = CollectionsMarshal.AsSpan(vertices);
+
+            for (uint i = 0; i < vertex_count; i++)
+            {
+                parent[i]     = i;
+                triangles[i]  = 0;
+                card_verts[i] = 0;
+                center[i]     = Vector3.Zero;
+                keep_card[i]  = true;
+            }
+
+            uint Find(uint v)
+            {
+                while (parent[v] != v)
+                {
+                    parent[v] = parent[parent[v]];
+                    v         = parent[v];
+                }
+                return v;
+            }
+
+            // union the three corners of every triangle, a card is a connected component
+            for (int i = 0; i < index_count; i += 3)
+            {
+                uint a = Find(idx[i]);
+                parent[Find(idx[i + 1])] = a;
+                parent[Find(idx[i + 2])] = a;
+            }
+
+            for (int i = 0; i < index_count; i += 3)
+                triangles[Find(idx[i])]++;
+
+            for (uint v = 0; v < vertex_count; v++)
+            {
+                uint root = Find(v);
+                if (triangles[root] == 0) // not a card (unreferenced vertex)
+                    continue;
+                card_verts[root]++;
+                center[root] += verts[(int)v].pos;
+            }
+
+            long small_indices = 0;
+            int small_count    = 0;
+            for (uint root = 0; root < vertex_count; root++)
+            {
+                if (triangles[root] == 0 || parent[root] != root)
+                    continue;
+
+                center[root] /= (float)card_verts[root];
+                if (triangles[root] > card_triangles_max)
+                    continue;
+
+                // the centre survives the scaling below, so hashing it gives every lod the same order and each one keeps a subset of the last
+                int qx = (int)MathF.Floor(center[root].X * 256.0f);
+                int qy = (int)MathF.Floor(center[root].Y * 256.0f);
+                int qz = (int)MathF.Floor(center[root].Z * 256.0f);
+                uint h = unchecked((uint)qx * 73856093u ^ (uint)qy * 19349663u ^ (uint)qz * 83492791u);
+                h ^= h >> 16;
+                h  = unchecked(h * 0x7feb352du);
+                h ^= h >> 15;
+
+                small[small_count++] = (h, root);
+                small_indices += triangles[root] * 3;
+            }
+            if (small_count == 0)
+                return;
+
+            long large_indices = index_count - small_indices;
+            float keep = System.Math.Clamp((float)((double)target_index_count - (double)large_indices) / (float)small_indices, 0.02f, 1.0f);
+            if (keep >= 1.0f)
+                return;
+
+            // sort by hash rank; ties broken by root so the result is deterministic (std::sort leaves tie order unspecified)
+            small.AsSpan(0, small_count).Sort();
+            int kept = System.Math.Max(1, (int)((float)small_count * keep));
+            for (int i = kept; i < small_count; i++)
+                keep_card[small[i].root] = false;
+
+            // grow the surviving small cards about their centre (in place, each vertex reads only its own original position)
+            float scale = System.Math.Clamp(cover / MathF.Sqrt(keep), 1.0f, scale_max);
+            for (uint v = 0; v < vertex_count; v++)
+            {
+                uint root = Find(v);
+                if (triangles[root] == 0 || triangles[root] > card_triangles_max)
+                    continue;
+                Vector3 c = center[root];
+                verts[(int)v].pos = c + (verts[(int)v].pos - c) * scale;
+            }
+
+            // drop the triangles of thinned cards (in-place compaction, write cursor never passes the read cursor)
+            int thinned = 0;
+            for (int i = 0; i < index_count; i += 3)
+            {
+                if (keep_card[Find(idx[i])])
+                {
+                    uint a = idx[i], b = idx[i + 1], c = idx[i + 2];
+                    idx[thinned++] = a;
+                    idx[thinned++] = b;
+                    idx[thinned++] = c;
+                }
+            }
+            CollectionsMarshal.SetCount(indices, thinned);
+        }
+        finally
+        {
+            ArrayPool<uint>.Shared.Return(parent);
+            ArrayPool<uint>.Shared.Return(triangles);
+            ArrayPool<uint>.Shared.Return(card_verts);
+            ArrayPool<Vector3>.Shared.Return(center);
+            ArrayPool<bool>.Shared.Return(keep_card);
+            ArrayPool<(uint, uint)>.Shared.Return(small);
+        }
+
+        // compact: drops the vertices of removed cards and reorders for fetch
+        OptimizeVertexFetchInPlace(vertices, indices);
+    }
+
     private static int OptimizeVertexFetchInPlace(List<RHI_Vertex_PosTexNorTan> vertices, List<uint> indices)
     {
         int vertex_count = vertices.Count;
@@ -333,18 +477,5 @@ public static unsafe class GeometryProcessing
         {
             ArrayPool<RHI_Vertex_PosTexNorTan>.Shared.Return(scratch);
         }
-    }
-
-    // NOTE: not present in Spartan 4c07baa's GeometryProcessing (it comes from an older revision); port it
-    // from the revision you're following, or drop it
-    public static void SplitSurfaceIntoTiles(
-        List<RHI_Vertex_PosTexNorTan> terrain_vertices,
-        List<uint> terrain_indices,
-        uint tile_count,
-        List<List<RHI_Vertex_PosTexNorTan>> tiled_vertices,
-        List<List<uint>> tiled_indices,
-        List<Vector3> tile_offsets)
-    {
-        throw new NotImplementedException("GeometryProcessing.SplitSurfaceIntoTiles is not ported yet");
     }
 }
