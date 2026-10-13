@@ -89,8 +89,9 @@ public static unsafe partial class GeometryProcessing
                 attr_buffer = ArrayPool<float>.Shared.Rent(vertex_count * 2);
                 for (int i = 0; i < vertex_count; i++)
                 {
-                    attr_buffer[i * 2 + 0] = verts[i].tex.X;
-                    attr_buffer[i * 2 + 1] = verts[i].tex.Y;
+                    Vector2 uv             = verts[i].GetUv();
+                    attr_buffer[i * 2 + 0] = uv.X;
+                    attr_buffer[i * 2 + 1] = uv.Y;
                 }
                 attr_stride = sizeof(float) * 2;
                 attr_count  = 2;

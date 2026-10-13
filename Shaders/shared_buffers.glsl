@@ -439,13 +439,13 @@ struct MeshletBounds
 // @layout std430  (storage buffer element)
 struct PulledVertex
 {
-    vec3   position;
+    float  position_x;  // hlsl: float3 position. a glsl vec3 would align the element to 16 and stride it at 32, the
+    float  position_y;  // buffer holds Spartan's packed 24-byte RHI_Vertex_PosTexNorTan, so three scalars instead
+    float  position_z;
     uint   uv;  // f16 x | f16 y
     uint   normal;  // s16 oct.x | s16 oct.y
     uint   tangent;  // s16 oct.x | s16 oct.y
-    uint  _pad0;
-    uint  _pad1;
-};  // 32 bytes (hlsl/c++: 24)
+};  // 24 bytes (hlsl/c++: 24)
 
 // @layout std430  (storage buffer element)
 struct PackedInstance

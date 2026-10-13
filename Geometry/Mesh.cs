@@ -294,6 +294,7 @@ public class Mesh : IResource, IDisposable
             // reuse the exact simplification for repeated imports: hash the actual input geometry, target and policy
             // so asset edits and terrain-border protection can't reuse an incompatible result
             GeneratedCache.Hash lod_hash = new GeneratedCache.Hash();
+            lod_hash.Add(GeneratedCache.VertexFormatVersion); // phalanx: packed vertex bytes
             lod_hash.Add(foliage_cards ? 2u : 1u); // simplification policy/cache version
             lod_hash.Add(lod_vertices);
             lod_hash.Add(lod_indices);
@@ -361,8 +362,8 @@ public class Mesh : IResource, IDisposable
         foreach (ref readonly RHI_Vertex_PosTexNorTan vertex in CollectionsMarshal.AsSpan(vertices))
         {
             impostor.radius = System.Math.Max(impostor.radius, (vertex.pos - impostor.center).Length());
-            uv_lo = Vector2.Min(uv_lo, vertex.tex);
-            uv_hi = Vector2.Max(uv_hi, vertex.tex);
+            uv_lo = Vector2.Min(uv_lo, vertex.GetUv());
+            uv_hi = Vector2.Max(uv_hi, vertex.GetUv());
         }
         if (impostor.radius <= 0.0f)
             return;
@@ -372,6 +373,7 @@ public class Mesh : IResource, IDisposable
         impostor.resolution = impostor.radius >= MeshImpostorLargeRadius ? MeshImpostorResolutionLarge : MeshImpostorResolution;
 
         GeneratedCache.Hash hash = new GeneratedCache.Hash();
+        hash.Add(GeneratedCache.VertexFormatVersion); // phalanx: packed vertex bytes
         hash.Add(1u); // impostor bake version
         hash.Add(MeshImpostorFrames);
         hash.Add(impostor.resolution);

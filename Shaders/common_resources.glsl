@@ -29,4 +29,31 @@ layout(set = 7, binding = 401) uniform sampler samplers[];
 const uint sampler_bilinear_clamp = 3;
 #define GET_SAMPLER(index_sampler) samplers[index_sampler]
 
+// vertex pulling decode (common_resources_bindless.hlsl), PulledVertex is Spartan's 24-byte main vertex
+vec3 unpack_vertex_position(PulledVertex v)
+{
+    return vec3(v.position_x, v.position_y, v.position_z);
+}
+
+vec2 unpack_vertex_uv(uint packed_uv)
+{
+    // f16tof32(uint2(packed & 0xFFFFu, packed >> 16)), x in the low half
+    return unpackHalf2x16(packed_uv);
+}
+
+vec3 unpack_vertex_oct(uint packed_dir)
+{
+    // sign-extend snorm16 lanes into [-1, 1]
+    int sx  = int(packed_dir << 16) >> 16;
+    int sy  = int(packed_dir) >> 16;
+    vec2 f  = max(vec2(sx, sy) * (1.0 / 32767.0), -1.0);
+
+    // branchless octahedral wrap (rune stubbe form)
+    vec3 n  = vec3(f, 1.0 - abs(f.x) - abs(f.y));
+    float t = max(-n.z, 0.0);
+    n.x    += n.x >= 0.0 ? -t : t;
+    n.y    += n.y >= 0.0 ? -t : t;
+    return normalize(n);
+}
+
 #endif

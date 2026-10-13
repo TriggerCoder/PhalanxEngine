@@ -21,6 +21,10 @@ public static class GeneratedCache
 {
     public const ulong Magic   = 0x3145484341434850ul; // "PHCACHE1"
     public const uint  Version = 2;
+    // Phalanx addition, hashed first into every geometry key: 1 = the old unpacked 44-byte vertex stub,
+    // 2 = Spartan's packed 24-byte RHI_Vertex_PosTexNorTan. bump when the vertex bytes change so stale
+    // files simply miss (and age out through Maintain)
+    public const uint  VertexFormatVersion = 2;
     public const int   HeaderSize = 40;
     public const ulong MaximumPayloadSize = 512ul * 1024 * 1024 - 16;
 

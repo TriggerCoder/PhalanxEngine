@@ -94,8 +94,8 @@ public static partial class GeometryProcessing
             for (int i = 0; i < vertex_count; i++)
             {
                 positions[i] = vertices[i].pos - center;
-                normals[i]   = vertices[i].nor;
-                uvs[i]       = vertices[i].tex;
+                normals[i]   = vertices[i].GetNormal();
+                uvs[i]       = vertices[i].GetUv();
             }
 
             float inv_radius   = 1.0f / radius;

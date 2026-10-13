@@ -70,9 +70,10 @@ public class SharedBufferLayoutTests
         Assert.Equal((int)Marshal.OffsetOf<FrameBufferData>(nameof(FrameBufferData.camera_position)) + 12,
                      (int)Marshal.OffsetOf<FrameBufferData>(nameof(FrameBufferData.camera_near)));
         Assert.Equal(0, (int)Marshal.OffsetOf<FrameBufferData>(nameof(FrameBufferData.time)) % 8);
-        // PulledVertex (std430): vec3 position + 3 uints = 24, rounded to the vec3 alignment of 16 -> 32
+        // PulledVertex (std430): 3 floats + 3 uints = 24, scalar aligned so the array stride matches the cpu vertex
         Assert.Equal(12, (int)Marshal.OffsetOf<PulledVertex>(nameof(PulledVertex.uv)));
-        Assert.Equal(32, Unsafe.SizeOf<PulledVertex>());
+        Assert.Equal(24, Unsafe.SizeOf<PulledVertex>());
+        Assert.Equal(Unsafe.SizeOf<RHI_Vertex_PosTexNorTan>(), Unsafe.SizeOf<PulledVertex>());
         // push constants: 4 uints + vec4 values[5]
         Assert.Equal(96, Unsafe.SizeOf<PassBufferData>());
         // VkDrawIndexedIndirectCommand / VkDispatchIndirectCommand are scalar-only, unchanged
