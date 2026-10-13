@@ -16,6 +16,10 @@
 
   <ItemGroup>
     <!-- runtime GLSL -> SPIR-V; pulls Silk.NET.Shaderc.Native (win-x64/x86/arm64, linux, osx shaderc_shared binaries) -->
+    <!-- Vulkan 1.3 bindings for the internal RHI (Rendering/RHI only, architecture rule 10). The loader comes from the driver. -->
+    <PackageReference Include="Silk.NET.Vulkan" Version="2.23.0" />
+    <PackageReference Include="Silk.NET.Vulkan.Extensions.KHR" Version="2.23.0" />
+    <PackageReference Include="Silk.NET.Vulkan.Extensions.EXT" Version="2.23.0" />
     <PackageReference Include="Silk.NET.Shaderc" Version="2.23.0" />
     <!-- XxHash64 for the shader cache key -->
     <PackageReference Include="System.IO.Hashing" Version="8.0.0" />
