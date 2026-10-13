@@ -2,7 +2,8 @@
 // instance (+ optional validation through VK_EXT_debug_utils), physical device registration/selection,
 // queue family detection (dedicated compute/copy when available), logical device with Vulkan 1.3
 // dynamic rendering + synchronization2 and 1.2 timeline semaphores, queues, object naming.
-// TODO(port): VMA/memory, descriptors + bindless, pipeline cache, deletion queue, staging pool, frame/Submit API,
+// Frames + deletion queue: RHI_Device.Frame.cs, memory: RHI_Device.Memory.cs (step 2).
+// TODO(port): descriptors + bindless, pipeline cache, staging pool, compute frame lists,
 // vendor technologies (FSR/XeSS/DLSS), ray tracing, mesh shaders, VRS, calibrated timestamps.
 using System.Runtime.InteropServices;
 using Silk.NET.Core;
@@ -14,7 +15,7 @@ using static Phalanx.Rendering.RHI.RHI_Implementation;
 
 namespace Phalanx.Rendering.RHI;
 
-internal static unsafe class RHI_Device
+internal static unsafe partial class RHI_Device
 {
     public const string ValidationLayerName = "VK_LAYER_KHRONOS_validation";
     public static readonly uint ApiVersionRequired = Vk.Version13;
@@ -128,6 +129,10 @@ internal static unsafe class RHI_Device
 
         // logical device + queues
         CreateDevice();
+
+        // memory + frame state
+        s_allocator = new RHI_Allocator_Custom();
+        FrameReset();
     }
 
     // true when a loader exists and some device reports vulkan 1.3; creates and destroys a bare instance
@@ -173,6 +178,10 @@ internal static unsafe class RHI_Device
         if (RHI_Context.Device.Handle != 0)
         {
             vk.DeviceWaitIdle(RHI_Context.Device);
+            DeletionQueueFlush();
+            FrameReset();
+            s_allocator?.Dispose();
+            s_allocator = null;
             var destroyed = new HashSet<RHI_Queue>();
             for (int i = 0; i < s_queues.Length; i++)
             {

@@ -60,6 +60,7 @@ internal sealed unsafe class RHI_Queue : IDisposable
         return cmd_list;
     }
 
+    // spartan: queue Wait(flush). waits for every list of this queue on its timeline value
     public void Wait()
     {
         lock (m_mutex)
@@ -68,15 +69,22 @@ internal sealed unsafe class RHI_Queue : IDisposable
             cmd_list.WaitForExecution();
     }
 
-    public void Submit(RHI_CommandList cmd_list, RHI_SyncPrimitive? semaphore_wait, RHI_SyncPrimitive? semaphore_signal,
-                       RHI_SyncPrimitive? semaphore_timeline_signal = null, ulong timeline_signal_value = 0)
+    // always signals the command list's timeline semaphore with its next value (spartan: RHI_Work), optionally
+    // waits on a binary semaphore (swapchain acquire) and/or a timeline value (cross-queue or host dependency)
+    public RHI_Work Submit(RHI_CommandList cmd_list, RHI_SyncPrimitive? semaphore_wait, RHI_SyncPrimitive? semaphore_signal,
+                       RHI_SyncPrimitive? semaphore_timeline_signal = null, ulong timeline_signal_value = 0,
+                       RHI_SyncPrimitive? semaphore_timeline_wait = null, ulong timeline_wait_value = 0)
     {
-        SemaphoreSubmitInfo* waits   = stackalloc SemaphoreSubmitInfo[1];
-        SemaphoreSubmitInfo* signals = stackalloc SemaphoreSubmitInfo[2];
+        SemaphoreSubmitInfo* waits   = stackalloc SemaphoreSubmitInfo[2];
+        SemaphoreSubmitInfo* signals = stackalloc SemaphoreSubmitInfo[3];
         uint wait_count = 0, signal_count = 0;
 
         if (semaphore_wait != null)
             waits[wait_count++] = new SemaphoreSubmitInfo { SType = StructureType.SemaphoreSubmitInfo, Semaphore = semaphore_wait.GetSemaphore(), StageMask = PipelineStageFlags2.AllCommandsBit };
+        if (semaphore_timeline_wait != null)
+            waits[wait_count++] = new SemaphoreSubmitInfo { SType = StructureType.SemaphoreSubmitInfo, Semaphore = semaphore_timeline_wait.GetSemaphore(), Value = timeline_wait_value, StageMask = PipelineStageFlags2.AllCommandsBit };
+        ulong value = cmd_list.NextTimelineSignalValue();
+        signals[signal_count++] = new SemaphoreSubmitInfo { SType = StructureType.SemaphoreSubmitInfo, Semaphore = cmd_list.GetTimelineSemaphore().GetSemaphore(), Value = value, StageMask = PipelineStageFlags2.AllCommandsBit };
         if (semaphore_signal != null)
             signals[signal_count++] = new SemaphoreSubmitInfo { SType = StructureType.SemaphoreSubmitInfo, Semaphore = semaphore_signal.GetSemaphore(), StageMask = PipelineStageFlags2.AllCommandsBit };
         if (semaphore_timeline_signal != null)
@@ -94,11 +102,10 @@ internal sealed unsafe class RHI_Queue : IDisposable
             PSignalSemaphoreInfos    = signals
         };
 
-        RHI_SyncPrimitive fence = cmd_list.GetFence();
-        fence.Reset();
         lock (m_mutex)
-            Check(RHI_Context.Vk.QueueSubmit2(NativeQueue, 1, in submit, fence.GetFence()), "vkQueueSubmit2");
-        cmd_list.OnSubmitted();
+            Check(RHI_Context.Vk.QueueSubmit2(NativeQueue, 1, in submit, default), "vkQueueSubmit2");
+        cmd_list.OnSubmitted(value);
+        return cmd_list.GetWork();
     }
 
     // false when the swapchain is out of date and has to be recreated

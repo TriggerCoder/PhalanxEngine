@@ -31,27 +31,23 @@ internal static class RHI_ClearSample
             using var swapchain = new RHI_SwapChain(surface_source, (uint)window.FramebufferSize.X, (uint)window.FramebufferSize.Y,
                                                     RHI_Present_Mode.Fifo, RHI_SwapChain.BufferCount, hdr: false, "swapchain");
             window.FramebufferResize += size => swapchain.Resize((uint)size.X, (uint)size.Y);
-            RHI_Queue queue = RHI_Device.GetQueue(RHI_Queue_Type.Graphics);
-
             while (!window.IsClosing && (max_frames == 0 || presented < max_frames))
             {
                 window.DoEvents();
                 if (window.IsClosing)
                     break;
 
-                RHI_CommandList cmd = queue.NextCommandList();
                 if (!swapchain.AcquireNextImage())
                     continue;
 
-                cmd.Begin();
+                RHI_CommandList cmd = RHI_Device.BeginFrame();
                 // the whole image is cleared, so the old contents can be discarded (undefined -> general)
                 cmd.InsertBarrierImage(swapchain.GetRhiRt(), ImageAspectFlags.ColorBit, ImageLayout.Undefined, ImageLayout.General);
                 cmd.ClearRenderTarget(swapchain.GetRhiRtv(), ImageLayout.General, swapchain.Width, swapchain.Height, r, g, b, a);
                 cmd.InsertBarrierImage(swapchain.GetRhiRt(), ImageAspectFlags.ColorBit, ImageLayout.General, ImageLayout.PresentSrcKhr);
-                cmd.End();
 
-                queue.Submit(cmd, swapchain.GetImageAcquiredSemaphore(), swapchain.GetRenderingCompleteSemaphore());
-                swapchain.SetAcquireConsumer(cmd);
+                RHI_Work work = RHI_Device.EndFrame(swapchain.GetImageAcquiredSemaphore(), swapchain.GetRenderingCompleteSemaphore());
+                swapchain.SetAcquireConsumer(work);
                 swapchain.Present();
                 presented++;
             }
@@ -74,9 +70,10 @@ internal static class RHI_ClearSample
         RHI_Device.Initialize(Array.Empty<string>(), validation);
         try
         {
-            var (image, image_memory) = RHI_Memory.CreateImage2D(size, size, RHI_Format.R8G8B8A8_Unorm,
+            RHI_Allocation image_memory = RHI_Device.MemoryTextureCreate2D(out Image image, size, size, RHI_Format.R8G8B8A8_Unorm,
                 ImageUsageFlags.ColorAttachmentBit | ImageUsageFlags.TransferSrcBit, "offscreen_target");
-            var (buffer, buffer_memory) = RHI_Memory.CreateReadbackBuffer(size * size * 4, "offscreen_readback");
+            RHI_Allocation buffer_memory = RHI_Device.MemoryBufferCreate(out Silk.NET.Vulkan.Buffer buffer, size * size * 4,
+                BufferUsageFlags.TransferDstBit, RHI_Memory_Usage.Readback, default, "offscreen_readback");
             ImageViewCreateInfo view_info = new()
             {
                 SType            = StructureType.ImageViewCreateInfo,
@@ -88,27 +85,20 @@ internal static class RHI_ClearSample
             RHI_Implementation.Check(RHI_Context.Vk.CreateImageView(RHI_Context.Device, in view_info, null, out ImageView view), "vkCreateImageView");
             try
             {
-                RHI_Queue queue = RHI_Device.GetQueue(RHI_Queue_Type.Graphics);
-                RHI_CommandList cmd = queue.NextCommandList();
-                cmd.Begin();
+                RHI_CommandList cmd = RHI_Device.BeginFrame();
                 cmd.InsertBarrierImage(image, ImageAspectFlags.ColorBit, ImageLayout.Undefined, ImageLayout.General);
                 cmd.ClearRenderTarget(view, ImageLayout.General, size, size, r, g, b, a);
                 cmd.InsertBarrierImage(image, ImageAspectFlags.ColorBit, ImageLayout.General, ImageLayout.General);
                 cmd.CopyImageToBuffer(image, ImageLayout.General, buffer, size, size);
-                cmd.End();
-                queue.Submit(cmd, null, null);
-                cmd.WaitForExecution();
-                byte[] bytes = RHI_Memory.Read(buffer_memory, size * size * 4);
-                return bytes[..4];
+                RHI_Device.EndFrame().Wait();
+                return new ReadOnlySpan<byte>((void*)buffer_memory.MappedData, 4).ToArray();
             }
             finally
             {
                 RHI_Device.QueueWaitAll();
                 RHI_Context.Vk.DestroyImageView(RHI_Context.Device, view, null);
-                RHI_Context.Vk.DestroyImage(RHI_Context.Device, image, null);
-                RHI_Context.Vk.DestroyBuffer(RHI_Context.Device, buffer, null);
-                RHI_Memory.Free(image_memory);
-                RHI_Memory.Free(buffer_memory);
+                RHI_Device.MemoryTextureDestroy(image, image_memory);
+                RHI_Device.MemoryBufferDestroy(buffer, buffer_memory);
             }
         }
         finally

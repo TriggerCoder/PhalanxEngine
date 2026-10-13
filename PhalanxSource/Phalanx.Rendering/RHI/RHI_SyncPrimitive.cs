@@ -47,6 +47,14 @@ internal sealed unsafe class RHI_SyncPrimitive : IDisposable
     // timeline only
     public ulong GetNextSignalValue() => Interlocked.Increment(ref m_value);
     public ulong GetValue() => Interlocked.Read(ref m_value);
+    internal void SetValue(ulong value) => Interlocked.Exchange(ref m_value, value);
+    // what the gpu (or host) has signaled so far
+    public ulong GetCompletedValue()
+    {
+        ulong current = 0;
+        Check(RHI_Context.Vk.GetSemaphoreCounterValue(RHI_Context.Device, m_semaphore, &current), "vkGetSemaphoreCounterValue");
+        return current;
+    }
 
     public void Wait(ulong timeout_nanoseconds)
     {
@@ -83,9 +91,7 @@ internal sealed unsafe class RHI_SyncPrimitive : IDisposable
 
     public bool IsSignaled(ulong value)
     {
-        ulong current = 0;
-        Check(RHI_Context.Vk.GetSemaphoreCounterValue(RHI_Context.Device, m_semaphore, &current), "vkGetSemaphoreCounterValue");
-        return current >= value;
+        return GetCompletedValue() >= value;
     }
 
     public void Reset()

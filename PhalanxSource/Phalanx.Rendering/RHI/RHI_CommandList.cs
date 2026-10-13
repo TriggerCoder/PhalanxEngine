@@ -6,17 +6,64 @@ using static Phalanx.Rendering.RHI.RHI_Implementation;
 
 namespace Phalanx.Rendering.RHI;
 
+// a timeline semaphore and the value a submission signals (spartan: RHI_Work)
+internal readonly record struct RHI_Work(RHI_SyncPrimitive? Semaphore, ulong Value)
+{
+    public bool IsValid => Semaphore != null && Value != 0;
+    public bool IsComplete() => !IsValid || Semaphore!.IsSignaled(Value);
+    public void Wait(ulong timeout_nanoseconds = ulong.MaxValue) { if (IsValid) Semaphore!.Wait(timeout_nanoseconds, Value); }
+}
+
+// everything that was submitted or reserved (recording) at capture time (spartan: RHI_PendingWork)
+internal sealed class RHI_PendingWork
+{
+    public IReadOnlyList<RHI_Work> Work { get; }
+    public RHI_PendingWork(IReadOnlyList<RHI_Work> work) => Work = work;
+    public bool IsComplete()
+    {
+        foreach (RHI_Work w in Work)
+            if (!w.IsComplete())
+                return false;
+        return true;
+    }
+    public void Wait() { foreach (RHI_Work w in Work) w.Wait(); }
+}
+
 internal sealed unsafe class RHI_CommandList : IDisposable
 {
+    private static readonly List<RHI_CommandList> s_lists = new();
+
     private CommandBuffer m_rhi_resource;
-    private readonly RHI_SyncPrimitive m_rendering_complete_fence;
+    private readonly RHI_SyncPrimitive m_rendering_complete_semaphore_timeline;
+    private ulong m_last_timeline_signal_value;
     private RHI_CommandListState m_state = RHI_CommandListState.Idle;
 
     public RHI_Queue Queue { get; }
     public string Name { get; }
     public RHI_CommandListState State => m_state;
     public CommandBuffer GetRhiResource() => m_rhi_resource;
-    public RHI_SyncPrimitive GetFence() => m_rendering_complete_fence;
+    public RHI_SyncPrimitive GetTimelineSemaphore() => m_rendering_complete_semaphore_timeline;
+    public ulong GetLastTimelineSignalValue() => m_last_timeline_signal_value;
+    public RHI_Work GetWork() => new(m_rendering_complete_semaphore_timeline, m_last_timeline_signal_value);
+    public bool IsExecuting() => m_state == RHI_CommandListState.Submitted && !GetWork().IsComplete();
+
+    // spartan: CapturePendingWork. submitted lists that have not completed, plus recording lists with the value
+    // their next submission will signal (a resource released mid-recording may still be referenced by them).
+    public static RHI_PendingWork CapturePendingWork()
+    {
+        var work = new List<RHI_Work>();
+        lock (s_lists)
+        {
+            foreach (RHI_CommandList list in s_lists)
+            {
+                if (list.m_state == RHI_CommandListState.Submitted && !list.GetWork().IsComplete())
+                    work.Add(list.GetWork());
+                else if (list.m_state == RHI_CommandListState.Recording)
+                    work.Add(new RHI_Work(list.m_rendering_complete_semaphore_timeline, list.m_last_timeline_signal_value + 1));
+            }
+        }
+        return new RHI_PendingWork(work);
+    }
 
     public RHI_CommandList(RHI_Queue queue, CommandPool pool, string name)
     {
@@ -31,7 +78,8 @@ internal sealed unsafe class RHI_CommandList : IDisposable
         };
         Check(RHI_Context.Vk.AllocateCommandBuffers(RHI_Context.Device, in info, out m_rhi_resource), "vkAllocateCommandBuffers");
         RHI_Device.SetResourceName((ulong)m_rhi_resource.Handle, RHI_Resource_Type.CommandList, name);
-        m_rendering_complete_fence = new RHI_SyncPrimitive(RHI_SyncPrimitive_Type.Fence, name + "_fence");
+        m_rendering_complete_semaphore_timeline = new RHI_SyncPrimitive(RHI_SyncPrimitive_Type.SemaphoreTimeline, name + "_timeline");
+        lock (s_lists) s_lists.Add(this);
     }
 
     // waits for the previous submission of this list to finish executing (spartan: WaitForExecution)
@@ -39,7 +87,7 @@ internal sealed unsafe class RHI_CommandList : IDisposable
     {
         if (m_state != RHI_CommandListState.Submitted)
             return;
-        m_rendering_complete_fence.Wait(ulong.MaxValue);
+        m_rendering_complete_semaphore_timeline.Wait(ulong.MaxValue, m_last_timeline_signal_value);
         m_state = RHI_CommandListState.Idle;
     }
 
@@ -62,9 +110,12 @@ internal sealed unsafe class RHI_CommandList : IDisposable
         Check(RHI_Context.Vk.EndCommandBuffer(m_rhi_resource), "vkEndCommandBuffer");
     }
 
-    // called by RHI_Queue.Submit
-    internal void OnSubmitted()
+    // called by RHI_Queue.Submit, returns the value this submission signals
+    internal ulong NextTimelineSignalValue() => m_last_timeline_signal_value + 1;
+    internal void OnSubmitted(ulong value)
     {
+        m_last_timeline_signal_value = value;
+        m_rendering_complete_semaphore_timeline.SetValue(value);
         m_state = RHI_CommandListState.Submitted;
     }
 
@@ -133,7 +184,8 @@ internal sealed unsafe class RHI_CommandList : IDisposable
 
     public void Dispose()
     {
-        m_rendering_complete_fence.Dispose();
+        lock (s_lists) s_lists.Remove(this);
+        m_rendering_complete_semaphore_timeline.Dispose();
         // the command buffer is freed with its pool (RHI_Queue)
     }
 }

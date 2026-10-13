@@ -1,7 +1,7 @@
 // Port of SpartanEngine source/rhi/RHI_SwapChain.h + vulkan/Vulkan_SwapChain.cpp @ 4c07baa (first slice).
 // The surface comes from Silk.NET windowing's IVkSurface (Core's Phalanx.Platform window), so Core never sees Vulkan.
-// Differences: no HDR toggle at runtime yet, no RTSS check, acquire-semaphore reuse waits on the consuming command
-// list's fence (spartan waits on the consumer's timeline value).
+// Differences: no HDR toggle at runtime yet, no RTSS check, acquire-semaphore reuse waits on the timeline value of
+// the submission that consumed it (spartan: the consumer's RHI_Work).
 using Silk.NET.Core.Contexts;
 using Silk.NET.Core.Native;
 using Silk.NET.Vulkan;
@@ -24,7 +24,7 @@ internal sealed unsafe class RHI_SwapChain : IDisposable
     private ImageView[] m_rhi_rtv = Array.Empty<ImageView>();
     private ImageLayout[] m_layouts = Array.Empty<ImageLayout>();
     private RHI_SyncPrimitive[] m_image_acquired_semaphore = Array.Empty<RHI_SyncPrimitive>();
-    private RHI_CommandList?[] m_image_acquired_consumer = Array.Empty<RHI_CommandList?>();
+    private RHI_Work[] m_image_acquired_consumer = Array.Empty<RHI_Work>();
     private RHI_SyncPrimitive[] m_rendering_complete_semaphore = Array.Empty<RHI_SyncPrimitive>();
     private uint m_semaphore_index;
     private uint m_acquired_semaphore_index;
@@ -179,7 +179,7 @@ internal sealed unsafe class RHI_SwapChain : IDisposable
         {
             int acquire_count = System.Math.Max(AcquireSemaphoreCount, (int)count + 1);
             m_image_acquired_semaphore = new RHI_SyncPrimitive[acquire_count];
-            m_image_acquired_consumer  = new RHI_CommandList?[acquire_count];
+            m_image_acquired_consumer  = new RHI_Work[acquire_count];
             for (int i = 0; i < acquire_count; i++)
                 m_image_acquired_semaphore[i] = new RHI_SyncPrimitive(RHI_SyncPrimitive_Type.Semaphore, $"{Name}_image_acquired_{i}");
         }
@@ -205,8 +205,8 @@ internal sealed unsafe class RHI_SwapChain : IDisposable
             RHI_SyncPrimitive signal = m_image_acquired_semaphore[index];
 
             // wait only for the submission that consumed this semaphore
-            m_image_acquired_consumer[index]?.WaitForExecution();
-            m_image_acquired_consumer[index] = null;
+            m_image_acquired_consumer[index].Wait();
+            m_image_acquired_consumer[index] = default;
 
             uint image_index = 0;
             Result result = RHI_Context.Swapchain!.AcquireNextImage(RHI_Context.Device, m_rhi_swapchain, 100_000_000, signal.GetSemaphore(), default, ref image_index);
@@ -231,7 +231,8 @@ internal sealed unsafe class RHI_SwapChain : IDisposable
     }
 
     // records that cmd_list waits on the current acquire semaphore (so it isn't re-signaled while still pending)
-    public void SetAcquireConsumer(RHI_CommandList cmd_list) => m_image_acquired_consumer[m_acquired_semaphore_index] = cmd_list;
+    public void SetAcquireConsumer(RHI_Work work) => m_image_acquired_consumer[m_acquired_semaphore_index] = work;
+    public void SetAcquireConsumer(RHI_CommandList cmd_list) => SetAcquireConsumer(cmd_list.GetWork());
 
     public void Present()
     {

@@ -127,10 +127,10 @@ public class RhiTableTests
             MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
             MemoryPropertyFlags.DeviceLocalBit | MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
         };
-        Assert.Equal(0, RHI_Memory.FindMemoryType(0b111, MemoryPropertyFlags.DeviceLocalBit, types));
-        Assert.Equal(1, RHI_Memory.FindMemoryType(0b111, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit, types));
-        Assert.Equal(2, RHI_Memory.FindMemoryType(0b100, MemoryPropertyFlags.HostVisibleBit, types));
-        Assert.Equal(-1, RHI_Memory.FindMemoryType(0b001, MemoryPropertyFlags.HostVisibleBit, types));
+        Assert.Equal(0, RHI_Allocator_Policy.FindMemoryType(0b111, RHI_Memory_Usage.GpuOnly, types));   // not host visible preferred
+        Assert.Equal(1, RHI_Allocator_Policy.FindMemoryType(0b111, RHI_Memory_Usage.Upload, types));
+        Assert.Equal(2, RHI_Allocator_Policy.FindMemoryType(0b100, RHI_Memory_Usage.Upload, types));
+        Assert.Equal(-1, RHI_Allocator_Policy.FindMemoryType(0b001, RHI_Memory_Usage.Readback, types));
     }
 }
 
