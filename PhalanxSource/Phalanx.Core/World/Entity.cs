@@ -1,7 +1,11 @@
 ﻿using System.Numerics;
 using System.Runtime.CompilerServices;
+using Phalanx.Math;
+using Phalanx.Input;
+using Phalanx.Platform;
+using Phalanx.Caching;
 
-namespace Phalanx;
+namespace Phalanx.World;
 
 [Serializable]
 public class Entity : SpartanObject

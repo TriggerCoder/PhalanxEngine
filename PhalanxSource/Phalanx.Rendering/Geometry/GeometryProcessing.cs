@@ -2,9 +2,14 @@ using System.Buffers;
 using System.Numerics;
 using System.Runtime.CompilerServices; // Unsafe.SizeOf -> vertex stride passed to every meshopt call (VertexStride)
 using System.Runtime.InteropServices;
+using Phalanx.Math;
+using Phalanx.Geometry;
+using Phalanx.Input;
+using Phalanx.Platform;
+using Phalanx.Caching;
 using MeshOptimizer; // Alimer.Bindings.MeshOptimizer
 
-namespace Phalanx;
+namespace Phalanx.Rendering;
 
 // port of source/geometry/GeometryProcessing.cpp (Spartan 4c07baa)
 // all meshoptimizer calls use the pointer overloads on pinned List<T> storage: positions are read straight from
@@ -220,8 +225,8 @@ public static unsafe partial class GeometryProcessing
         // step 2: simplify with density-based targeting
         if (index_count > 30000)
         {
-            Vector3 min = Math.Vector3.Infinity;
-            Vector3 max = Math.Vector3.InfinityNeg;
+            Vector3 min = MathEx.Vector3.Infinity;
+            Vector3 max = MathEx.Vector3.InfinityNeg;
             foreach (ref readonly RHI_Vertex_PosTexNorTan v in CollectionsMarshal.AsSpan(vertices))
             {
                 min = Vector3.Min(min, v.pos);

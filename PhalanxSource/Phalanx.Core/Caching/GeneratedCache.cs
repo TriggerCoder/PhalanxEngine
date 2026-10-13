@@ -3,8 +3,12 @@ using System.Diagnostics;
 using System.IO.Hashing;
 using System.Runtime.InteropServices;
 using System.Text;
+using Phalanx.Geometry;
+using Phalanx.World;
+using Phalanx.Input;
+using Phalanx.Platform;
 
-namespace Phalanx;
+namespace Phalanx.Caching;
 
 // port of source/geometry/GeneratedCache.h/.cpp (Spartan 4c07baa): a disposable on-disk cache for derived geometry
 // (simplified lods, impostor atlases) keyed by a hash of the generator's inputs

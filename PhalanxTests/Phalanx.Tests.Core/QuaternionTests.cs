@@ -1,8 +1,15 @@
 using System.Numerics;
 using Phalanx;
 using Xunit;
+using Phalanx.Geometry;
+using Phalanx.World;
+using Phalanx.Platform;
+using Phalanx.Caching;
 
 namespace Phalanx.Tests;
+
+// the type shares its name with the Phalanx.World namespace, which wins name lookup inside Phalanx.*
+using World = Phalanx.World.World;
 
 public class QuaternionTests
 {

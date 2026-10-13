@@ -1,6 +1,12 @@
 using System.Numerics;
+using Phalanx.Math;
+using Phalanx.Geometry;
+using Phalanx.World;
+using Phalanx.Platform;
+using Phalanx.Caching;
+using Phalanx.Rendering;
 
-namespace Phalanx;
+namespace Phalanx.Assets.Import;
 
 // TODO(port): source/resource/import/ModelImporter.cpp (assimp scene loading, nodes, lights, skeletons, animations,
 // texture binding). only the material-name rules and the per-mesh AddGeometry call site are ported so far; they're

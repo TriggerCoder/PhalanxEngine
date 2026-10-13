@@ -1,7 +1,11 @@
 ﻿using System;
 using System.Numerics;
+using Phalanx.Math;
+using Phalanx.Input;
+using Phalanx.Platform;
+using Phalanx.Caching;
 
-namespace Phalanx;
+namespace Phalanx.World;
 
 public static class World
 {

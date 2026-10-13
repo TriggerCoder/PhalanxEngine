@@ -1,4 +1,10 @@
-namespace Phalanx;
+using Phalanx.Geometry;
+using Phalanx.World;
+using Phalanx.Input;
+using Phalanx.Platform;
+using Phalanx.Caching;
+
+namespace Phalanx.Rendering;
 
 // Hand-written helpers for the generated structs in SharedBuffers.g.cs (Phalanx.Generators, kept separate so generation
 // does not overwrite them). Bit positions mirror the HLSL helpers in shared_buffers.h.

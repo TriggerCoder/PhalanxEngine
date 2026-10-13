@@ -1,7 +1,11 @@
 using System.Buffers;
 using System.Numerics;
+using Phalanx.Geometry;
+using Phalanx.Input;
+using Phalanx.Platform;
+using Phalanx.Caching;
 
-namespace Phalanx;
+namespace Phalanx.Rendering;
 
 // foliage impostors, port of the impostor part of source/geometry/GeometryProcessing.cpp (Spartan 4c07baa)
 // the frame math must match Shaders/impostor.glsl (Spartan: common_vertex_processing.hlsl) on the gpu

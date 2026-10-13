@@ -4,6 +4,12 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using Phalanx;
 using Xunit;
+using Phalanx.Math;
+using Phalanx.Geometry;
+using Phalanx.Input;
+using Phalanx.Platform;
+using Phalanx.Caching;
+using Phalanx.Rendering;
 
 namespace Phalanx.Tests;
 
@@ -55,7 +61,7 @@ public class SharedBufferLayoutTests
             Assert.True(offset % align == 0, $"{name}.{field} at {offset} violates {e.Layout} alignment {align}");
             if (stride != 0 && e.Layout == "std140")
                 Assert.True(stride % 16 == 0, $"{name}.{field}: std140 array stride {stride} must be a multiple of 16");
-            structAlign = Math.Max(structAlign, align);
+            structAlign = MathEx.Max(structAlign, align);
         }
         Assert.True(e.Size % structAlign == 0, $"{name}: size {e.Size} not a multiple of alignment {structAlign}");
     }

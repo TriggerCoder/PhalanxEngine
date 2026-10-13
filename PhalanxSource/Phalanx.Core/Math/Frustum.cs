@@ -1,7 +1,11 @@
 ﻿using System;
 using System.Numerics;
+using Phalanx.World;
+using Phalanx.Input;
+using Phalanx.Platform;
+using Phalanx.Caching;
 
-namespace Phalanx;
+namespace Phalanx.Math;
 
 [Serializable]
 public struct Frustum
@@ -56,9 +60,9 @@ public struct Frustum
         m_planes[5].Normalize();
     }
 
-    public readonly bool IsVisible(Vector3 center, Vector3 extent, bool ignore_depth = false) { return CheckCube(center, extent, ignore_depth) != Math.Intersection.Outside; }
+    public readonly bool IsVisible(Vector3 center, Vector3 extent, bool ignore_depth = false) { return CheckCube(center, extent, ignore_depth) != MathEx.Intersection.Outside; }
 
-    internal readonly Math.Intersection CheckCube(Vector3 center, Vector3 extent, bool ignore_depth)
+    internal readonly MathEx.Intersection CheckCube(Vector3 center, Vector3 extent, bool ignore_depth)
     {
         Helpers.PLXAssert(!center.IsNaN() && !extent.IsNaN());
 
@@ -79,7 +83,7 @@ public struct Frustum
 
             // if the cube is completely outside any plane, then it's outside
             if (d + r < 0.0f)
-                return Math.Intersection.Outside;
+                return MathEx.Intersection.Outside;
 
             // if the cube intersects the plane, mark as intersecting
             if (d - r < 0.0f)
@@ -87,10 +91,10 @@ public struct Frustum
         }
 
         // return the final classification
-        return intersects ? Math.Intersection.Intersects : Math.Intersection.Inside;
+        return intersects ? MathEx.Intersection.Intersects : MathEx.Intersection.Inside;
     }
 
-    internal readonly Math.Intersection CheckSphere(Vector3 center, float radius, bool ignore_depth)
+    internal readonly MathEx.Intersection CheckSphere(Vector3 center, float radius, bool ignore_depth)
     {
         Helpers.PLXAssert(!center.IsNaN() && radius > 0.0f);
 
@@ -107,14 +111,14 @@ public struct Frustum
 
             // if this distance is < -sphere.radius, we are outside
             if (distance < -radius)
-                return Math.Intersection.Outside;
+                return MathEx.Intersection.Outside;
 
             // else if the distance is between +- radius, then we intersect
             if (distance < radius)
-                return Math.Intersection.Intersects;
+                return MathEx.Intersection.Intersects;
         }
 
         // otherwise we are fully in view
-        return Math.Intersection.Inside;
+        return MathEx.Intersection.Inside;
     }
 }

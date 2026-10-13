@@ -1,6 +1,12 @@
 ﻿using System;
 
-namespace Phalanx;
+using Phalanx.Math;
+using Phalanx.Geometry;
+using Phalanx.Input;
+using Phalanx.Platform;
+using Phalanx.Caching;
+
+namespace Phalanx.World;
 
 public enum MaterialTextureType
 {

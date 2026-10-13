@@ -3,8 +3,12 @@
 // port of the named SpartanEngine file and delete the stub.
 using System.Numerics;
 using System.Runtime.InteropServices;
+using Phalanx.Math;
+using Phalanx.Geometry;
+using Phalanx.Platform;
+using Phalanx.Caching;
 
-namespace Phalanx;
+namespace Phalanx.World;
 
 // TODO(port): source/rhi/RHI_Viewport.h
 public struct RHI_Viewport

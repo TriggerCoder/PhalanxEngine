@@ -1,3 +1,11 @@
+using Phalanx.Geometry;
+using Phalanx.World;
+using Phalanx.Input;
+using Phalanx.Platform;
+using Phalanx.Caching;
+using Phalanx.Rendering;
+using Phalanx.Assets.Import;
+
 namespace Phalanx.Editor;
 
 // The stock editor executable. A user's game exe replaces it (architecture §3, §8).

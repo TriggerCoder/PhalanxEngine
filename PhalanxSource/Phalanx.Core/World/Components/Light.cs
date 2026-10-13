@@ -1,8 +1,12 @@
 ﻿using System;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using Phalanx.Math;
+using Phalanx.Input;
+using Phalanx.Platform;
+using Phalanx.Caching;
 
-namespace Phalanx;
+namespace Phalanx.World;
 public enum LightType
 {
     Directional,
@@ -57,7 +61,7 @@ public class Light : Component
     private float m_temperature_kelvin = 0.0f;
     private LightPreset m_preset = LightPreset.custom;
     private float m_range = 32.0f;
-    private float m_angle_rad = Math.DegToRad * 30.0f;
+    private float m_angle_rad = MathEx.DegToRad * 30.0f;
     private float m_area_width = 1.0f;  // area light width in meters
     private float m_area_height = 1.0f;  // area light height in meters
     private uint m_index = 0;
@@ -194,7 +198,7 @@ public class Light : Component
                 Vector3 cameraPos = camera.GetEntity().GetPosition();
                 Vector3 lightForward = GetEntity().GetForward();
                 position = cameraPos - lightForward * cascade_depth * 0.5f;
-                m_matrix_view[0] = Matrix4x4.CreateLookAtLeftHanded(position, cameraPos, Math.Vector3.Up);
+                m_matrix_view[0] = Matrix4x4.CreateLookAtLeftHanded(position, cameraPos, MathEx.Vector3.Up);
                 m_matrix_view[1] = m_matrix_view[0];
 
                 // move the light in world units per texel to avoid shimmering
@@ -209,8 +213,8 @@ public class Light : Component
                         float atlasScale = rectWidth / atlasWidth;                      // proportion of atlas used by cascade
                         float effectiveRes = atlasWidth * atlasScale;                   // effective resolution for cascade
                         float texelSizeWorld = (2.0f * extents[i]) / effectiveRes;      // world units per texel
-                        m_matrix_view[i].M41 = Math.Round(m_matrix_view[i].M41 / texelSizeWorld) * texelSizeWorld; // snap X
-                        m_matrix_view[i].M42 = Math.Round(m_matrix_view[i].M42 / texelSizeWorld) * texelSizeWorld; // snap Y
+                        m_matrix_view[i].M41 = MathEx.Round(m_matrix_view[i].M41 / texelSizeWorld) * texelSizeWorld; // snap X
+                        m_matrix_view[i].M42 = MathEx.Round(m_matrix_view[i].M42 / texelSizeWorld) * texelSizeWorld; // snap Y
                         // z-translation (M43) remains unchanged for orthographic projection
                     }
                 }
@@ -219,24 +223,24 @@ public class Light : Component
             case LightType.Point:
             {
                 // +X (right)
-                m_matrix_view[0] = Matrix4x4.CreateLookAtLeftHanded(position, position + Math.Vector3.Right, Math.Vector3.Up);
+                m_matrix_view[0] = Matrix4x4.CreateLookAtLeftHanded(position, position + MathEx.Vector3.Right, MathEx.Vector3.Up);
                 // -X (left)
-                m_matrix_view[1] = Matrix4x4.CreateLookAtLeftHanded(position, position + Math.Vector3.Left, Math.Vector3.Up);
+                m_matrix_view[1] = Matrix4x4.CreateLookAtLeftHanded(position, position + MathEx.Vector3.Left, MathEx.Vector3.Up);
                 // +Y (up)
-                m_matrix_view[2] = Matrix4x4.CreateLookAtLeftHanded(position, position + Math.Vector3.Up, Math.Vector3.Backward);
+                m_matrix_view[2] = Matrix4x4.CreateLookAtLeftHanded(position, position + MathEx.Vector3.Up, MathEx.Vector3.Backward);
                 // -Y (down)
-                m_matrix_view[3] = Matrix4x4.CreateLookAtLeftHanded(position, position + Math.Vector3.Down, Math.Vector3.Forward);
+                m_matrix_view[3] = Matrix4x4.CreateLookAtLeftHanded(position, position + MathEx.Vector3.Down, MathEx.Vector3.Forward);
                 // +Z (forward)
-                m_matrix_view[4] = Matrix4x4.CreateLookAtLeftHanded(position, position + Math.Vector3.Forward, Math.Vector3.Up);
+                m_matrix_view[4] = Matrix4x4.CreateLookAtLeftHanded(position, position + MathEx.Vector3.Forward, MathEx.Vector3.Up);
                 // -Z (backward)
-                m_matrix_view[5] = Matrix4x4.CreateLookAtLeftHanded(position, position + Math.Vector3.Backward, Math.Vector3.Up);
+                m_matrix_view[5] = Matrix4x4.CreateLookAtLeftHanded(position, position + MathEx.Vector3.Backward, MathEx.Vector3.Up);
             }
             break;
             case LightType.Spot:
             case LightType.Area:
             {
                 Vector3 forward = GetEntity().GetForward();
-                m_matrix_view[0] = Matrix4x4.CreateLookAtLeftHanded(position, position + forward, Math.Vector3.Up);
+                m_matrix_view[0] = Matrix4x4.CreateLookAtLeftHanded(position, position + forward, MathEx.Vector3.Up);
             }
             break;
             default:
@@ -282,7 +286,7 @@ public class Light : Component
             default:  // spot/point
             {
                 const float aspectRatio = 1.0f;
-                float fovYRadians = m_light_type == LightType.Spot ? m_angle_rad * 2.0f : Math.Pi / 2f + 0.02f; // small epsilon to hide face seams
+                float fovYRadians = m_light_type == LightType.Spot ? m_angle_rad * 2.0f : MathEx.Pi / 2f + 0.02f; // small epsilon to hide face seams
 
                 int sliceCount = GetSliceCount();
                 for (int i = 0; i < sliceCount; i++)
@@ -312,7 +316,7 @@ public class Light : Component
             break;
             case LightType.Spot:
             {
-                float opposite  = m_range * Math.Tan(m_angle_rad);
+                float opposite  = m_range * MathEx.Tan(m_angle_rad);
                 Vector3 tip     = position;
                 Vector3 center  = tip + entity.GetForward()     * m_range;
                 Vector3 up      = center + entity.GetUp()       * opposite;
@@ -531,11 +535,11 @@ public class Light : Component
         if (m_light_type == LightType.Directional)
         {
             // elevation from time of day
-            float elevation_rad = (time_of_day * 360.0f - 90.0f) * Math.DegToRad;
-            Quaternion elevation = QuaternionExtensions.FromAxisAngle(Math.Vector3.Right, elevation_rad);
+            float elevation_rad = (time_of_day * 360.0f - 90.0f) * MathEx.DegToRad;
+            Quaternion elevation = QuaternionExtensions.FromAxisAngle(MathEx.Vector3.Right, elevation_rad);
 
             // horizontal rotation (yaw)
-            Quaternion yaw = QuaternionExtensions.FromAxisAngle(Math.Vector3.Up, yaw_degrees * Math.DegToRad);
+            Quaternion yaw = QuaternionExtensions.FromAxisAngle(MathEx.Vector3.Up, yaw_degrees * MathEx.DegToRad);
 
             // combine: yaw first, then elevation
             GetEntity().SetRotation(yaw * elevation);
@@ -547,7 +551,7 @@ public class Light : Component
     // range
     public void SetRange(float range)
     {
-        range = Math.Clamp(range, 0.0f, float.MaxValue);
+        range = MathEx.Clamp(range, 0.0f, float.MaxValue);
 
         if (range == m_range)
             return;
@@ -560,7 +564,7 @@ public class Light : Component
     // angle
     public void SetAngle(float angle)
     {
-        angle = Math.Clamp(angle, 0.0f, Math.Pi2);
+        angle = MathEx.Clamp(angle, 0.0f, MathEx.Pi2);
         if (angle == m_angle_rad)
             return;
 
@@ -572,7 +576,7 @@ public class Light : Component
     // area light dimensions
     public void SetAreaWidth(float width)
     {
-        width = Math.Clamp(width, 0.01f, 100.0f);
+        width = MathEx.Clamp(width, 0.01f, 100.0f);
         if (width == m_area_width)
             return;
 
@@ -582,7 +586,7 @@ public class Light : Component
     public float GetAreaWidth() { return m_area_width; }
     public void SetAreaHeight(float height)
     {
-        height = Math.Clamp(height, 0.01f, 100.0f);
+        height = MathEx.Clamp(height, 0.01f, 100.0f);
         if (height == m_area_height)
             return;
 
@@ -631,7 +635,7 @@ public class Light : Component
 
         bool rotation_changed = current_rotation != last_rotation;
         bool color_changed = m_color_rgb != last_color_rgb;
-        bool intensity_changed = Math.Abs(m_intensity_lumens_lux - last_intensity_lumens_lux) > 0.01f;
+        bool intensity_changed = MathEx.Abs(m_intensity_lumens_lux - last_intensity_lumens_lux) > 0.01f;
 
         if (rotation_changed || color_changed || intensity_changed)
         {

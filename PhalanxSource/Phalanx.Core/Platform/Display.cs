@@ -1,8 +1,12 @@
 ﻿using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using Silk.NET.Windowing;
+using Phalanx.Geometry;
+using Phalanx.World;
+using Phalanx.Input;
+using Phalanx.Caching;
 
-namespace Phalanx;
+namespace Phalanx.Platform;
 public static class Display
 {
     private static List<DisplayMode> display_modes = new List<DisplayMode>();

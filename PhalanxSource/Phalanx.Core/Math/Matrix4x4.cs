@@ -1,7 +1,11 @@
 ﻿using System.Numerics;
 using System.Runtime.CompilerServices;
+using Phalanx.World;
+using Phalanx.Input;
+using Phalanx.Platform;
+using Phalanx.Caching;
 
-namespace Phalanx;
+namespace Phalanx.Math;
 public static class Matrix4x4Extensions
 {
     public static Matrix4x4 CreateTRS(Vector3 translation, Quaternion rotation, Vector3 scale)
@@ -41,13 +45,13 @@ public static class Matrix4x4Extensions
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector3 GetScale(this Matrix4x4 m)
     {
-        int xs = (Math.Sign(m.M11 * m.M12 * m.M13 * m.M14) < 0) ? -1 : 1;
-        int ys = (Math.Sign(m.M21 * m.M22 * m.M23 * m.M24) < 0) ? -1 : 1;
-        int zs = (Math.Sign(m.M31 * m.M32 * m.M33 * m.M34) < 0) ? -1 : 1;
+        int xs = (MathEx.Sign(m.M11 * m.M12 * m.M13 * m.M14) < 0) ? -1 : 1;
+        int ys = (MathEx.Sign(m.M21 * m.M22 * m.M23 * m.M24) < 0) ? -1 : 1;
+        int zs = (MathEx.Sign(m.M31 * m.M32 * m.M33 * m.M34) < 0) ? -1 : 1;
         return new Vector3(
-            xs * Math.Sqrt(m.M11 * m.M11 + m.M12 * m.M12 + m.M13 * m.M13),
-            ys * Math.Sqrt(m.M21 * m.M21 + m.M22 * m.M22 + m.M23 * m.M23),
-            zs * Math.Sqrt(m.M31 * m.M31 + m.M32 * m.M32 + m.M33 * m.M33)
+            xs * MathEx.Sqrt(m.M11 * m.M11 + m.M12 * m.M12 + m.M13 * m.M13),
+            ys * MathEx.Sqrt(m.M21 * m.M21 + m.M22 * m.M22 + m.M23 * m.M23),
+            zs * MathEx.Sqrt(m.M31 * m.M31 + m.M32 * m.M32 + m.M33 * m.M33)
         );
     }
     public static Quaternion RotationMatrixToQuaternion(Matrix4x4 mRot)
@@ -59,7 +63,7 @@ public static class Matrix4x4Extensions
 
         if (scale > 0.0f)
         {
-            sqrt_ = Math.Sqrt(scale + 1.0f);
+            sqrt_ = MathEx.Sqrt(scale + 1.0f);
             quaternion.W = sqrt_ * 0.5f;
             sqrt_ = 0.5f / sqrt_;
 
@@ -69,7 +73,7 @@ public static class Matrix4x4Extensions
         }
         else if ((mRot.M11 >= mRot.M22) && (mRot.M11 >= mRot.M33))
         {
-            sqrt_ = Math.Sqrt(1.0f + mRot.M11 - mRot.M22 - mRot.M33);
+            sqrt_ = MathEx.Sqrt(1.0f + mRot.M11 - mRot.M22 - mRot.M33);
             half = 0.5f / sqrt_;
 
             quaternion.X = 0.5f * sqrt_;
@@ -79,7 +83,7 @@ public static class Matrix4x4Extensions
         }
         else if (mRot.M22 > mRot.M33)
         {
-            sqrt_ = Math.Sqrt(1.0f + mRot.M22 - mRot.M11 - mRot.M33);
+            sqrt_ = MathEx.Sqrt(1.0f + mRot.M22 - mRot.M11 - mRot.M33);
             half = 0.5f / sqrt_;
 
             quaternion.X = (mRot.M21 + mRot.M12) * half;
@@ -89,7 +93,7 @@ public static class Matrix4x4Extensions
         }
         else
         {
-            sqrt_ = Math.Sqrt(1.0f + mRot.M33 - mRot.M11 - mRot.M22);
+            sqrt_ = MathEx.Sqrt(1.0f + mRot.M33 - mRot.M11 - mRot.M22);
             half = 0.5f / sqrt_;
 
             quaternion.X = (mRot.M31 + mRot.M13) * half;

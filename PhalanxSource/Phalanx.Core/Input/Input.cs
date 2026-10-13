@@ -2,8 +2,11 @@
 using System.Collections.Generic;
 using System.Numerics;
 using Silk.NET.Input;
+using Phalanx.Geometry;
+using Phalanx.World;
+using Phalanx.Platform;
 
-namespace Phalanx;
+namespace Phalanx.Input;
 
 public enum KeyCode : int
 {

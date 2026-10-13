@@ -1,5 +1,11 @@
 using System.Numerics;
 using Xunit;
+using Phalanx.Geometry;
+using Phalanx.World;
+using Phalanx.Platform;
+using Phalanx.Caching;
+using Phalanx.Rendering;
+using Phalanx.Assets.Import;
 
 namespace Phalanx.Tests;
 

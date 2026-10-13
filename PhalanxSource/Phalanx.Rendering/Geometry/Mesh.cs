@@ -1,8 +1,13 @@
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using Phalanx.Math;
+using Phalanx.Geometry;
+using Phalanx.World;
+using Phalanx.Platform;
+using Phalanx.Caching;
 
-namespace Phalanx;
+namespace Phalanx.Rendering;
 
 // port of source/geometry/Mesh.h/.cpp (Spartan 4c07baa) - geometry/LOD part only
 [Flags]
@@ -398,8 +403,8 @@ public class Mesh : IResource, IDisposable
         // give the lod aabb (and, once ported, the meshlet sphere) a volume that holds the card in any orientation
         float r   = impostor.radius;
         Vector3 c = impostor.center;
-        Vector3 forward = Math.Vector3.Forward;
-        Vector3 right   = Math.Vector3.Right;
+        Vector3 forward = MathEx.Vector3.Forward;
+        Vector3 right   = MathEx.Vector3.Right;
         List<RHI_Vertex_PosTexNorTan> card = new List<RHI_Vertex_PosTexNorTan>(4)
         {
             new RHI_Vertex_PosTexNorTan(c + new Vector3(-r, -r, -r), new Vector2(0.0f, 0.0f), forward, right),

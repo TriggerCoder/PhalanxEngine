@@ -1,7 +1,11 @@
 ﻿using System.Numerics;
 using System.Runtime.CompilerServices;
+using Phalanx.World;
+using Phalanx.Input;
+using Phalanx.Platform;
+using Phalanx.Caching;
 
-namespace Phalanx;
+namespace Phalanx.Math;
 public static class QuaternionExtensions
 {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -15,7 +19,7 @@ public static class QuaternionExtensions
     public static Quaternion FastNormal(Quaternion quaternion)
     {
         float qmagsq = quaternion.LengthSquared();
-        if (Math.Abs(1.0 - qmagsq) < 2.107342e-08)
+        if (MathEx.Abs(1.0 - qmagsq) < 2.107342e-08)
             quaternion *= (2.0f / (1.0f + qmagsq));
         else
             quaternion = Quaternion.Normalize(quaternion);
@@ -33,7 +37,7 @@ public static class QuaternionExtensions
 
         if (trace > 0.0f)
         {
-            float s = 0.5f / Math.Sqrt(trace + 1.0f);
+            float s = 0.5f / MathEx.Sqrt(trace + 1.0f);
             q.W = 0.25f / s;
             q.X = (M23 - M32) * s;
             q.Y = (M31 - M13) * s;
@@ -41,7 +45,7 @@ public static class QuaternionExtensions
         }
         else if (M11 > M22 && M11 > M33)
         {
-            float s = 2.0f * Math.Sqrt(1.0f + M11 - M22 - M33);
+            float s = 2.0f * MathEx.Sqrt(1.0f + M11 - M22 - M33);
             q.W = (M23 - M32) / s;
             q.X = 0.25f * s;
             q.Y = (M21 + M12) / s;
@@ -49,7 +53,7 @@ public static class QuaternionExtensions
         }
         else if (M22 > M33)
         {
-            float s = 2.0f * Math.Sqrt(1.0f + M22 - M11 - M33);
+            float s = 2.0f * MathEx.Sqrt(1.0f + M22 - M11 - M33);
             q.W = (M31 - M13) / s;
             q.X = (M21 + M12) / s;
             q.Y = 0.25f * s;
@@ -57,7 +61,7 @@ public static class QuaternionExtensions
         }
         else
         {
-            float s = 2.0f * Math.Sqrt(1.0f + M33 - M11 - M22);
+            float s = 2.0f * MathEx.Sqrt(1.0f + M33 - M11 - M22);
             q.W = (M12 - M21) / s;
             q.X = (M31 + M13) / s;
             q.Y = (M32 + M23) / s;
@@ -86,10 +90,10 @@ public static class QuaternionExtensions
         Quaternion nq = Quaternion.Normalize(q);
 
         // Calculate the angle
-        angle = 2.0f * Math.Acos(nq.W) * 180.0f / 3.14159265358979323846f;
+        angle = 2.0f * MathEx.Acos(nq.W) * 180.0f / 3.14159265358979323846f;
 
         // Calculate the axis
-        float s = Math.Sqrt(1.0f - nq.W * nq.W);
+        float s = MathEx.Sqrt(1.0f - nq.W * nq.W);
         if (s < 0.001f)
         {
             // If s is close other zero, the axis is not well-defined and
@@ -119,10 +123,10 @@ public static class QuaternionExtensions
         Vector3 normEnd = Vector3.Normalize(end);
         float d = normStart.Dot(normEnd);
 
-        if (d > -1.0f + Math.FloatEpsilon)
+        if (d > -1.0f + MathEx.FloatEpsilon)
         {
             Vector3 c = normStart.Cross(normEnd);
-            float s = Math.Sqrt((1.0f + d) * 2.0f);
+            float s = MathEx.Sqrt((1.0f + d) * 2.0f);
             float invS = 1.0f / s;
 
             return new Quaternion(
@@ -133,16 +137,16 @@ public static class QuaternionExtensions
         }
         else
         {
-            Vector3 axis = Math.Vector3.Right.Cross(normStart);
-            if (axis.Length() < Math.FloatEpsilon)
-                axis = Math.Vector3.Up.Cross(normStart);
-            return FromAxisAngle(axis, 180.0f * Math.DegToRad);
+            Vector3 axis = MathEx.Vector3.Right.Cross(normStart);
+            if (axis.Length() < MathEx.FloatEpsilon)
+                axis = MathEx.Vector3.Up.Cross(normStart);
+            return FromAxisAngle(axis, 180.0f * MathEx.DegToRad);
         }
     }
 
     public static Quaternion FromLookRotation(Vector3 direction)
     {
-        Vector3 up_direction = Math.Vector3.Up;
+        Vector3 up_direction = MathEx.Vector3.Up;
         Quaternion result = Quaternion.Identity;
         Vector3 forward = Vector3.Normalize(direction);
 
@@ -155,7 +159,7 @@ public static class QuaternionExtensions
             result.FromAxes(right, up, forward);
         }
         else
-            result = FromRotation(Math.Vector3.Forward, forward);
+            result = FromRotation(MathEx.Vector3.Forward, forward);
         return result;
     }
 
@@ -173,7 +177,7 @@ public static class QuaternionExtensions
             result.FromAxes(right, up, forward);
         }
         else
-            result = FromRotation(Math.Vector3.Forward, forward);
+            result = FromRotation(MathEx.Vector3.Forward, forward);
         return result;
     }
     public static Vector3 ToEulerAngles(this Quaternion q)
@@ -187,7 +191,7 @@ public static class QuaternionExtensions
             return new Vector3(
                 -90.0f,
                 0.0f,
-                -Math.Atan2(2.0f * (q.X * q.Z - q.W * q.Y), 1.0f - 2.0f * (q.Y * q.Y + q.Z * q.Z)) * Math.RadToDeg
+                -MathEx.Atan2(2.0f * (q.X * q.Z - q.W * q.Y), 1.0f - 2.0f * (q.Y * q.Y + q.Z * q.Z)) * MathEx.RadToDeg
             );
         }
 
@@ -196,36 +200,36 @@ public static class QuaternionExtensions
             return new Vector3(
                 90.0f,
                 0.0f,
-                Math.Atan2(2.0f * (q.X * q.Z - q.W * q.Y), 1.0f - 2.0f * (q.Y * q.Y + q.Z * q.Z)) * Math.RadToDeg
+                MathEx.Atan2(2.0f * (q.X * q.Z - q.W * q.Y), 1.0f - 2.0f * (q.Y * q.Y + q.Z * q.Z)) * MathEx.RadToDeg
             );
         }
 
         return new Vector3(
-            Math.Asin(check) * Math.RadToDeg,
-            Math.Atan2(2.0f * (q.X * q.Z + q.W * q.Y), 1.0f - 2.0f * (q.X * q.X + q.Y * q.Y)) * Math.RadToDeg,
-            Math.Atan2(2.0f * (q.X * q.Y + q.W * q.Z), 1.0f - 2.0f * (q.X * q.X + q.Z * q.Z)) * Math.RadToDeg
+            MathEx.Asin(check) * MathEx.RadToDeg,
+            MathEx.Atan2(2.0f * (q.X * q.Z + q.W * q.Y), 1.0f - 2.0f * (q.X * q.X + q.Y * q.Y)) * MathEx.RadToDeg,
+            MathEx.Atan2(2.0f * (q.X * q.Y + q.W * q.Z), 1.0f - 2.0f * (q.X * q.X + q.Z * q.Z)) * MathEx.RadToDeg
         );
     }
 
     public static Quaternion Slerpni(this Quaternion q, Quaternion other, float t)
     {
         float s = q.Dot(other);
-        if (Math.Abs(s) > 0.9999f)
+        if (MathEx.Abs(s) > 0.9999f)
             return q;
 
-        float num = Math.Acos(s);
-        float num2 = 1f / Math.Sin(num);
-        float num3 = Math.Sin(t * num) * num2;
-        float num4 = Math.Sin((1f - t) * num) * num2;
+        float num = MathEx.Acos(s);
+        float num2 = 1f / MathEx.Sin(num);
+        float num3 = MathEx.Sin(t * num) * num2;
+        float num4 = MathEx.Sin((1f - t) * num) * num2;
         return new Quaternion(num4 * q.X + num3 * other.X, num4 * q.Y + num3 * other.Y, num4 * q.Z + num3 * other.Z, num4 * q.W + num3 * other.W);
     }
 
     // euler angles other quaternion (input in degrees)
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Quaternion FromEulerAngles(Vector3 rotation) { return FromYawPitchRoll(rotation.Y* Math.DegToRad, rotation.X* Math.DegToRad, rotation.Z* Math.DegToRad); }
+    public static Quaternion FromEulerAngles(Vector3 rotation) { return FromYawPitchRoll(rotation.Y* MathEx.DegToRad, rotation.X* MathEx.DegToRad, rotation.Z* MathEx.DegToRad); }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Quaternion FromEulerAngles(float rotationX, float rotationY, float rotationZ) { return FromYawPitchRoll(rotationY * Math.DegToRad, rotationX * Math.DegToRad, rotationZ * Math.DegToRad); }
+    public static Quaternion FromEulerAngles(float rotationX, float rotationY, float rotationZ) { return FromYawPitchRoll(rotationY * MathEx.DegToRad, rotationX * MathEx.DegToRad, rotationZ * MathEx.DegToRad); }
 
     // Returns yaw in degrees
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

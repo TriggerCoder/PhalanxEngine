@@ -1,7 +1,11 @@
 ﻿using System.Numerics;
 using System.Runtime.CompilerServices;
+using Phalanx.World;
+using Phalanx.Input;
+using Phalanx.Platform;
+using Phalanx.Caching;
 
-namespace Phalanx;
+namespace Phalanx.Math;
 public static class PlaneExtensions
 {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

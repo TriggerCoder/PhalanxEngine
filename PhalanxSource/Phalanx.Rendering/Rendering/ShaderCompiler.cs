@@ -3,8 +3,13 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using Silk.NET.Shaderc;
+using Phalanx.Geometry;
+using Phalanx.World;
+using Phalanx.Input;
+using Phalanx.Platform;
+using Phalanx.Caching;
 
-namespace Phalanx;
+namespace Phalanx.Rendering;
 
 public enum ShaderStage { Vertex, Fragment, Compute }
 

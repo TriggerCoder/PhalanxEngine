@@ -1,8 +1,12 @@
 ﻿using System.Numerics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
+using Phalanx.World;
+using Phalanx.Input;
+using Phalanx.Platform;
+using Phalanx.Caching;
 
-namespace Phalanx;
+namespace Phalanx.Math;
 
 [Serializable]
 public struct Rectangle : IEquatable<Rectangle>
@@ -57,10 +61,10 @@ public struct Rectangle : IEquatable<Rectangle>
         float max_x = X + Width;
         float max_y = Y + Height;
 
-        min_x = Math.Min(min_x, point.X);
-        min_y = Math.Min(min_y, point.Y);
-        max_x = Math.Max(max_x, point.X);
-        max_y = Math.Max(max_y, point.Y);
+        min_x = MathEx.Min(min_x, point.X);
+        min_y = MathEx.Min(min_y, point.Y);
+        max_x = MathEx.Max(max_x, point.X);
+        max_y = MathEx.Max(max_y, point.Y);
 
         X = min_x;
         Y = min_y;

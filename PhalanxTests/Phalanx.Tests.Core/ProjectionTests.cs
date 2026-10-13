@@ -1,6 +1,11 @@
 using System.Numerics;
 using Phalanx;
 using Xunit;
+using Phalanx.Math;
+using Phalanx.World;
+using Phalanx.Input;
+using Phalanx.Platform;
+using Phalanx.Caching;
 
 namespace Phalanx.Tests;
 

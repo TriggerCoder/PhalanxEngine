@@ -1,20 +1,24 @@
 ﻿using System.Numerics;
 using System.Runtime.CompilerServices;
+using Phalanx.World;
+using Phalanx.Input;
+using Phalanx.Platform;
+using Phalanx.Caching;
 
-namespace Phalanx;
+namespace Phalanx.Math;
 public static class Vector3Extensions
 {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector3 Abs(this Vector3 v) { return Vector3.Abs(v); }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Vector3 Max(this Vector3 v, float other) { return new Vector3(Math.Max(v.X, other), Math.Max(v.Y, other), Math.Max(v.Z, other)); }
+    public static Vector3 Max(this Vector3 v, float other) { return new Vector3(MathEx.Max(v.X, other), MathEx.Max(v.Y, other), MathEx.Max(v.Z, other)); }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector3 Max(this Vector3 v, Vector3 other) { return Vector3.Max(v,other); }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Vector3 Min(this Vector3 v, float other) { return new Vector3(Math.Min(v.X, other), Math.Min(v.Y, other), Math.Min(v.Z, other)); }
+    public static Vector3 Min(this Vector3 v, float other) { return new Vector3(MathEx.Min(v.X, other), MathEx.Min(v.Y, other), MathEx.Min(v.Z, other)); }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector3 Min(this Vector3 v, Vector3 other) { return Vector3.Min(v, other); }
@@ -30,7 +34,7 @@ public static class Vector3Extensions
 
     public static bool IsNormalized(this Vector3 v)
     {
-        return Math.Abs(v.LengthSquared() - 1f) < 1E-06f;
+        return MathEx.Abs(v.LengthSquared() - 1f) < 1E-06f;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -45,7 +49,7 @@ public static class Vector3Extensions
 
         if (sqrmag > max_length * max_length)
         {
-            float mag = Math.Sqrt(sqrmag);
+            float mag = MathEx.Sqrt(sqrmag);
 
             // these intermediate variables force the intermediate result to be
             // of float precision. without this, the intermediate result can be of higher
@@ -62,22 +66,22 @@ public static class Vector3Extensions
     }
     public static void Floor(this Vector3 v)
     {
-        v.X = Math.Floor(v.X);
-        v.Y = Math.Floor(v.Y);
-        v.Z = Math.Floor(v.Z);
+        v.X = MathEx.Floor(v.X);
+        v.Y = MathEx.Floor(v.Y);
+        v.Z = MathEx.Floor(v.Z);
     }
     public static void Round(this Vector3 v)
     {
-        v.X = Math.Round(v.X);
-        v.Y = Math.Round(v.Y);
-        v.Z = Math.Round(v.Z);
+        v.X = MathEx.Round(v.X);
+        v.Y = MathEx.Round(v.Y);
+        v.Z = MathEx.Round(v.Z);
     }
 
     public static void FindBestAxisVectors(this Vector3 v, ref Vector3 Axis1, ref Vector3 Axis2)
     {
-        float NX = Math.Abs(v.X);
-        float NY = Math.Abs(v.Y);
-        float NZ = Math.Abs(v.Z);
+        float NX = MathEx.Abs(v.X);
+        float NY = MathEx.Abs(v.Y);
+        float NZ = MathEx.Abs(v.Z);
 
         // find best basis vectors
         if (NZ > NX && NZ > NY)	
@@ -93,9 +97,9 @@ public static class Vector3Extensions
     public static Vector3 Lerp(this Vector3 v, Vector3 other, float t) { return Vector3.Lerp(v, other, t); }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool IsNaN(this Vector3 v) { return Math.IsNaN(v.X) || Math.IsNaN(v.Y) || Math.IsNaN(v.Z); }
+    public static bool IsNaN(this Vector3 v) { return MathEx.IsNaN(v.X) || MathEx.IsNaN(v.Y) || MathEx.IsNaN(v.Z); }
     
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool IsFinite(this Vector3 v) { return Math.IsFinite(v.X) && Math.IsFinite(v.Y) && Math.IsFinite(v.Z); }
+    public static bool IsFinite(this Vector3 v) { return MathEx.IsFinite(v.X) && MathEx.IsFinite(v.Y) && MathEx.IsFinite(v.Z); }
 }
 

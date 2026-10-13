@@ -1,4 +1,9 @@
-namespace Phalanx;
+using Phalanx.Geometry;
+using Phalanx.Input;
+using Phalanx.Platform;
+using Phalanx.Caching;
+
+namespace Phalanx.World;
 
 // phalanx: the render state World components and Input read (viewport, render-target sizes).
 // It used to live on the static Renderer, but Core cannot reference Phalanx.Rendering, so the state lives here and

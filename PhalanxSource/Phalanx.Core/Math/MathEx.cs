@@ -1,8 +1,12 @@
 ﻿using System;
 using System.Runtime.CompilerServices;
+using Phalanx.World;
+using Phalanx.Input;
+using Phalanx.Platform;
+using Phalanx.Caching;
 
-namespace Phalanx;
-public static class Math
+namespace Phalanx.Math;
+public static class MathEx
 {
     public enum Intersection
     {

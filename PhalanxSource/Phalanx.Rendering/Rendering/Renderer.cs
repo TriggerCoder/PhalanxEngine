@@ -3,8 +3,13 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using Silk.NET.Maths;
 using Silk.NET.Windowing;
+using Phalanx.Math;
+using Rectangle = Phalanx.Math.Rectangle;
+using Phalanx.World;
+using Phalanx.Platform;
+using Phalanx.Caching;
 
-namespace Phalanx;
+namespace Phalanx.Rendering;
 
 public struct ShadowSlice
 {

@@ -1,7 +1,10 @@
 ﻿using System;
 using System.Numerics;
+using Phalanx.World;
+using Phalanx.Platform;
+using Phalanx.Caching;
 
-namespace Phalanx;
+namespace Phalanx.Math;
 
 [Serializable]
 public struct Ray
@@ -18,7 +21,7 @@ public struct Ray
     public readonly float HitDistance(BoundingBox box)
     {
         // check for ray origin being inside the box
-        if (box.Intersects(m_origin) == Math.Intersection.Inside)
+        if (box.Intersects(m_origin) == MathEx.Intersection.Inside)
             return 0.0f;
 
         float distance = float.PositiveInfinity;
@@ -93,7 +96,7 @@ public struct Ray
     public readonly float HitDistance(Plane plane, ref Vector3 intersection_point)
     {
         float d = plane.Normal.Dot(m_direction);
-        if (Math.Abs(d) >= float.MinValue)
+        if (MathEx.Abs(d) >= float.MinValue)
         {
             float t = -(plane.Normal.Dot(m_origin) + plane.D) / d;
             if (t >= 0.0f)
@@ -110,7 +113,7 @@ public struct Ray
     public readonly float HitDistance(Plane plane)
     {
         float d = plane.Normal.Dot(m_direction);
-        if (Math.Abs(d) >= float.MinValue)
+        if (MathEx.Abs(d) >= float.MinValue)
         {
             float t = -(plane.Normal.Dot(m_origin) + plane.D) / d;
             if (t >= 0.0f)
@@ -188,7 +191,7 @@ public struct Ray
             return float.PositiveInfinity;
 
         // Get the nearer solution
-        float dSqrt = Math.Sqrt(d);
+        float dSqrt = MathEx.Sqrt(d);
         float dist = (-b - dSqrt) / (2.0f * a);
         if (dist >= 0.0f)
             return dist;
@@ -219,7 +222,7 @@ public struct Ray
         float d2121 = p21.Dot(p21);
 
         float d = d2121 * d4343 - d4321 * d4321;
-        if (Math.Abs(d) < float.MinValue)
+        if (MathEx.Abs(d) < float.MinValue)
             return m_origin;
 
         float n = d1343 * d4321 - d1321 * d4343;

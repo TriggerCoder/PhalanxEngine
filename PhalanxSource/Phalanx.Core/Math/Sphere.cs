@@ -1,8 +1,12 @@
 ﻿using System.Numerics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
+using Phalanx.World;
+using Phalanx.Input;
+using Phalanx.Platform;
+using Phalanx.Caching;
 
-namespace Phalanx;
+namespace Phalanx.Math;
 
 [Serializable]
 public struct Sphere : IEquatable<Sphere>
@@ -31,5 +35,5 @@ public struct Sphere : IEquatable<Sphere>
     public override readonly int GetHashCode() { return HashCode.Combine(Center, Radius); }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public readonly bool Equals(Sphere other) { return Math.ApproximateEquals(Radius, other.Radius) && (Center == other.Center); }
+    public readonly bool Equals(Sphere other) { return MathEx.ApproximateEquals(Radius, other.Radius) && (Center == other.Center); }
 }

@@ -6,8 +6,16 @@ using System.Runtime.CompilerServices;
 using Phalanx;
 using Silk.NET.Core.Native;
 using Silk.NET.Maths;
+using Phalanx.Math;
+using Rectangle = Phalanx.Math.Rectangle;
+using Phalanx.Geometry;
+using Phalanx.Input;
+using Phalanx.Caching;
 
-namespace Phalanx;
+namespace Phalanx.World;
+
+// the type shares its name with the Phalanx.Input namespace, which wins name lookup inside Phalanx.*
+using Input = Phalanx.Input.Input;
 public enum ProjectionType
 {
     Projection_Perspective,
@@ -34,7 +42,7 @@ public class Camera : Component
     float m_aperture = 5.6f;          // aperture value in f-stop. Controls the amount of light, depth of field and chromatic aberration
     float m_shutter_speed = 1.0f / 125.0f; // length of time for which the camera shutter is open (sec). Also controls the amount of motion blur
     float m_iso = 200.0f;        // sensitivity to light
-    float m_fov_horizontal_rad = 90.0f * Math.DegToRad;
+    float m_fov_horizontal_rad = 90.0f * MathEx.DegToRad;
     float m_near_plane = 0.1f;
     float m_far_plane = 10000.0f; // a good maximum for a 32 bit reverse-z depth buffer
     ProjectionType m_projection_type = ProjectionType.Projection_Perspective;
@@ -230,7 +238,7 @@ public class Camera : Component
 
                     // convert pick radius from screen pixels to world-space at this depth
                     float viewport_width = RenderView.GetViewport().Width;
-                    float meters_per_pixel = (2.0f * depth * Math.Tan(GetFovHorizontalRad() * 0.5f)) / viewport_width;
+                    float meters_per_pixel = (2.0f * depth * MathEx.Tan(GetFovHorizontalRad() * 0.5f)) / viewport_width;
                     float pick_threshold = pick_radius_px * meters_per_pixel;
 
                     if (distance_from_ray > pick_threshold)
@@ -309,7 +317,7 @@ public class Camera : Component
         RHI_Viewport viewport = RenderView.GetViewport();
         position_clip.X = (position_screen.X / viewport.Width) * 2.0f - 1.0f;
         position_clip.Y = (position_screen.Y / viewport.Height) * -2.0f + 1.0f;
-        position_clip.Z = Math.Clamp(z, 0.0f, 1.0f);
+        position_clip.Z = MathEx.Clamp(z, 0.0f, 1.0f);
 
         // compute world space position
         Matrix4x4 view_projection_inverted = m_view_projection_non_reverse_z.Inverted();
@@ -334,13 +342,13 @@ public class Camera : Component
     {
         // computed ev (using squared aperture for photometric accuracy)
         // note: this calculates the exposure scale factor (1/l_avg)
-        float ev100 = Math.Log2((m_aperture * m_aperture) / m_shutter_speed * 100.0f / m_iso);
+        float ev100 = MathEx.Log2((m_aperture * m_aperture) / m_shutter_speed * 100.0f / m_iso);
 
         // standard standard output sensitivity (sos) calculation
         // 1.2 is a common calibration constant (matches ue5/frostbite)
         // this maps the average scene luminance to middle grey (0.18)
         const float calibration_constant = 1.2f;
-        float base_exposure = 1.0f / (calibration_constant * Math.Pow(2.0f, ev100));
+        float base_exposure = 1.0f / (calibration_constant * MathEx.Pow(2.0f, ev100));
 
         return base_exposure;
     }
@@ -357,11 +365,11 @@ public class Camera : Component
 
     // fov
     public float GetFovHorizontalRad() { return m_fov_horizontal_rad; }
-    public float GetFovVerticalRad() { return 2.0f * Math.Atan(Math.Tan(m_fov_horizontal_rad / 2.0f) * (RenderView.GetViewport().Height / RenderView.GetViewport().Width)); }
-    public float GetFovHorizontalDeg() { return m_fov_horizontal_rad * Math.RadToDeg; }
+    public float GetFovVerticalRad() { return 2.0f * MathEx.Atan(MathEx.Tan(m_fov_horizontal_rad / 2.0f) * (RenderView.GetViewport().Height / RenderView.GetViewport().Width)); }
+    public float GetFovHorizontalDeg() { return m_fov_horizontal_rad * MathEx.RadToDeg; }
     public void SetFovHorizontalDeg(float fov)
     {
-        m_fov_horizontal_rad = fov * Math.DegToRad;
+        m_fov_horizontal_rad = fov * MathEx.DegToRad;
         SetFlag(CameraFlags.IsDirty, true);
     }
     public float GetAspectRatio() { return RenderView.GetViewport().GetAspectRatio(); }
@@ -507,7 +515,7 @@ public class Camera : Component
             m_lerp_to_target_rotation = QuaternionExtensions.FromLookRotation(entity.GetPosition() - m_lerp_to_target_position).Normalized();
             m_lerp_to_target_distance = Vector3.Distance(m_lerp_to_target_position, m_lerp_from_position);
 
-            float lerp_angle = Math.Acos(Quaternion.Dot(m_lerp_to_target_rotation.Normalized(), m_lerp_from_rotation.Normalized())) * Math.RadToDeg;
+            float lerp_angle = MathEx.Acos(Quaternion.Dot(m_lerp_to_target_rotation.Normalized(), m_lerp_from_rotation.Normalized())) * MathEx.RadToDeg;
 
             m_lerp_to_target_p = m_lerp_to_target_distance > 0.1f ? true : false;
             m_lerp_to_target_r = lerp_angle > 1.0f ? true : false;

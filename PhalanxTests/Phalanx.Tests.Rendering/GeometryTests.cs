@@ -1,6 +1,12 @@
 using System.Numerics;
 using Phalanx;
 using Xunit;
+using Phalanx.Math;
+using Phalanx.Geometry;
+using Phalanx.Input;
+using Phalanx.Platform;
+using Phalanx.Caching;
+using Phalanx.Rendering;
 
 namespace Phalanx.Tests;
 
@@ -190,10 +196,10 @@ public class BoundingBoxTests
     public void Intersects_And_Contains()
     {
         var a = new BoundingBox(Vector3.Zero, new Vector3(10));
-        Assert.Equal(Math.Intersection.Inside,     a.Intersects(new BoundingBox(new Vector3(1), new Vector3(2))));
-        Assert.Equal(Math.Intersection.Intersects, a.Intersects(new BoundingBox(new Vector3(5), new Vector3(15))));
-        Assert.Equal(Math.Intersection.Outside,    a.Intersects(new BoundingBox(new Vector3(11), new Vector3(12))));
-        Assert.Equal(Math.Intersection.Outside,    a.Intersects(new Vector3(-0.1f, 5, 5)));
+        Assert.Equal(MathEx.Intersection.Inside,     a.Intersects(new BoundingBox(new Vector3(1), new Vector3(2))));
+        Assert.Equal(MathEx.Intersection.Intersects, a.Intersects(new BoundingBox(new Vector3(5), new Vector3(15))));
+        Assert.Equal(MathEx.Intersection.Outside,    a.Intersects(new BoundingBox(new Vector3(11), new Vector3(12))));
+        Assert.Equal(MathEx.Intersection.Outside,    a.Intersects(new Vector3(-0.1f, 5, 5)));
         Assert.True(a.Contains(new Vector3(10, 0, 5)));
         Assert.Equal(new Vector3(10, 0, 5), a.GetClosestPoint(new Vector3(20, -3, 5)));
     }

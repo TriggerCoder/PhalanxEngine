@@ -1,8 +1,12 @@
 ﻿using System.Runtime.InteropServices;
 using Silk.NET.Maths;
 using Silk.NET.Windowing;
+using Phalanx.Geometry;
+using Phalanx.World;
+using Phalanx.Input;
+using Phalanx.Caching;
 
-namespace Phalanx;
+namespace Phalanx.Platform;
 public static class Window
 {
     private static IWindow? window;

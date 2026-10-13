@@ -175,7 +175,7 @@ public static class SharedBufferLayoutEngine
         W("// Matrices: Matrix4x4 bytes are uploaded as-is; GLSL column_major mat4 sees transpose(M), shaders write M * v.");
         W("// </auto-generated>");
         W("#nullable enable");
-        W("using System;\nusing System.Numerics;\nusing System.Runtime.CompilerServices;\nusing System.Runtime.InteropServices;\n\nnamespace Phalanx;\n");
+        W("using System;\nusing System.Numerics;\nusing System.Runtime.CompilerServices;\nusing System.Runtime.InteropServices;\n\nnamespace Phalanx.Rendering;\n");
         W("public static class SharedBuffers\n{");
         W($"    public const string SpartanCommit = \"{r.Commit}\";");
         W($"    public const string HeaderSha256  = \"{r.Sha256}\";\n}}\n");

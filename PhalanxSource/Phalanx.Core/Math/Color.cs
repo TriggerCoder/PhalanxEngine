@@ -2,8 +2,12 @@
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using Phalanx.World;
+using Phalanx.Input;
+using Phalanx.Platform;
+using Phalanx.Caching;
 
-namespace Phalanx;
+namespace Phalanx.Math;
 
 [StructLayout(LayoutKind.Sequential)]
 public struct Color : IEquatable<Color>
@@ -67,7 +71,7 @@ public struct Color : IEquatable<Color>
         {
             R = 255;
             G = temp;
-            G = 99.4708025861f * Math.Log(G) - 161.1195681661f;
+            G = 99.4708025861f * MathEx.Log(G) - 161.1195681661f;
 
             if (temp <= 19)
             {
@@ -76,22 +80,22 @@ public struct Color : IEquatable<Color>
             else
             {
                 B = temp - 10.0f;
-                B = 138.5177312231f * Math.Log(B) - 305.0447927307f;
+                B = 138.5177312231f * MathEx.Log(B) - 305.0447927307f;
             }
         }
         else
         {
             R = temp - 60.0f;
-            R = A_R * Math.Pow(R, B_R);
+            R = A_R * MathEx.Pow(R, B_R);
             G = temp - 60.0f;
-            G = A_G * Math.Pow(G, B_G);
+            G = A_G * MathEx.Pow(G, B_G);
             B = 255;
         }
 
         // clamp rgb values to [0, 1]
-        R = Math.Clamp(R / 255.0f, 0.0f, 1.0f);
-        G = Math.Clamp(G / 255.0f, 0.0f, 1.0f);
-        B = Math.Clamp(B / 255.0f, 0.0f, 1.0f);
+        R = MathEx.Clamp(R / 255.0f, 0.0f, 1.0f);
+        G = MathEx.Clamp(G / 255.0f, 0.0f, 1.0f);
+        B = MathEx.Clamp(B / 255.0f, 0.0f, 1.0f);
     }
 
     // standard

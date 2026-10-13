@@ -1,7 +1,11 @@
 ﻿using System;
 using System.Numerics;
+using Phalanx.Math;
+using Phalanx.Geometry;
+using Phalanx.Platform;
+using Phalanx.Caching;
 
-namespace Phalanx;
+namespace Phalanx.World;
 
 // cross-section profile that gets extruded along the spline
 public enum SplineProfile : uint
@@ -182,12 +186,12 @@ public class Spline : Component
             break;
             case SplineProfile.Tube:
             {
-                int sides = Math.Max(3, (int)m_tube_sides);
+                int sides = MathEx.Max(3, (int)m_tube_sides);
                 for (int i = 0; i < sides; i++)
                 {
-                    float angle = ((float)(i) / (float)(sides)) * 2.0f * Math.Pi;
-                    float x = Math.Cos(angle) * half_width;
-                    float y = Math.Sin(angle) * half_width;
+                    float angle = ((float)(i) / (float)(sides)) * 2.0f * MathEx.Pi;
+                    float x = MathEx.Cos(angle) * half_width;
+                    float y = MathEx.Sin(angle) * half_width;
                     profile.Add(new Vector2(x, y));
                 }
             }
@@ -220,7 +224,7 @@ public class Spline : Component
         uint span_count = m_closed_loop ? (uint)(points.Count) : (uint)(points.Count) - 1;
 
         // clamp t to [0, 1]
-        t = Math.Max(0.0f, Math.Min(1.0f, t));
+        t = MathEx.Max(0.0f, MathEx.Min(1.0f, t));
 
         // scale t to span range
         float scaled_t = t * (float)(span_count);
@@ -272,16 +276,16 @@ public class Spline : Component
 
         int point_count = points.Count;
         int i1 = (int)(span_index);
-        int i2 = m_closed_loop ? (i1 + 1) % point_count : Math.Min(i1 + 1, point_count - 1);
-        int i0 = m_closed_loop ? (i1 - 1 + point_count) % point_count : Math.Max(i1 - 1, 0);
-        int i3 = m_closed_loop ? (i2 + 1) % point_count : Math.Min(i2 + 1, point_count - 1);
+        int i2 = m_closed_loop ? (i1 + 1) % point_count : MathEx.Min(i1 + 1, point_count - 1);
+        int i0 = m_closed_loop ? (i1 - 1 + point_count) % point_count : MathEx.Max(i1 - 1, 0);
+        int i3 = m_closed_loop ? (i2 + 1) % point_count : MathEx.Min(i2 + 1, point_count - 1);
 
         return CatmullRom(points[i0], points[i1], points[i2], points[i3], local_t);
     }
     private Vector3 EvaluateTangent(List<Vector3> points, float t)
     {
         if (points.Count < 2)
-            return Math.Vector3.Forward;
+            return MathEx.Vector3.Forward;
 
         uint span_index = 0;
         float local_t = 0.0f;
@@ -289,9 +293,9 @@ public class Spline : Component
 
         int point_count = points.Count;
         int i1 = (int)span_index;
-        int i2 = m_closed_loop ? (i1 + 1) % point_count : Math.Min(i1 + 1, point_count - 1);
-        int i0 = m_closed_loop ? (i1 - 1 + point_count) % point_count : Math.Max(i1 - 1, 0);
-        int i3 = m_closed_loop ? (i2 + 1) % point_count : Math.Min(i2 + 1, point_count - 1);
+        int i2 = m_closed_loop ? (i1 + 1) % point_count : MathEx.Min(i1 + 1, point_count - 1);
+        int i0 = m_closed_loop ? (i1 - 1 + point_count) % point_count : MathEx.Max(i1 - 1, 0);
+        int i3 = m_closed_loop ? (i2 + 1) % point_count : MathEx.Min(i2 + 1, point_count - 1);
 
         Vector3 tangent = CatmullRomTangent(points[i0], points[i1], points[i2], points[i3], local_t);
 
@@ -492,9 +496,9 @@ public class Spline : Component
                 {
                     Vector3 tangent_dir = EvaluateTangent(points, t);
                     tangent_dir = Vector3.Normalize(tangent_dir);
-                    Vector3 lateral = tangent_dir.Cross(Math.Vector3.Up);
+                    Vector3 lateral = tangent_dir.Cross(MathEx.Vector3.Up);
                     lateral = Vector3.Normalize(lateral);
-                    float offset = Math.Rand(-m_instance_random_offset, m_instance_random_offset);
+                    float offset = MathEx.Rand(-m_instance_random_offset, m_instance_random_offset);
                     final_position = final_position + lateral * offset;
                 }
                 instance.SetPositionLocal(final_position);
@@ -505,19 +509,19 @@ public class Spline : Component
                 {
                     Vector3 tangent = EvaluateTangent(points, t);
                     tangent = Vector3.Normalize(tangent);
-                    rotation = QuaternionExtensions.FromLookRotation(tangent, Math.Vector3.Up);
+                    rotation = QuaternionExtensions.FromLookRotation(tangent, MathEx.Vector3.Up);
                 }
                 if (m_instance_random_yaw > 0.0f)
                 {
-                    float yaw = Math.Rand(-m_instance_random_yaw, m_instance_random_yaw);
-                    rotation = rotation * QuaternionExtensions.FromAxisAngle(Math.Vector3.Up, yaw * Math.DegToRad);
+                    float yaw = MathEx.Rand(-m_instance_random_yaw, m_instance_random_yaw);
+                    rotation = rotation * QuaternionExtensions.FromAxisAngle(MathEx.Vector3.Up, yaw * MathEx.DegToRad);
                 }
                 instance.SetRotationLocal(rotation);
 
                 // random scale
                 if (m_instance_random_scale_min != 1.0f || m_instance_random_scale_max != 1.0f)
                 {
-                    float scale = Math.Rand(m_instance_random_scale_min, m_instance_random_scale_max);
+                    float scale = MathEx.Rand(m_instance_random_scale_min, m_instance_random_scale_max);
                     instance.SetScaleLocal(new Vector3(scale, scale, scale));
                 }
 
