@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Phalanx.Core: math, logging/asserts, timing, World/ECS, input state, platform (lazy Silk.NET windowing).
+       Depends on no other Phalanx package. Also carries the Phalanx.Generators source generator (analyzers/dotnet/cs)
+       and the build/ props+targets every game picks up. -->
+  <PropertyGroup>
+    <PackageId>Phalanx.Core</PackageId>
+    <Description>PhalanxEngine core: math, world/ECS, input, platform, and the shared-buffer source generator.</Description>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <!-- Core has no shared_buffers.glsl of its own; PLX005 (header not found) is expected here -->
+    <NoWarn>$(NoWarn);PLX005</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Silk.NET.Input" Version="2.23.0" />
+    <PackageReference Include="Silk.NET.Windowing" Version="2.23.0" />
+    <!-- XXH3 checksum for GeneratedCache (PHCACHE1) files -->
+    <PackageReference Include="System.IO.Hashing" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- build-time only: never a runtime dependency of Core -->
+    <ProjectReference Include="..\Phalanx.Generators\Phalanx.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- pack the generator into this nupkg so any game referencing Phalanx.Core gets it -->
+    <None Include="..\Phalanx.Generators\bin\$(Configuration)\netstandard2.0\Phalanx.Generators.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+    <None Include="build\Phalanx.Core.props;build\Phalanx.Core.targets" Pack="true" PackagePath="build" />
+    <!-- buildTransitive so games referencing Rendering/Assets (which reference Core) also get the props/targets -->
+    <None Include="build\Phalanx.Core.props;build\Phalanx.Core.targets" Pack="true" PackagePath="buildTransitive" Visible="false" />
+  </ItemGroup>
+
+</Project>

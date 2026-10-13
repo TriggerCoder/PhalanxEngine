@@ -20,16 +20,6 @@ public enum MeshFlags : uint
     PostProcessSkipCache            = 1 << 9, // the owning generator caches the complete prepared mesh
 }
 
-public enum MeshType
-{
-    Cube,
-    Quad,
-    Sphere,
-    Cylinder,
-    Cone,
-    Max
-}
-
 public struct MeshLod
 {
     public uint vertex_offset; // starting offset in m_vertices

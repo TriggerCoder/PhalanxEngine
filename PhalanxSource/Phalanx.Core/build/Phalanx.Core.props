@@ -1,0 +1,7 @@
+<Project>
+  <!-- Imported into every project that references the Phalanx.Core package (before the project body).
+       TODO(step G): shared game defaults (asset folder, shader folder). -->
+  <PropertyGroup>
+    <PhalanxCoreImported>true</PhalanxCoreImported>
+  </PropertyGroup>
+</Project>

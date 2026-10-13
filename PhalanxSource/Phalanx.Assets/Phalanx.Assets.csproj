@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Phalanx.Assets: importers (ModelImporter, assimp later) usable at runtime for mod imports, the asset database,
+       OpenDDL/OpenGEX (planned). Imported geometry is cached through Core's GeneratedCache (PHCACHE1). -->
+  <PropertyGroup>
+    <PackageId>Phalanx.Assets</PackageId>
+    <Description>PhalanxEngine assets: importers (runtime mod import), asset database, OpenDDL/OpenGEX (planned).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Phalanx.Core\Phalanx.Core.csproj" />
+    <!-- importers build Mesh and run GeometryProcessing (CPU only, no GPU device) -->
+    <ProjectReference Include="..\Phalanx.Rendering\Phalanx.Rendering.csproj" />
+  </ItemGroup>
+
+</Project>

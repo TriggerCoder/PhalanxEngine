@@ -160,7 +160,7 @@ public static class Input
     public static bool GetMouseIsInViewport()
     {
         Vector2 p = GetMousePositionRelativeToEditorViewport();
-        RHI_Viewport v = Renderer.GetViewport();
+        RHI_Viewport v = RenderView.GetViewport();
         return p.X >= 0.0f && p.Y >= 0.0f && p.X < v.Width && p.Y < v.Height;
     }
     public static void Initialize()

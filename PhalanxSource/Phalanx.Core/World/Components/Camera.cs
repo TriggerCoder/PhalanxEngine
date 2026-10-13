@@ -177,8 +177,8 @@ public class Camera : Component
 
                     // ndc → screen
                     Vector2 screen_pos = new Vector2(
-                        (clip.X / clip.W * 0.5f + 0.5f) * Renderer.GetViewport().Width,
-                        (clip.Y / clip.W * 0.5f + 0.5f) * Renderer.GetViewport().Height
+                        (clip.X / clip.W * 0.5f + 0.5f) * RenderView.GetViewport().Width,
+                        (clip.Y / clip.W * 0.5f + 0.5f) * RenderView.GetViewport().Height
                     );
 
                     float screen_dist = (screen_pos - cursor).Length();
@@ -229,7 +229,7 @@ public class Camera : Component
                     float distance_from_ray = to_point.Cross(ray_dir).Length();
 
                     // convert pick radius from screen pixels to world-space at this depth
-                    float viewport_width = Renderer.GetViewport().Width;
+                    float viewport_width = RenderView.GetViewport().Width;
                     float meters_per_pixel = (2.0f * depth * Math.Tan(GetFovHorizontalRad() * 0.5f)) / viewport_width;
                     float pick_threshold = pick_radius_px * meters_per_pixel;
 
@@ -267,7 +267,7 @@ public class Camera : Component
     {
         Vector3 position_clip = Vector3.Transform(position_world, m_view_projection_non_reverse_z);
         // convert clip space position to screen space position
-        RHI_Viewport viewport = Renderer.GetViewport();
+        RHI_Viewport viewport = RenderView.GetViewport();
         float viewport_half_width = viewport.Width * 0.5f;
         float viewport_half_height = viewport.Height * 0.5f;
         position_screen.X = (position_clip.X / position_clip.Z) * viewport_half_width + viewport_half_width;
@@ -306,7 +306,7 @@ public class Camera : Component
     Vector3 ScreenToWorldCoordinates(Vector2 position_screen, float z)
     {
         Vector3 position_clip;
-        RHI_Viewport viewport = Renderer.GetViewport();
+        RHI_Viewport viewport = RenderView.GetViewport();
         position_clip.X = (position_screen.X / viewport.Width) * 2.0f - 1.0f;
         position_clip.Y = (position_screen.Y / viewport.Height) * -2.0f + 1.0f;
         position_clip.Z = Math.Clamp(z, 0.0f, 1.0f);
@@ -357,14 +357,14 @@ public class Camera : Component
 
     // fov
     public float GetFovHorizontalRad() { return m_fov_horizontal_rad; }
-    public float GetFovVerticalRad() { return 2.0f * Math.Atan(Math.Tan(m_fov_horizontal_rad / 2.0f) * (Renderer.GetViewport().Height / Renderer.GetViewport().Width)); }
+    public float GetFovVerticalRad() { return 2.0f * Math.Atan(Math.Tan(m_fov_horizontal_rad / 2.0f) * (RenderView.GetViewport().Height / RenderView.GetViewport().Width)); }
     public float GetFovHorizontalDeg() { return m_fov_horizontal_rad * Math.RadToDeg; }
     public void SetFovHorizontalDeg(float fov)
     {
         m_fov_horizontal_rad = fov * Math.DegToRad;
         SetFlag(CameraFlags.IsDirty, true);
     }
-    public float GetAspectRatio() { return Renderer.GetViewport().GetAspectRatio(); }
+    public float GetAspectRatio() { return RenderView.GetViewport().GetAspectRatio(); }
 
     // frustum
     public bool IsInViewFrustum(BoundingBox bounding_box)
@@ -473,7 +473,7 @@ public class Camera : Component
         if (m_projection_type == ProjectionType.Projection_Perspective)
             return Matrix4x4Extensions.CreatePerspectiveFieldOfViewLH(GetFovVerticalRad(), GetAspectRatio(), near_plane, far_plane);
         else if (m_projection_type == ProjectionType.Projection_Orthographic)
-            return Matrix4x4Extensions.CreateOrthographicLH(Renderer.GetViewport().Width, Renderer.GetViewport().Height, near_plane, far_plane);
+            return Matrix4x4Extensions.CreateOrthographicLH(RenderView.GetViewport().Width, RenderView.GetViewport().Height, near_plane, far_plane);
 
         return Matrix4x4.Identity;
     }

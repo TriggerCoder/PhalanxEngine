@@ -1,0 +1,12 @@
+<Project>
+  <!-- Imported into every project that references the Phalanx.Core package (after the project body).
+       Feeds Shaders/shared_buffers.glsl to the bundled Phalanx.Generators when the project has one;
+       a game without its own shared header gets no generated structs and no PLX005 warning.
+       TODO(step G/K): asset packing and shader precompile on publish. -->
+  <ItemGroup Condition="Exists('$(MSBuildProjectDirectory)/Shaders/shared_buffers.glsl')">
+    <AdditionalFiles Include="$(MSBuildProjectDirectory)/Shaders/shared_buffers.glsl" />
+  </ItemGroup>
+  <PropertyGroup Condition="!Exists('$(MSBuildProjectDirectory)/Shaders/shared_buffers.glsl')">
+    <NoWarn>$(NoWarn);PLX005</NoWarn>
+  </PropertyGroup>
+</Project>

@@ -103,11 +103,13 @@ public class SharedBufferLayoutTests
     public void Generated_code_matches_current_glsl_header()
     {
         // the source generator hashes the header it consumed; this proves the build picked up the current file
+        // walk up from bin/ to the repo root, then read the source header (not the copy in bin/shaders)
+        string[] header = { "PhalanxSource", "Phalanx.Rendering", "Shaders", "shared_buffers.glsl" };
         string? dir = AppContext.BaseDirectory;
-        while (dir != null && !File.Exists(Path.Combine(dir, "Shaders", "shared_buffers.glsl")))
+        while (dir != null && !File.Exists(Path.Combine(dir, Path.Combine(header))))
             dir = Path.GetDirectoryName(dir);
         Assert.NotNull(dir);
-        string text = File.ReadAllText(Path.Combine(dir!, "Shaders", "shared_buffers.glsl"));
+        string text = File.ReadAllText(Path.Combine(dir!, Path.Combine(header)));
         string hash = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
         Assert.Equal(SharedBuffers.HeaderSha256, hash);
     }

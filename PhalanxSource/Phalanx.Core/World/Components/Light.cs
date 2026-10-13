@@ -201,7 +201,7 @@ public class Light : Component
                 {
                     // compute shadow extents (both fixed sizes)
                     Span<float> extents = stackalloc float[2] { cascade_near_extent, cascade_far_extent };
-                    float atlasWidth = (float)Renderer.GetRenderTarget(Renderer_RenderTarget.shadow_atlas).GetWidth();
+                    float atlasWidth = (float)RenderView.GetRenderTarget(Renderer_RenderTarget.shadow_atlas).GetWidth();
 
                     for (int i = 0; i < 2; i++)
                     {
@@ -659,8 +659,8 @@ public class Light : Component
     public void SetAtlasRectangle(uint slice, Rectangle rectangle)
     {
         m_atlas_rectangles[slice] = rectangle;
-        float atlas_w = (float)Renderer.GetRenderTarget(Renderer_RenderTarget.shadow_atlas).GetWidth();
-        float atlas_h = (float)Renderer.GetRenderTarget(Renderer_RenderTarget.shadow_atlas).GetHeight();
+        float atlas_w = (float)RenderView.GetRenderTarget(Renderer_RenderTarget.shadow_atlas).GetWidth();
+        float atlas_h = (float)RenderView.GetRenderTarget(Renderer_RenderTarget.shadow_atlas).GetHeight();
         m_atlas_offsets[slice] = new Vector2(rectangle.X / atlas_w, rectangle.Y / atlas_h);
         m_atlas_scales[slice] = new Vector2(rectangle.Width / atlas_w, rectangle.Height / atlas_h);
     }

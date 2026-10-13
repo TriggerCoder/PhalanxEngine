@@ -1,0 +1,26 @@
+<Project>
+  <!-- Shared settings for every project under PhalanxSource/ and PhalanxTests/ -->
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>Phalanx</RootNamespace>
+
+    <!-- package metadata (dotnet pack) -->
+    <Version>0.1.0-preview</Version>
+    <Authors>TriggerCoder</Authors>
+    <Company>TriggerCoder</Company>
+    <Product>PhalanxEngine</Product>
+    <Description>PhalanxEngine, a C# game engine ported from SpartanEngine.</Description>
+    <PackageLicenseExpression>LGPL-3.0-only</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/TriggerCoder/PhalanxEngine</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/TriggerCoder/PhalanxEngine</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>gameengine;vulkan;phalanx</PackageTags>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <!-- unsafe code is only enabled in Phalanx.Rendering (RHI + meshoptimizer interop), see architecture rule 10 -->
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+  </PropertyGroup>
+</Project>

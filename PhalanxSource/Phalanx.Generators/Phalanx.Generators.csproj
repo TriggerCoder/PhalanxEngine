@@ -1,9 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!-- Roslyn source generator: turns shaders/shared_buffers.glsl into C# structs at build time.
-       Referenced by Phalanx.csproj as an analyzer, never shipped as a runtime assembly. -->
+       Referenced by Phalanx.Core (packed into its nupkg) and Phalanx.Rendering as an analyzer, never shipped as a runtime assembly. -->
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <IsRoslynComponent>true</IsRoslynComponent>

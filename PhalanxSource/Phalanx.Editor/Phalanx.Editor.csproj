@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Phalanx.Editor</PackageId>
+    <Description>PhalanxEngine editor executable.</Description>
+    <OutputType>Exe</OutputType>
+    <!-- packed as a library-style package for now; the stock editor exe also builds from here -->
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Phalanx.Core\Phalanx.Core.csproj" />
+    <ProjectReference Include="..\Phalanx.Rendering\Phalanx.Rendering.csproj" />
+    <ProjectReference Include="..\Phalanx.Assets\Phalanx.Assets.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -63,7 +63,8 @@ public class Spline : Component
     private string m_saved_material_name = string.Empty;
 
     // generated mesh
-    private Mesh? m_mesh;
+    // phalanx: the road Mesh lives in Phalanx.Rendering, which Core cannot reference; only Dispose is needed here
+    private IDisposable? m_mesh;
 
     // snapshot of previous state for auto-regeneration
     private bool m_prev_closed_loop = false;
