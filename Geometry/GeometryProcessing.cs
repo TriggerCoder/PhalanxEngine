@@ -1,6 +1,6 @@
 using System.Buffers;
 using System.Numerics;
-using System.Runtime.CompilerServices; //Only for the Calls
+using System.Runtime.CompilerServices; // Unsafe.SizeOf -> vertex stride passed to every meshopt call (VertexStride)
 using System.Runtime.InteropServices;
 using MeshOptimizer; // Alimer.Bindings.MeshOptimizer
 
@@ -214,32 +214,7 @@ public static unsafe class GeometryProcessing
             return vertex_count;
 
         // step 1: vertex remapping (welds identical vertices)
-        {
-            uint[] remap = ArrayPool<uint>.Shared.Rent(vertex_count);
-            RHI_Vertex_PosTexNorTan[] scratch = ArrayPool<RHI_Vertex_PosTexNorTan>.Shared.Rent(vertex_count);
-            try
-            {
-                nuint vertex_count_optimized;
-                fixed (uint* remap_ptr = remap)
-                fixed (uint* idx = CollectionsMarshal.AsSpan(indices))
-                fixed (RHI_Vertex_PosTexNorTan* vtx = CollectionsMarshal.AsSpan(vertices))
-                fixed (RHI_Vertex_PosTexNorTan* dst = scratch)
-                {
-                    vertex_count_optimized = Meshopt.GenerateVertexRemap(remap_ptr, idx, (nuint)index_count, vtx, (nuint)vertex_count, VertexStride);
-                    Meshopt.RemapIndexBuffer(idx, idx, (nuint)index_count, remap_ptr); // in place is supported
-                    Meshopt.RemapVertexBuffer(dst, vtx, (nuint)vertex_count, VertexStride, remap_ptr);
-                }
-
-                vertex_count = (int)vertex_count_optimized;
-                CollectionsMarshal.SetCount(vertices, vertex_count);
-                scratch.AsSpan(0, vertex_count).CopyTo(CollectionsMarshal.AsSpan(vertices));
-            }
-            finally
-            {
-                ArrayPool<uint>.Shared.Return(remap);
-                ArrayPool<RHI_Vertex_PosTexNorTan>.Shared.Return(scratch);
-            }
-        }
+        vertex_count = WeldInPlace(vertices, indices);
 
         // step 2: simplify with density-based targeting
         if (index_count > 30000)
@@ -270,18 +245,69 @@ public static unsafe class GeometryProcessing
             }
         }
 
-        fixed (uint* idx = CollectionsMarshal.AsSpan(indices))
-        fixed (RHI_Vertex_PosTexNorTan* vtx = CollectionsMarshal.AsSpan(vertices))
-        {
-            // step 3: vertex cache optimization (in place)
-            Meshopt.OptimizeVertexCache(idx, idx, (nuint)index_count, (nuint)vertex_count);
-
-            // step 4: overdraw optimization (in place)
-            Meshopt.OptimizeOverdraw(idx, idx, (nuint)index_count, (float*)vtx, (nuint)vertex_count, VertexStride, 1.05f);
-        }
+        // steps 3-4: vertex cache + overdraw (in place)
+        OptimizeCacheAndOverdrawInPlace(vertices, indices);
 
         // step 5: vertex fetch optimization, trims unreferenced vertices
         return OptimizeVertexFetchInPlace(vertices, indices);
+    }
+
+    // port of geometry_processing::weld_and_optimize: welds bit-identical vertices and reorders for the caches,
+    // never simplifies, so the output draws pixel for pixel the same as the input (Mesh uses it for PreserveLod0)
+    // works in place (the lists are resized), returns the new vertex count
+    public static int WeldAndOptimize(List<RHI_Vertex_PosTexNorTan> vertices, List<uint> indices)
+    {
+        if (vertices.Count == 0 || indices.Count == 0)
+            return vertices.Count;
+
+        // weld, geometry that was assembled from separate pieces carries a duplicate for every vertex
+        // the pieces had in common
+        WeldInPlace(vertices, indices);
+
+        OptimizeCacheAndOverdrawInPlace(vertices, indices);
+        return OptimizeVertexFetchInPlace(vertices, indices);
+    }
+
+    // meshopt_generateVertexRemap compares the whole vertex bytewise (no epsilon), then remaps both buffers
+    private static int WeldInPlace(List<RHI_Vertex_PosTexNorTan> vertices, List<uint> indices)
+    {
+        int vertex_count = vertices.Count;
+        int index_count  = indices.Count;
+        uint[] remap = ArrayPool<uint>.Shared.Rent(vertex_count);
+        RHI_Vertex_PosTexNorTan[] scratch = ArrayPool<RHI_Vertex_PosTexNorTan>.Shared.Rent(vertex_count);
+        try
+        {
+            nuint welded_count;
+            fixed (uint* remap_ptr = remap)
+            fixed (uint* idx = CollectionsMarshal.AsSpan(indices))
+            fixed (RHI_Vertex_PosTexNorTan* vtx = CollectionsMarshal.AsSpan(vertices))
+            fixed (RHI_Vertex_PosTexNorTan* dst = scratch)
+            {
+                welded_count = Meshopt.GenerateVertexRemap(remap_ptr, idx, (nuint)index_count, vtx, (nuint)vertex_count, VertexStride);
+                Meshopt.RemapIndexBuffer(idx, idx, (nuint)index_count, remap_ptr); // in place is supported
+                Meshopt.RemapVertexBuffer(dst, vtx, (nuint)vertex_count, VertexStride, remap_ptr);
+            }
+
+            int count = (int)welded_count;
+            CollectionsMarshal.SetCount(vertices, count);
+            scratch.AsSpan(0, count).CopyTo(CollectionsMarshal.AsSpan(vertices));
+            return count;
+        }
+        finally
+        {
+            ArrayPool<uint>.Shared.Return(remap);
+            ArrayPool<RHI_Vertex_PosTexNorTan>.Shared.Return(scratch);
+        }
+    }
+
+    private static void OptimizeCacheAndOverdrawInPlace(List<RHI_Vertex_PosTexNorTan> vertices, List<uint> indices)
+    {
+        fixed (uint* idx = CollectionsMarshal.AsSpan(indices))
+        fixed (RHI_Vertex_PosTexNorTan* vtx = CollectionsMarshal.AsSpan(vertices))
+        {
+            Meshopt.OptimizeVertexCache(idx, idx, (nuint)indices.Count, (nuint)vertices.Count);
+            Meshopt.OptimizeOverdraw(idx, idx, (nuint)indices.Count, (float*)vtx, (nuint)vertices.Count, VertexStride, 1.05f);
+        }
     }
 
     private static int OptimizeVertexFetchInPlace(List<RHI_Vertex_PosTexNorTan> vertices, List<uint> indices)

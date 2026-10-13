@@ -211,8 +211,8 @@ public class Mesh : IResource, IDisposable
             {
                 if (preserve_lod0 || HasFlag(MeshFlags.PostProcessPreserveLod0))
                 {
-                    // TODO(port): geometry_processing::weld_and_optimize; Optimize() also simplifies dense meshes
-                    GeometryProcessing.Optimize(vertices, indices);
+                    // authored game-ready props must not be reduced before distance lod selection
+                    GeometryProcessing.WeldAndOptimize(vertices, indices);
                 }
                 else
                 {
