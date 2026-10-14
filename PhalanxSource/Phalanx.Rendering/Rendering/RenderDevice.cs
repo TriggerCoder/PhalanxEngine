@@ -20,9 +20,11 @@ public static class RenderDevice
     /// Opens the RHI on <paramref name="window"/> (as created by <c>Phalanx.Platform.Window</c>; initialized here if needed),
     /// clears the back buffer to the colour every frame and presents, until the window closes or
     /// <paramref name="maxFrames"/> frames were presented (0 = until closed). Returns the number of presented frames.
+    /// <paramref name="resizeEvery"/> &gt; 0 toggles the window between its size and half of it every that many frames
+    /// (resize demo: the swapchain follows the platform resize event).
     /// </summary>
-    public static int RunClearLoop(IWindow window, float r, float g, float b, float a, int maxFrames = 0, bool validation = false) =>
-        RHI_ClearSample.RunClearLoop(window, r, g, b, a, maxFrames, validation);
+    public static int RunClearLoop(IWindow window, float r, float g, float b, float a, int maxFrames = 0, bool validation = false, int resizeEvery = 0) =>
+        RHI_ClearSample.RunClearLoop(window, r, g, b, a, maxFrames, validation, resizeEvery);
 
     /// <summary>
     /// Headless check: creates a device without a window, clears a 4x4 offscreen image through dynamic rendering,

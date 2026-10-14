@@ -18,7 +18,24 @@ public class RhiResourceLogicTests
         var format = (RHI_Format)index;
         Assert.InRange(RHI_Definitions.rhi_format_to_bits_per_channel(format), 4u, 32u);
         Assert.InRange(RHI_Definitions.rhi_to_format_channel_count(format), 1u, 4u);
-        Assert.InRange(RHI_Definitions.rhi_format_to_bytes(format), 1u, 16u);
+        if (RHI_Texture.IsCompressedFormat(format))
+            Assert.Throws<ArgumentException>(() => RHI_Definitions.rhi_format_to_bytes(format)); // upstream 67a6e8b
+        else
+            Assert.InRange(RHI_Definitions.rhi_format_to_bytes(format), 1u, 16u);
+    }
+
+    [Fact]
+    public void Mip_chain_size_is_tight_and_bytes_per_pixel_follows_the_format()
+    {
+        // 64x64 rgba8 full chain: 4 * (4096+1024+256+64+16+4+1) = 21844 (the old estimate w*h*mips*bpp is 114688)
+        using var tex = new RHI_Texture(RHI_Texture_Type.Type2D, 64, 64, 1, 7, RHI_Format.R8G8B8A8_Unorm, RHI_Texture_Flags.RHI_Texture_Srv, "chain");
+        Assert.Equal(21844UL, tex.CalculateMipChainSize());
+        Assert.Equal(21844UL - 16384, tex.CalculateMipChainSize(1));
+        Assert.Equal(tex.CalculateMipChainSize(), tex.GetObjectSize());
+        using var hdr = new RHI_Texture(RHI_Texture_Type.Type2D, 4, 4, 1, 1, RHI_Format.R11G11B10_Float, RHI_Texture_Flags.RHI_Texture_Srv, "r11");
+        Assert.Equal(4u, hdr.GetBytesPerPixel());
+        using var vol = new RHI_Texture(RHI_Texture_Type.Type3D, 8, 8, 4, 4, RHI_Format.R8_Unorm, RHI_Texture_Flags.RHI_Texture_Srv, "vol");
+        Assert.Equal(256UL + 4 * 4 * 2 + 2 * 2 * 1 + 1, vol.CalculateMipChainSize()); // mip depth clamps at 1
     }
 
     [Theory]

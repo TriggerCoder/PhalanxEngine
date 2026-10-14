@@ -29,7 +29,7 @@ internal sealed class RHI_PendingWork
     public void Wait() { foreach (RHI_Work w in Work) w.Wait(); }
 }
 
-internal sealed unsafe class RHI_CommandList : IDisposable
+internal sealed unsafe partial class RHI_CommandList : IDisposable
 {
     private static readonly List<RHI_CommandList> s_lists = new();
 

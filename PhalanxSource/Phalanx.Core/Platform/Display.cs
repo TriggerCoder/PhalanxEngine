@@ -99,6 +99,14 @@ public static class Display
         );
 */    }
 
+    // spartan: Display::GetHdr / GetLuminanceMax come from the os (dxgi output desc on windows). silk exposes neither,
+    // so these are reported by the platform layer when known (SetHdrInfo) and default to "no hdr", 1000 nits.
+    private static bool s_hdr;
+    private static float s_luminance_max = 1000.0f;
+    public static void SetHdrInfo(bool hdr, float luminance_max_nits) { s_hdr = hdr; s_luminance_max = luminance_max_nits; }
+    public static bool GetHdr() => s_hdr;
+    public static float GetLuminanceMax() => s_luminance_max;
+
     public static IReadOnlyList<DisplayMode> GetDisplayModes() { return display_modes; }
 
     public static uint GetWidth()

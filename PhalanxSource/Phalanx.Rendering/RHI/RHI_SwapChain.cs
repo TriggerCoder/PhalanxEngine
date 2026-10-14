@@ -1,11 +1,16 @@
-// Port of SpartanEngine source/rhi/RHI_SwapChain.h + vulkan/Vulkan_SwapChain.cpp @ 4c07baa (first slice).
-// The surface comes from Silk.NET windowing's IVkSurface (Core's Phalanx.Platform window), so Core never sees Vulkan.
-// Differences: no HDR toggle at runtime yet, no RTSS check, acquire-semaphore reuse waits on the timeline value of
-// the submission that consumed it (spartan: the consumer's RHI_Work).
+// Port of SpartanEngine source/rhi/RHI_SwapChain.h + vulkan/Vulkan_SwapChain.cpp @ 4c07baa.
+// The surface comes from the Silk.NET window (Core's Phalanx.Platform window), so Core never sees Vulkan; the main
+// window's resize arrives through Core's Event bus (EventType.WindowResized) like spartan's m_window_resize_event_handle.
+// Deviations (phalanx-rhi4.md): no RTSS check; acquire semaphores are kept across recreation (their consumers are
+// tracked as RHI_Work); TRANSFER_SRC is added to the image usage when supported (readback in tests); a pending
+// HDR/vsync change survives a minimized Create (spartan drops it, see the doc); SDR falls back to BGRA when RGBA is
+// missing on any vendor, not only on NVIDIA.
 using Silk.NET.Core.Contexts;
 using Silk.NET.Core.Native;
 using Silk.NET.Vulkan;
+using Silk.NET.Vulkan.Extensions.EXT;
 using Silk.NET.Vulkan.Extensions.KHR;
+using Silk.NET.Windowing;
 using Semaphore = Silk.NET.Vulkan.Semaphore;
 using static Phalanx.Rendering.RHI.RHI_Implementation;
 
@@ -16,8 +21,12 @@ internal sealed unsafe class RHI_SwapChain : IDisposable
     public const int BufferCount = 2;
     public const int AcquireSemaphoreCount = 3;
     public const RHI_Format FormatSdr = RHI_Format.R8G8B8A8_Unorm;
-    public const RHI_Format FormatHdr = RHI_Format.R10G10B10A2_Unorm;
+    public const RHI_Format FormatHdr = RHI_Format.R10G10B10A2_Unorm; // vulkan: hdr10 pq, the wsi owns the conversion
 
+    // test seam: forces the minimized state (a headless x server cannot minimize)
+    internal static Func<bool>? IsMinimizedOverride;
+
+    private readonly IWindow m_window;
     private SurfaceKHR m_rhi_surface;
     private SwapchainKHR m_rhi_swapchain;
     private Image[] m_rhi_rt = Array.Empty<Image>();
@@ -26,31 +35,54 @@ internal sealed unsafe class RHI_SwapChain : IDisposable
     private RHI_SyncPrimitive[] m_image_acquired_semaphore = Array.Empty<RHI_SyncPrimitive>();
     private RHI_Work[] m_image_acquired_consumer = Array.Empty<RHI_Work>();
     private RHI_SyncPrimitive[] m_rendering_complete_semaphore = Array.Empty<RHI_SyncPrimitive>();
-    private uint m_semaphore_index;
+    private uint semaphore_index;
     private uint m_acquired_semaphore_index;
     private uint m_buffer_count;
+    private uint m_width, m_height;
     private RHI_Format m_format;
-    private readonly RHI_Present_Mode m_present_mode;
+    private RHI_Format m_format_pending = RHI_Format.Max;
+    private RHI_Present_Mode m_present_mode;
+    private PresentModeKHR m_present_mode_vk;
+    private ColorSpaceKHR m_color_space;
+    private bool m_is_dirty;
+    private bool m_image_acquired;
+    private uint m_image_index;
+    private ulong m_window_resize_event_handle;
+    private Action<Silk.NET.Maths.Vector2D<int>>? m_window_resize_callback;
 
     public string Name { get; }
-    public uint Width { get; private set; }
-    public uint Height { get; private set; }
-    public uint ImageIndex { get; private set; }
-    public bool IsImageAcquired { get; private set; }
+    public uint Width => m_width;
+    public uint Height => m_height;
+    public uint ImageIndex => m_image_index;
+    public bool IsImageAcquired => m_image_acquired;
     public RHI_Format Format => m_format;
+    public int CreateCount { get; private set; }   // how many times vkCreateSwapchainKHR ran (tests, diagnostics)
+    public uint GetWidth() => m_width;
+    public uint GetHeight() => m_height;
     public uint GetBufferCount() => m_buffer_count;
-    public Image GetRhiRt() => m_rhi_rt[ImageIndex];
-    public ImageView GetRhiRtv() => m_rhi_rtv[ImageIndex];
+    public RHI_Format GetFormat() => m_format;
+    public uint GetImageIndex() => m_image_index;
+    public Image GetRhiRt() => m_rhi_rt[m_image_index];
+    public ImageView GetRhiRtv() => m_rhi_rtv[m_image_index];
+    public Image GetRhiRtRaw(uint i) => m_rhi_rt[i];
     public SwapchainKHR GetRhiResource() => m_rhi_swapchain;
+    public PresentModeKHR GetPresentModeVk() => m_present_mode_vk;
+    public ColorSpaceKHR GetColorSpace() => m_color_space;
+    public bool IsHdr() => m_format == FormatHdr;
+    public bool IsDirty() => m_is_dirty;
 
-    public RHI_SwapChain(IVkSurface surface_source, uint width, uint height, RHI_Present_Mode present_mode, uint buffer_count, bool hdr, string name)
+    public RHI_SwapChain(IWindow window, uint width, uint height, RHI_Present_Mode present_mode, uint buffer_count, bool hdr, string name)
     {
         if (RHI_Context.Surface == null || RHI_Context.Swapchain == null)
             throw new InvalidOperationException("RHI_Device was initialized without the window's surface extensions");
+        if (!IsValidResolution(width, height)) throw new ArgumentException("Invalid resolution");
+        if (buffer_count < 2) throw new ArgumentException("Buffer count can't be less than 2");
+        if (window.VkSurface is not { } surface_source) throw new NotSupportedException("The window was not created with the Vulkan API");
 
+        m_window       = window;
         Name           = name;
-        Width          = width;
-        Height         = height;
+        m_width        = width;
+        m_height       = height;
         m_present_mode = present_mode;
         m_buffer_count = buffer_count;
         m_format       = hdr ? FormatHdr : FormatSdr;
@@ -60,73 +92,74 @@ internal sealed unsafe class RHI_SwapChain : IDisposable
         m_rhi_surface = new SurfaceKHR(handle.Handle);
         Check(RHI_Context.Surface.GetPhysicalDeviceSurfaceSupport(RHI_Context.DevicePhysical, RHI_Device.GetQueueIndex(RHI_Queue_Type.Graphics), m_rhi_surface, out Silk.NET.Core.Bool32 present_support), "vkGetPhysicalDeviceSurfaceSupportKHR");
         if (!present_support)
-            throw new NotSupportedException("The graphics queue does not support presentation to this surface");
+            throw new NotSupportedException("Present queue does not support presentation to this surface");
 
         Create();
+
+        // the main window swapchain tracks os resize through the event bus, other windows through their own callback
+        if (ReferenceEquals(window, Phalanx.Platform.Window.GetWindow()))
+            m_window_resize_event_handle = Event.Subscribe(Event.EventType.WindowResized, _ => ResizeToWindowSize());
+        else
+            window.FramebufferResize += m_window_resize_callback = size => { if (size.X > 0 && size.Y > 0) Resize((uint)size.X, (uint)size.Y); };
     }
 
-    public RHI_SyncPrimitive? GetImageAcquiredSemaphore() => IsImageAcquired ? m_image_acquired_semaphore[m_acquired_semaphore_index] : null;
-    public RHI_SyncPrimitive? GetRenderingCompleteSemaphore() => IsImageAcquired ? m_rendering_complete_semaphore[ImageIndex] : null;
-    public ImageLayout GetLayout() => m_layouts[ImageIndex];
-    public void SetLayout(ImageLayout layout) => m_layouts[ImageIndex] = layout;
+    // spartan: RHI_Device::IsValidResolution
+    public static bool IsValidResolution(uint width, uint height) =>
+        width > 4 && height > 4 && (RHI_Device.PropertyMaxTexture2dDimension == 0 || (width <= RHI_Device.PropertyMaxTexture2dDimension && height <= RHI_Device.PropertyMaxTexture2dDimension));
 
-    public void Resize(uint width, uint height)
+    public RHI_SyncPrimitive? GetImageAcquiredSemaphore() => m_image_acquired ? m_image_acquired_semaphore[m_acquired_semaphore_index] : null;
+    public RHI_SyncPrimitive? GetRenderingCompleteSemaphore() => m_image_acquired ? m_rendering_complete_semaphore[m_image_index] : null;
+    public ImageLayout GetLayout() => m_layouts[m_image_index];
+    public void SetLayout(ImageLayout layout) => m_layouts[m_image_index] = layout;
+
+    private bool IsMinimized() => IsMinimizedOverride?.Invoke() ?? Phalanx.Platform.Window.IsMinimized(m_window);
+
+    // returns true when a swapchain was (re)created, false when skipped because the window is minimized
+    private bool Create()
     {
-        if (width == 0 || height == 0)
-            return;
-        Width  = width;
-        Height = height;
-        Create();
-    }
-
-    // spartan: SetVsync -> recreate with fifo/immediate (kept for later)
-
-    private void Create()
-    {
+        // get surface capabilities
         KhrSurface khr_surface = RHI_Context.Surface!;
         Check(khr_surface.GetPhysicalDeviceSurfaceCapabilities(RHI_Context.DevicePhysical, m_rhi_surface, out SurfaceCapabilitiesKHR capabilities), "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
 
-        // skip if the window is minimized
-        if (capabilities.CurrentExtent.Width == 0 || capabilities.CurrentExtent.Height == 0)
+        // skip if the window is minimized; a pending format stays pending (spartan applies it first and loses it)
+        if (capabilities.CurrentExtent.Width == 0 || capabilities.CurrentExtent.Height == 0 || IsMinimizedOverride?.Invoke() == true)
         {
             Log.LogWarning("Window is minimized, swapchain creation skipped");
-            return;
+            return false;
         }
 
-        // format: fall back to sdr, then to bgra (nvidia exposes bgra only, like spartan's check)
-        ColorSpaceKHR color_space = ColorSpaceKHR.SpaceSrgbNonlinearKhr;
-        SurfaceFormatKHR[] formats = GetSurfaceFormats();
-        if (m_format == FormatHdr && !formats.Any(f => f.Format == ToVulkan(FormatHdr) && f.ColorSpace == ColorSpaceKHR.SpaceHdr10ST2084Ext))
+        // apply pending format change now that we're actually recreating the swapchain
+        if (m_format_pending != RHI_Format.Max)
         {
-            Log.LogWarning("HDR swapchain format not supported by the surface, falling back to SDR");
-            m_format = FormatSdr;
+            m_format         = m_format_pending;
+            m_format_pending = RHI_Format.Max;
         }
-        if (m_format == FormatHdr)
-            color_space = ColorSpaceKHR.SpaceHdr10ST2084Ext;
-        else
-            m_format = SelectSdrFormat(formats.Select(f => (f.Format, f.ColorSpace)).ToArray());
+
+        // check the surface supports the requested format and color space, fall back to SDR if not
+        SurfaceFormatKHR[] formats = GetSurfaceFormats();
+        var supported = formats.Select(f => (f.Format, f.ColorSpace)).ToArray();
+        (RHI_Format format, ColorSpaceKHR color_space, bool fell_back) = SelectFormat(m_format, supported, RHI_Device.GetPrimaryPhysicalDevice().IsNvidia());
+        if (fell_back && m_format == FormatHdr)
+            Log.LogWarning($"HDR format ({m_format}, {get_color_space(m_format)}) not supported by surface. Falling back to SDR.");
+        m_format      = format;
+        m_color_space = color_space;
 
         // only wait when replacing an in-flight swapchain
         if (m_rhi_swapchain.Handle != 0)
             RHI_Device.QueueWaitAll();
         DestroyViews();
 
-        // match the surface extent when the platform locks it
-        if (capabilities.CurrentExtent.Width != uint.MaxValue)
-        {
-            Width  = capabilities.CurrentExtent.Width;
-            Height = capabilities.CurrentExtent.Height;
-        }
-        else
-        {
-            Width  = System.Math.Clamp(Width,  capabilities.MinImageExtent.Width,  capabilities.MaxImageExtent.Width);
-            Height = System.Math.Clamp(Height, capabilities.MinImageExtent.Height, capabilities.MaxImageExtent.Height);
-        }
+        (m_width, m_height) = SelectExtent(capabilities.CurrentExtent, capabilities.MinImageExtent, capabilities.MaxImageExtent, m_width, m_height);
 
         uint min_image_count = System.Math.Max(m_buffer_count, capabilities.MinImageCount);
         if (capabilities.MaxImageCount > 0)
             min_image_count = System.Math.Min(min_image_count, capabilities.MaxImageCount);
 
+        ImageUsageFlags usage = ImageUsageFlags.ColorAttachmentBit | ImageUsageFlags.TransferDstBit;
+        if ((capabilities.SupportedUsageFlags & ImageUsageFlags.TransferSrcBit) != 0)
+            usage |= ImageUsageFlags.TransferSrcBit; // deviation: allows reading the back buffer back (tests, screenshots)
+
+        m_present_mode_vk = SelectPresentMode(m_present_mode, GetPresentModes());
         SwapchainKHR old = m_rhi_swapchain;
         SwapchainCreateInfoKHR info = new()
         {
@@ -134,20 +167,21 @@ internal sealed unsafe class RHI_SwapChain : IDisposable
             Surface          = m_rhi_surface,
             MinImageCount    = min_image_count,
             ImageFormat      = ToVulkan(m_format),
-            ImageColorSpace  = color_space,
-            ImageExtent      = new Extent2D(Width, Height),
+            ImageColorSpace  = m_color_space,
+            ImageExtent      = new Extent2D(m_width, m_height),
             ImageArrayLayers = 1,
-            ImageUsage       = ImageUsageFlags.ColorAttachmentBit | ImageUsageFlags.TransferDstBit,
+            ImageUsage       = usage,
             ImageSharingMode = SharingMode.Exclusive,
             PreTransform     = capabilities.CurrentTransform,
             CompositeAlpha   = SelectCompositeAlpha(capabilities.SupportedCompositeAlpha),
-            PresentMode      = SelectPresentMode(m_present_mode, GetPresentModes()),
+            PresentMode      = m_present_mode_vk,
             Clipped          = true,
             OldSwapchain     = old
         };
         Check(RHI_Context.Swapchain!.CreateSwapchain(RHI_Context.Device, in info, null, out m_rhi_swapchain), "vkCreateSwapchainKHR");
         if (old.Handle != 0)
             RHI_Context.Swapchain.DestroySwapchain(RHI_Context.Device, old, null);
+        CreateCount++;
 
         // images + views
         uint count = 0;
@@ -175,33 +209,114 @@ internal sealed unsafe class RHI_SwapChain : IDisposable
         }
 
         // sync: acquire semaphores rotate independently from images, rendering complete is per image
-        if (m_image_acquired_semaphore.Length == 0)
+        int acquire_count = System.Math.Max(AcquireSemaphoreCount, (int)count + 1);
+        if (m_image_acquired_semaphore.Length != acquire_count)
         {
-            int acquire_count = System.Math.Max(AcquireSemaphoreCount, (int)count + 1);
+            foreach (RHI_SyncPrimitive s in m_image_acquired_semaphore) s.Dispose();
             m_image_acquired_semaphore = new RHI_SyncPrimitive[acquire_count];
             m_image_acquired_consumer  = new RHI_Work[acquire_count];
             for (int i = 0; i < acquire_count; i++)
-                m_image_acquired_semaphore[i] = new RHI_SyncPrimitive(RHI_SyncPrimitive_Type.Semaphore, $"{Name}_image_acquired_{i}");
+                m_image_acquired_semaphore[i] = new RHI_SyncPrimitive(RHI_SyncPrimitive_Type.Semaphore, $"{Name}_acquire_{i}");
         }
         foreach (RHI_SyncPrimitive s in m_rendering_complete_semaphore)
             s.Dispose();
         m_rendering_complete_semaphore = new RHI_SyncPrimitive[count];
         for (int i = 0; i < count; i++)
-            m_rendering_complete_semaphore[i] = new RHI_SyncPrimitive(RHI_SyncPrimitive_Type.Semaphore, $"{Name}_rendering_complete_{i}");
+            m_rendering_complete_semaphore[i] = new RHI_SyncPrimitive(RHI_SyncPrimitive_Type.Semaphore, $"{Name}_present_{i}");
 
-        IsImageAcquired = false;
+        // hdr metadata only if hdr is enabled and the extension is there
+        if (m_format == FormatHdr && RHI_Context.HdrMetadata != null)
+            SetHdrMetadata();
+
+        Log.LogInfo($"Swapchain created with resolution: {m_width}x{m_height}, HDR: {(m_format == FormatHdr ? "enabled" : "disabled")} ({m_format}), VSync: {(m_present_mode == RHI_Present_Mode.Fifo ? "enabled" : "disabled")}");
+
+        // reset state after swapchain recreation
+        m_image_index              = 0;
+        semaphore_index            = 0;
+        m_acquired_semaphore_index = 0;
+        m_image_acquired           = false;
+        return true;
     }
+
+    private void SetHdrMetadata()
+    {
+        HdrMetadataEXT metadata = new()
+        {
+            SType                     = StructureType.HdrMetadataExt,
+            DisplayPrimaryRed         = new XYColorEXT(0.708f, 0.292f),
+            DisplayPrimaryGreen       = new XYColorEXT(0.170f, 0.797f),
+            DisplayPrimaryBlue        = new XYColorEXT(0.131f, 0.046f),
+            WhitePoint                = new XYColorEXT(0.3127f, 0.3290f),
+            MaxLuminance              = Phalanx.Platform.Display.GetLuminanceMax(),
+            MinLuminance              = 0.0f, // vulkan uses zero for unknown metadata
+            MaxContentLightLevel      = 0.0f,
+            MaxFrameAverageLightLevel = 0.0f
+        };
+        SwapchainKHR swapchain = m_rhi_swapchain;
+        RHI_Context.HdrMetadata!.SetHdrMetadata(RHI_Context.Device, 1, &swapchain, &metadata);
+    }
+
+    public void Resize(uint width, uint height)
+    {
+        if (!IsValidResolution(width, height))
+        {
+            Log.LogWarning($"{Name}: ignoring invalid resolution {width}x{height}");
+            return;
+        }
+        if (m_width == width && m_height == height && m_rhi_swapchain.Handle != 0)
+            return;
+        m_width  = width;
+        m_height = height;
+        if (!Create())
+            m_is_dirty = true; // minimized: retry on the next present
+        Log.LogInfo($"Resolution has been set to {width}x{height}");
+    }
+
+    // spartan: ResizeToWindowSize (EventType::WindowResized handler)
+    public void ResizeToWindowSize() => Resize((uint)System.Math.Max(0, m_window.FramebufferSize.X), (uint)System.Math.Max(0, m_window.FramebufferSize.Y));
+
+    // hdr: applied in Create, updating the format here would mismatch pipelines rendering between SetHdr and Create
+    public void SetHdr(bool enabled)
+    {
+        if (enabled && !Phalanx.Platform.Display.GetHdr())
+            Log.LogWarning("This display doesn't report HDR support, the surface check decides"); // spartan asserts here
+        RHI_Format new_format = enabled ? FormatHdr : FormatSdr;
+        if (new_format == RHI_Format.R8G8B8A8_Unorm && RHI_Device.GetPrimaryPhysicalDevice().IsNvidia())
+            new_format = RHI_Format.B8R8G8A8_Unorm;
+        if (new_format != m_format)
+        {
+            m_format_pending = new_format;
+            m_is_dirty       = true;
+        }
+    }
+
+    public void SetVsync(bool enabled)
+    {
+        if ((m_present_mode == RHI_Present_Mode.Fifo) != enabled)
+        {
+            m_present_mode = enabled ? RHI_Present_Mode.Fifo : RHI_Present_Mode.Immediate;
+            m_is_dirty     = true;
+        }
+    }
+
+    // fifo is always supported, so vsync means fifo
+    public bool GetVsync() => m_present_mode == RHI_Present_Mode.Fifo;
 
     // returns false when nothing was acquired (minimized, or out of date twice)
     public bool AcquireNextImage()
     {
-        IsImageAcquired = false;
-        if (m_rhi_swapchain.Handle == 0)
+        m_image_acquired = false;
+
+        // when the window is minimized acquisition will fail and it's not necessary either
+        if (IsMinimized())
             return false;
+        if (m_is_dirty || m_rhi_swapchain.Handle == 0)
+            if (!TryRecreate())
+                return false;
 
         for (int attempt = 0; attempt < 2; attempt++)
         {
-            uint index = m_semaphore_index;
+            uint index = semaphore_index;
             RHI_SyncPrimitive signal = m_image_acquired_semaphore[index];
 
             // wait only for the submission that consumed this semaphore
@@ -212,15 +327,16 @@ internal sealed unsafe class RHI_SwapChain : IDisposable
             Result result = RHI_Context.Swapchain!.AcquireNextImage(RHI_Context.Device, m_rhi_swapchain, 100_000_000, signal.GetSemaphore(), default, ref image_index);
             if (result == Result.Success || result == Result.SuboptimalKhr)
             {
-                ImageIndex = image_index;
+                m_image_index              = image_index;
                 m_acquired_semaphore_index = index;
-                m_semaphore_index = (index + 1) % (uint)m_image_acquired_semaphore.Length;
-                IsImageAcquired = true;
+                semaphore_index            = (index + 1) % (uint)m_image_acquired_semaphore.Length;
+                m_image_acquired           = true;
                 return true;
             }
             if (result == Result.ErrorOutOfDateKhr)
             {
-                Create();
+                if (!Create())
+                    return false;
                 continue;
             }
             if (result == Result.Timeout || result == Result.NotReady)
@@ -230,18 +346,56 @@ internal sealed unsafe class RHI_SwapChain : IDisposable
         return false;
     }
 
-    // records that cmd_list waits on the current acquire semaphore (so it isn't re-signaled while still pending)
+    private bool TryRecreate()
+    {
+        if (!Create())
+            return false;
+        m_is_dirty = false;
+        return true;
+    }
+
+    // records that a submission waits on the current acquire semaphore (so it isn't re-signaled while pending)
     public void SetAcquireConsumer(RHI_Work work) => m_image_acquired_consumer[m_acquired_semaphore_index] = work;
     public void SetAcquireConsumer(RHI_CommandList cmd_list) => SetAcquireConsumer(cmd_list.GetWork());
 
     public void Present()
     {
-        if (!IsImageAcquired)
+        if (!m_image_acquired)
             return;
-        RHI_Queue queue = RHI_Device.GetQueue(RHI_Queue_Type.Present);
-        if (!queue.Present(m_rhi_swapchain, ImageIndex, m_rendering_complete_semaphore[ImageIndex]))
-            Create();
-        IsImageAcquired = false;
+
+        bool success = RHI_Device.GetQueue(RHI_Queue_Type.Present).Present(m_rhi_swapchain, m_image_index, m_rendering_complete_semaphore[m_image_index]);
+        m_image_acquired = false;
+        if (!success)
+            m_is_dirty = true;
+
+        // recreate here so no semaphores are destroyed while being waited on; stays dirty while minimized
+        if (m_is_dirty)
+            TryRecreate();
+    }
+
+    // spartan: get_color_space
+    public static ColorSpaceKHR get_color_space(RHI_Format format) =>
+        format == RHI_Format.R10G10B10A2_Unorm ? ColorSpaceKHR.SpaceHdr10ST2084Ext : ColorSpaceKHR.SpaceSrgbNonlinearKhr;
+
+    // spartan: is_format_and_color_space_supported + the sdr fallback in Create. pure.
+    public static (RHI_Format format, ColorSpaceKHR color_space, bool fell_back) SelectFormat(RHI_Format requested,
+        IReadOnlyList<(Silk.NET.Vulkan.Format format, ColorSpaceKHR color_space)> supported, bool is_nvidia)
+    {
+        RHI_Format format = requested;
+        if (format == RHI_Format.R8G8B8A8_Unorm && is_nvidia)
+            format = RHI_Format.B8R8G8A8_Unorm; // nvidia exposes bgra instead of rgba
+        ColorSpaceKHR color_space = get_color_space(format);
+        if (supported.Any(s => s.format == ToVulkan(format) && s.color_space == color_space))
+            return (format, color_space, false);
+        return (SelectSdrFormat(supported), ColorSpaceKHR.SpaceSrgbNonlinearKhr, true);
+    }
+
+    // spartan: Create's extent rule. match the surface extent when the platform locks it, else clamp. pure.
+    public static (uint width, uint height) SelectExtent(Extent2D current, Extent2D min, Extent2D max, uint width, uint height)
+    {
+        if (current.Width != uint.MaxValue)
+            return (current.Width, current.Height);
+        return (System.Math.Clamp(width, min.Width, max.Width), System.Math.Clamp(height, min.Height, max.Height));
     }
 
     // ------------------------------------------------------------------------------------------------------------
@@ -306,6 +460,16 @@ internal sealed unsafe class RHI_SwapChain : IDisposable
 
     public void Dispose()
     {
+        if (m_window_resize_event_handle != 0)
+        {
+            Event.Unsubscribe(Event.EventType.WindowResized, m_window_resize_event_handle);
+            m_window_resize_event_handle = 0;
+        }
+        if (m_window_resize_callback != null)
+        {
+            m_window.FramebufferResize -= m_window_resize_callback;
+            m_window_resize_callback = null;
+        }
         if (RHI_Context.Api == null || RHI_Context.Device.Handle == 0)
             return;
         RHI_Device.QueueWaitAll();

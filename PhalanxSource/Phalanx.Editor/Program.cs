@@ -9,6 +9,7 @@ namespace Phalanx.Editor;
 //
 //   Phalanx.Editor --rhi-clear [frames]   opens the engine window and clears it every frame through the Vulkan RHI
 //                                         (frames: stop after this many presented frames, 0 or omitted = until closed)
+//   Phalanx.Editor --rhi-clear-resize [frames]   same, resizing the window every 30 frames (swapchain resize demo)
 //   Phalanx.Editor --rhi-offscreen        no window: clears an offscreen image on the first Vulkan device and prints the pixel
 //   add --validation to enable VK_LAYER_KHRONOS_validation (Debug builds enable it by default)
 public static class Program
@@ -24,6 +25,9 @@ public static class Program
 #endif
 
         int clear = Array.IndexOf(args, "--rhi-clear");
+        int resize_every = 0;
+        if (clear < 0 && (clear = Array.IndexOf(args, "--rhi-clear-resize")) >= 0)
+            resize_every = 30;
         if (clear >= 0)
         {
             int frames = 0;
@@ -36,7 +40,7 @@ public static class Program
             }
             Window.Initialize();
             // cornflower blue
-            int presented = RenderDevice.RunClearLoop(Window.GetWindow()!, 0.392f, 0.584f, 0.929f, 1.0f, frames, validation);
+            int presented = RenderDevice.RunClearLoop(Window.GetWindow()!, 0.392f, 0.584f, 0.929f, 1.0f, frames, validation, resize_every);
             Console.WriteLine($"rhi-clear: presented {presented} frames");
             return 0;
         }

@@ -7,48 +7,62 @@ namespace Phalanx.Rendering.RHI;
 
 internal static class RHI_ClearSample
 {
+    // the instance extensions the window's surface needs
+    public static unsafe List<string> GetWindowExtensions(IWindow window)
+    {
+        if (window.VkSurface is not { } surface_source)
+            throw new NotSupportedException("The window was not created with the Vulkan API");
+        byte** names = surface_source.GetRequiredExtensions(out uint count);
+        var extensions = new List<string>();
+        for (uint i = 0; i < count; i++)
+            extensions.Add(Silk.NET.Core.Native.SilkMarshal.PtrToString((nint)names[i])!);
+        return extensions;
+    }
+
     /// <summary>
     /// Opens the RHI on <paramref name="window"/> (created by Phalanx.Platform.Window, not yet initialized is fine),
     /// clears the back buffer to the colour every frame and presents, until the window closes or
     /// <paramref name="max_frames"/> frames were presented (0 = until closed). Returns the number of presented frames.
     /// </summary>
-    public static unsafe int RunClearLoop(IWindow window, float r, float g, float b, float a, int max_frames = 0, bool validation = false)
+    public static unsafe int RunClearLoop(IWindow window, float r, float g, float b, float a, int max_frames = 0, bool validation = false, int resize_every = 0)
     {
         if (!window.IsInitialized)
             window.Initialize();
         if (window.VkSurface is not { } surface_source)
             throw new NotSupportedException("The window was not created with the Vulkan API");
 
-        byte** names = surface_source.GetRequiredExtensions(out uint count);
-        var extensions = new List<string>();
-        for (uint i = 0; i < count; i++)
-            extensions.Add(Silk.NET.Core.Native.SilkMarshal.PtrToString((nint)names[i])!);
-
-        RHI_Device.Initialize(extensions, validation);
-        int presented = 0;
+        RHI_Device.Initialize(GetWindowExtensions(window), validation);
+        int presented = 0, frames = 0;
+        var base_size = window.Size;
         try
         {
-            using var swapchain = new RHI_SwapChain(surface_source, (uint)window.FramebufferSize.X, (uint)window.FramebufferSize.Y,
-                                                    RHI_Present_Mode.Fifo, RHI_SwapChain.BufferCount, hdr: false, "swapchain");
-            window.FramebufferResize += size => swapchain.Resize((uint)size.X, (uint)size.Y);
+            RHI_SwapChain swapchain = RHI_Device.CreateSwapChain(window, RHI_Present_Mode.Fifo, hdr: false, "swapchain");
             while (!window.IsClosing && (max_frames == 0 || presented < max_frames))
             {
+                // resize demo: alternate between the original and a smaller size, the swapchain follows the event
+                if (resize_every > 0 && frames > 0 && frames % resize_every == 0)
+                {
+                    bool small = (frames / resize_every) % 2 == 1;
+                    window.Size = small ? new Silk.NET.Maths.Vector2D<int>(System.Math.Max(64, base_size.X / 2), System.Math.Max(64, base_size.Y / 2)) : base_size;
+                }
+                frames++;
+
                 window.DoEvents();
                 if (window.IsClosing)
                     break;
 
-                if (!swapchain.AcquireNextImage())
+                if (!RHI_Device.AcquireSwapChainImage())
+                {
+                    if (max_frames > 0 && frames > max_frames * 4) break; // minimized for too long in a bounded run
                     continue;
+                }
 
                 RHI_CommandList cmd = RHI_Device.BeginFrame();
                 // the whole image is cleared, so the old contents can be discarded (undefined -> general)
-                cmd.InsertBarrierImage(swapchain.GetRhiRt(), ImageAspectFlags.ColorBit, ImageLayout.Undefined, ImageLayout.General);
+                swapchain.SetLayout(ImageLayout.Undefined);
+                cmd.InsertBarrier(swapchain, ImageLayout.General);
                 cmd.ClearRenderTarget(swapchain.GetRhiRtv(), ImageLayout.General, swapchain.Width, swapchain.Height, r, g, b, a);
-                cmd.InsertBarrierImage(swapchain.GetRhiRt(), ImageAspectFlags.ColorBit, ImageLayout.General, ImageLayout.PresentSrcKhr);
-
-                RHI_Work work = RHI_Device.EndFrame(swapchain.GetImageAcquiredSemaphore(), swapchain.GetRenderingCompleteSemaphore());
-                swapchain.SetAcquireConsumer(work);
-                swapchain.Present();
+                RHI_Device.EndFrame(); // prepare_for_present + submit + present
                 presented++;
             }
             RHI_Device.QueueWaitAll();

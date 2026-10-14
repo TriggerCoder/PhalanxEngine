@@ -21,6 +21,8 @@ internal static class RHI_Context
     public static DebugUtilsMessengerEXT DebugMessenger;
     public static KhrSurface?     Surface;
     public static KhrSwapchain?   Swapchain;
+    public static Silk.NET.Vulkan.Extensions.EXT.ExtHdrMetadata? HdrMetadata;
+    public static bool            MemoryBudget; // VK_EXT_memory_budget enabled
     public static string[]        ExtensionsInstance = System.Array.Empty<string>();
     public static string[]        ExtensionsDevice   = System.Array.Empty<string>();
 

@@ -179,6 +179,7 @@ internal static unsafe partial class RHI_Device
         if (RHI_Context.Device.Handle != 0)
         {
             vk.DeviceWaitIdle(RHI_Context.Device);
+            DestroySwapChain();
             DeletionQueueFlush();
             FrameReset();
             s_allocator?.Dispose();
@@ -206,6 +207,8 @@ internal static unsafe partial class RHI_Device
         RHI_Context.DebugUtils = null;
         RHI_Context.Surface    = null;
         RHI_Context.Swapchain  = null;
+        RHI_Context.HdrMetadata = null;
+        RHI_Context.MemoryBudget = false;
         RHI_Context.DevicePhysical = default;
         s_physical_devices.Clear();
         s_debug_callback = null;
@@ -463,6 +466,13 @@ internal static unsafe partial class RHI_Device
         var extensions = new List<string>();
         if (RHI_Context.Surface != null && available.Contains(KhrSwapchain.ExtensionName))
             extensions.Add(KhrSwapchain.ExtensionName);
+        // spartan Vulkan_Device.cpp:274 (memory budget) and the hdr metadata used by the swapchain, both optional
+        RHI_Context.MemoryBudget = available.Contains("VK_EXT_memory_budget");
+        if (RHI_Context.MemoryBudget)
+            extensions.Add("VK_EXT_memory_budget");
+        bool hdr_metadata = RHI_Context.Surface != null && available.Contains("VK_EXT_hdr_metadata");
+        if (hdr_metadata)
+            extensions.Add("VK_EXT_hdr_metadata");
         RHI_Context.ExtensionsDevice = extensions.ToArray();
 
         // one queue per unique family
@@ -493,6 +503,8 @@ internal static unsafe partial class RHI_Device
 
         if (RHI_Context.Surface != null && vk.TryGetDeviceExtension(RHI_Context.Instance, RHI_Context.Device, out KhrSwapchain khr_swapchain))
             RHI_Context.Swapchain = khr_swapchain;
+        if (hdr_metadata && vk.TryGetDeviceExtension(RHI_Context.Instance, RHI_Context.Device, out Silk.NET.Vulkan.Extensions.EXT.ExtHdrMetadata ext_hdr))
+            RHI_Context.HdrMetadata = ext_hdr;
 
         // properties
         vk.GetPhysicalDeviceProperties(physical, out PhysicalDeviceProperties props);

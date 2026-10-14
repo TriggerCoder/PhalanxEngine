@@ -118,7 +118,7 @@ internal static unsafe partial class RHI_Device
         if (support == Result.ErrorFormatNotSupported)
             throw new NotSupportedException($"{texture.Name}: the GPU doesn't support {texture.GetFormat()} with the specified properties");
 
-        ulong texture_size = (ulong)texture.GetWidth() * texture.GetHeight() * texture.GetDepth() * texture.GetMipCount() * RHI_Definitions.rhi_format_to_bytes(texture.GetFormat());
+        ulong texture_size = texture.CalculateMipChainSize(); // upstream 67a6e8b (was w*h*depth*mips*bytes)
         return MemoryTextureCreate(out image, in info, texture.Name, texture_size >= TextureDedicatedThreshold);
     }
 
@@ -161,8 +161,54 @@ internal static unsafe partial class RHI_Device
     public static nint MemoryGetMappedDataFromBuffer(RHI_Allocation allocation) => allocation.MappedData;
 
     public static RHI_Allocator_Stats MemoryGetStats() => Allocator.GetStats();
-    public static ulong MemoryGetAllocatedMb() => Allocator.GetStats().BytesReserved / (1024 * 1024);
+    // spartan: MemoryGetAllocatedMb / MemoryGetAvailableMb / MemoryGetTotalMb (Vulkan_Device.cpp:3104-3160) on
+    // VK_EXT_memory_budget. deviations: the loops stop at memoryHeapCount (spartan walks VK_MAX_MEMORY_HEAPS,
+    // :3111/:3133), "available" is budget - usage (spartan returns the budget, :3138), see MemoryGetBudgetMb.
+    // without the extension the figures come from our own allocator (other processes are invisible then).
+    public static bool MemoryGetBudget(out ulong[] budget, out ulong[] usage, out bool[] device_local)
+    {
+        budget = usage = Array.Empty<ulong>(); device_local = Array.Empty<bool>();
+        if (!RHI_Context.MemoryBudget || RHI_Context.Device.Handle == 0)
+            return false;
+        PhysicalDeviceMemoryBudgetPropertiesEXT b = new() { SType = StructureType.PhysicalDeviceMemoryBudgetPropertiesExt };
+        PhysicalDeviceMemoryProperties2 props = new() { SType = StructureType.PhysicalDeviceMemoryProperties2, PNext = &b };
+        RHI_Context.Vk.GetPhysicalDeviceMemoryProperties2(RHI_Context.DevicePhysical, &props);
+        uint count = props.MemoryProperties.MemoryHeapCount;
+        budget = new ulong[count]; usage = new ulong[count]; device_local = new bool[count];
+        for (int i = 0; i < count; i++)
+        {
+            budget[i] = b.HeapBudget[i];
+            usage[i]  = b.HeapUsage[i];
+            device_local[i] = (props.MemoryProperties.MemoryHeaps[i].Flags & MemoryHeapFlags.DeviceLocalBit) != 0;
+        }
+        return true;
+    }
+
+    public static ulong MemoryGetAllocatedMb()
+    {
+        if (MemoryGetBudget(out _, out ulong[] usage, out bool[] local))
+            return Sum(usage, local) / (1024 * 1024);
+        return Allocator.GetStats().BytesReserved / (1024 * 1024);
+    }
+
+    public static ulong MemoryGetBudgetMb()
+    {
+        if (MemoryGetBudget(out ulong[] budget, out _, out bool[] local))
+            return Sum(budget, local) / (1024 * 1024);
+        return MemoryGetTotalMb();
+    }
+
     public static ulong MemoryGetTotalMb() => (s_allocator?.GetHeapSize(device_local: true) ?? 0) / (1024 * 1024);
-    // TODO(port): VK_EXT_memory_budget for the real figure (spartan), this ignores other processes
-    public static ulong MemoryGetAvailableMb() { ulong total = MemoryGetTotalMb(), used = MemoryGetAllocatedMb(); return total > used ? total - used : 0; }
+
+    public static ulong MemoryGetAvailableMb() { ulong budget = MemoryGetBudgetMb(), used = MemoryGetAllocatedMb(); return budget > used ? budget - used : 0; }
+
+    // device local heaps only, unless there are none (then every heap)
+    private static ulong Sum(ulong[] values, bool[] local)
+    {
+        bool any_local = local.Any(l => l);
+        ulong sum = 0;
+        for (int i = 0; i < values.Length; i++)
+            if (local[i] || !any_local) sum += values[i];
+        return sum;
+    }
 }

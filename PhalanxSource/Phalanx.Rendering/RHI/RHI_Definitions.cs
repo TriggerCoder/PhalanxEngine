@@ -159,7 +159,9 @@ internal static class RHI_Definitions
             or RHI_Format.D32_Float_S8X24_Uint => 8,
         RHI_Format.R32G32B32_Float => 12,
         RHI_Format.R32G32B32A32_Float => 16,
-        RHI_Format.BC1_Unorm or RHI_Format.BC3_Unorm or RHI_Format.BC5_Unorm or RHI_Format.BC7_Unorm or RHI_Format.ASTC => 1, // approximate, like spartan
+        // upstream 67a6e8b: compressed formats have no per-texel size, use RHI_Texture.CalculateMipSize (block based)
+        RHI_Format.BC1_Unorm or RHI_Format.BC3_Unorm or RHI_Format.BC5_Unorm or RHI_Format.BC7_Unorm or RHI_Format.ASTC =>
+            throw new ArgumentException($"{format}: compressed formats require block-based sizing (RHI_Texture.CalculateMipSize)", nameof(format)),
         _ => 4 // spartan's default fallback
     };
 }

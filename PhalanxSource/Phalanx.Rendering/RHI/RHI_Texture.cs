@@ -1,8 +1,8 @@
 // Port of SpartanEngine source/rhi/RHI_Texture.h/.cpp + vulkan/Vulkan_Texture.cpp @ 4c07baa (step 3: creation,
 // staging upload of all slices/mips, layout tracking, views). Not ported yet: file load/save, compression,
 // streaming (RHI_TextureStreaming), UpdateRegion, descriptor-cache invalidation, debug breadcrumbs.
-// Deviations (see phalanx-rhi3.md): packed formats size as 4 bytes in CalculateMipSize; 3D textures stage one
-// slice with depth extents clamped to 1; per-layer/rtv/dsv views are capped at rhi_max_render_target_count.
+// Synced with upstream 67a6e8b: pixel sizes come from rhi_format_to_bytes, 3D textures stage one slice with mip
+// depth clamped to 1, CalculateMipChainSize drives the dedicated-allocation threshold. Still deviating: per-layer/rtv/dsv views are capped at rhi_max_render_target_count.
 using Silk.NET.Vulkan;
 using static Phalanx.Rendering.RHI.RHI_Implementation;
 
@@ -106,7 +106,7 @@ internal sealed unsafe class RHI_Texture : IDisposable
     public uint GetArrayLength() => m_type == RHI_Texture_Type.Type3D ? 1 : m_depth;
     public uint GetBitsPerChannel() => m_bits_per_channel;
     public uint GetBytesPerChannel() => m_bits_per_channel / 8;
-    public uint GetBytesPerPixel() => m_bits_per_channel / 8 * m_channel_count;
+    public uint GetBytesPerPixel() => RHI_Definitions.rhi_format_to_bytes(m_format); // upstream 67a6e8b
     public uint GetChannelCount() => m_channel_count;
     public RHI_Format GetFormat() => m_format;
     public RHI_Texture_Type Type => m_type;
@@ -194,30 +194,31 @@ internal sealed unsafe class RHI_Texture : IDisposable
 
     public void ClearData() => m_slices = new List<RHI_Texture_Slice>();
 
-    private void ComputeMemoryUsage()
+    private void ComputeMemoryUsage() => m_object_size = CalculateMipChainSize();
+
+    // tightly packed payload of mips first_mip.., excluding gpu alignment and metadata (upstream 67a6e8b)
+    public ulong CalculateMipChainSize(uint first_mip = 0)
     {
-        m_object_size = 0;
+        ulong size = 0;
         for (uint array_index = 0; array_index < GetArrayLength(); array_index++)
-            for (uint mip = 0; mip < m_mip_count; mip++)
-                m_object_size += CalculateMipSize(System.Math.Max(1u, m_width >> (int)mip), System.Math.Max(1u, m_height >> (int)mip),
+            for (uint mip = first_mip; mip < m_mip_count; mip++)
+                size += CalculateMipSize(System.Math.Max(1u, m_width >> (int)mip), System.Math.Max(1u, m_height >> (int)mip),
                     m_type == RHI_Texture_Type.Type3D ? System.Math.Max(1u, m_depth >> (int)mip) : 1, m_format, m_bits_per_channel, m_channel_count);
+        return size;
     }
 
-    // spartan: CalculateMipSize. block compressed formats by 4x4 blocks, the rest by bytes per channel; the packed
-    // 32-bit formats (R11G11B10, R10G10B10A2) are 4 bytes (spartan's bits/8 * channels gives 3 for R11G11B10).
+    // spartan: CalculateMipSize. block compressed formats by 4x4 blocks, the rest by rhi_format_to_bytes (upstream
+    // 67a6e8b replaced bits/8 * channels, which gave 3 bytes for R11G11B10). bits/channels are kept for the signature.
     public static ulong CalculateMipSize(uint width, uint height, uint depth, RHI_Format format, uint bits_per_channel, uint channel_count)
     {
         if (width == 0 || height == 0 || depth == 0) throw new ArgumentOutOfRangeException(nameof(width));
         if (IsCompressedFormat(format))
         {
             ulong block_size = format == RHI_Format.BC1_Unorm ? 8UL : 16UL; // BC3/BC5/BC7/ASTC 4x4: 16
-            ulong blocks_wide = (width + 3) / 4, blocks_high = (height + 3) / 4;
+            ulong blocks_wide = (width + 3UL) / 4, blocks_high = (height + 3UL) / 4;
             return blocks_wide * blocks_high * depth * block_size;
         }
-        if (format == RHI_Format.R11G11B10_Float || format == RHI_Format.R10G10B10A2_Unorm)
-            return (ulong)width * height * depth * 4;
-        if (channel_count == 0 || bits_per_channel == 0) throw new ArgumentOutOfRangeException(nameof(channel_count));
-        return (ulong)width * height * depth * channel_count * (bits_per_channel / 8);
+        return (ulong)width * height * depth * RHI_Definitions.rhi_format_to_bytes(format);
     }
 
     public static ulong CalculateMipSize(uint width, uint height, uint depth, RHI_Format format) =>

@@ -41,7 +41,18 @@ public static class Window
 //                         : GraphicsAPI.Default
         };
         window = Silk.NET.Windowing.Window.Create(options);
+
+        // spartan: the platform layer fires EventType::WindowResized, the main swapchain subscribes to it
+        window.FramebufferResize += size => Event.Fire(Event.EventType.WindowResized, size);
     }
+
+    // framebuffer size in pixels (spartan: Window::GetWidthInPixels/GetHeightInPixels)
+    public static uint GetWidthInPixels() => window == null ? 0u : (uint)System.Math.Max(0, window.FramebufferSize.X);
+    public static uint GetHeightInPixels() => window == null ? 0u : (uint)System.Math.Max(0, window.FramebufferSize.Y);
+
+    // spartan: Window::IsMinimized. a zero-sized framebuffer counts as minimized (wayland/x11 report it that way)
+    public static bool IsMinimized() => window != null && IsMinimized(window);
+    public static bool IsMinimized(IWindow w) => w.WindowState == WindowState.Minimized || w.FramebufferSize.X <= 0 || w.FramebufferSize.Y <= 0;
 
     public static void PumpEvents()
     {
