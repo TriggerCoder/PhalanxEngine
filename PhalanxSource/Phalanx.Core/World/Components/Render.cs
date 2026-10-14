@@ -14,8 +14,19 @@ using Phalanx.Math;
 
 namespace Phalanx.World;
 
+// Render.h:29-31, the flags ported so far
+[Flags]
+public enum RenderFlags : uint
+{
+    CastsShadows = 1U << 0,
+}
+
 public class Render : Component
 {
+    private RenderFlags m_flags = RenderFlags.CastsShadows; // Render.h:66
+    public bool HasFlag(RenderFlags flag) => (m_flags & flag) != 0;
+    public void SetFlag(RenderFlags flag, bool enable = true) { m_flags = enable ? m_flags | flag : m_flags & ~flag; }
+
     private IMesh? m_mesh;
     private int m_sub_mesh_index;
     private Material? m_material;

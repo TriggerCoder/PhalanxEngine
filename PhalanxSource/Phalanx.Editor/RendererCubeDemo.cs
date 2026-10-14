@@ -8,7 +8,8 @@ using Silk.NET.Windowing;
 namespace Phalanx.Editor;
 
 // --renderer-cube: spartan's standard cube through the renderer (geometry buffer, g-buffer, light, composition,
-// tonemap), seen by a camera 3 m away and lit by a directional light; the cube turns so every face shows.
+// tonemap, shadow maps), seen by a camera 3 m away and lit by a directional light; the cube turns so every face shows
+// and casts its shadow on a ground plane (the standard quad, 20 m wide, 1 m under the cube).
 // --texture <file> loads an image (ResourceCache / ImageImporter) as the cube's albedo; --point-light adds a bright
 // point light at the camera.
 internal static class RendererCubeDemo
@@ -28,7 +29,8 @@ internal static class RendererCubeDemo
         camera.SetAperture(16.0f);
         camera.SetShutterSpeed(1.0f / 125.0f);
         camera.SetIso(100.0f);
-        camera_entity.SetPosition(new Vector3(0, 0, -3));
+        camera_entity.SetPosition(new Vector3(0, 0.8f, -3));
+        camera_entity.SetRotation(Quaternion.CreateFromYawPitchRoll(0.0f, 0.3f, 0.0f)); // looking slightly down at the ground
 
         Entity light_entity = World.World.CreateEntity();
         light_entity.SetObjectName("light_directional");
@@ -71,6 +73,21 @@ internal static class RendererCubeDemo
         Render render = cube.AddComponent<Render>()!;
         render.SetMesh(MeshType.Cube);
         render.SetMaterial(material);
+
+        // the ground: spartan's standard quad, a light grey material, under the turning cube's reach (half diagonal 0.87 m)
+        var ground_material = new Material();
+        ground_material.SetProperty(MaterialProperty.ColorR, 0.6f);
+        ground_material.SetProperty(MaterialProperty.ColorG, 0.6f);
+        ground_material.SetProperty(MaterialProperty.ColorB, 0.6f);
+        ground_material.SetProperty(MaterialProperty.ColorA, 1.0f);
+        ground_material.SetProperty(MaterialProperty.Roughness, 0.9f);
+        Entity ground = World.World.CreateEntity();
+        ground.SetObjectName("ground");
+        ground.SetPosition(new Vector3(0, -1.0f, 0));
+        ground.SetScale(new Vector3(20.0f, 1.0f, 20.0f));
+        Render ground_render = ground.AddComponent<Render>()!;
+        ground_render.SetMesh(MeshType.Quad);
+        ground_render.SetMaterial(ground_material);
 
         Renderer.SkyFallbackNits     = new Vector3(4000.0f, 6000.0f, 10000.0f);
         Renderer.AmbientFallbackNits = new Vector3(2000.0f, 3000.0f, 5000.0f);

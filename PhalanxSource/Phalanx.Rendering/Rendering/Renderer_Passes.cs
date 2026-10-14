@@ -21,6 +21,12 @@ using System.Numerics;
 using Phalanx.Rendering.RHI;
 using Entity = Phalanx.World.Entity;
 using RenderTarget = Phalanx.World.Renderer_RenderTarget;
+using Light = Phalanx.World.Light;
+using LightType = Phalanx.World.LightType;
+using Render = Phalanx.World.Render;
+using RenderFlags = Phalanx.World.RenderFlags;
+using Material = Phalanx.World.Material;
+using MaterialTextureType = Phalanx.World.MaterialTextureType;
 
 namespace Phalanx.Rendering;
 
@@ -58,6 +64,7 @@ public static partial class Renderer
         Pass_Depth_Prepass(cmd);
         Pass_GBuffer(cmd);
         Entity.CommitTransformHistory(); // Renderer_Passes_Geometry.cpp:2022, after the opaque g-buffer
+        Pass_ShadowMaps(cmd);            // Pass_GraphicsPhase2_ShadowsAndRT (Renderer.cpp:5431)
         Pass_Light(cmd);
         Pass_Light_Composition(cmd, rt_render);
         Pass_Blit(cmd, rt_render, rt_output_2);
@@ -166,6 +173,101 @@ public static partial class Renderer
         cmd.EndMarker();
     }
 
+    // Renderer_Passes_Geometry.cpp:528-838, the cpu path without batching (spartan's multi draw indirect batches are
+    // an optimisation of the same draws): every slice of every light with shadows, its casters (CastsShadows, opaque,
+    // in the slice frustum) depth only into the slice's atlas rectangle, the alpha tested ones with depth_light_alpha.
+    // The atlas is cleared to 0 (reverse-z far) once.
+    private static void Pass_ShadowMaps(RHI_CommandList cmd)
+    {
+        RHI_Texture atlas = GetRenderTargetTexture(RenderTarget.shadow_atlas)!;
+        RHI_Buffer? vertices = GeometryBuffer.GetVertexBuffer();
+        RHI_Buffer? indices  = GeometryBuffer.GetIndexBuffer();
+
+        cmd.BeginMarker("shadow_maps");
+        {
+            // the bias is done in the shader (Renderer_Resources.cpp:385), the directional cascades clamp depth
+            var rasterizer_directional = new RHI_RasterizerState(RHI_PolygonMode.Solid, false);
+            var rasterizer_point_spot  = new RHI_RasterizerState(RHI_PolygonMode.Solid, true);
+            var depth_read_write       = new RHI_DepthStencilState(true, true, RHI_Comparison_Function.GreaterEqual);
+
+            bool cleared = false;
+            RHI_PipelineState Pso(RHI_RasterizerState rasterizer, bool alpha)
+            {
+                var pso = new RHI_PipelineState { name = alpha ? "shadow_maps_alpha" : "shadow_maps" };
+                pso.SetShader(RHI_Shader_Type.Vertex, GetShader(Renderer_Shader.depth_light_v)!);
+                if (alpha)
+                    pso.SetShader(RHI_Shader_Type.Pixel, GetShader(Renderer_Shader.depth_light_alpha_p)!);
+                pso.rasterizer_state            = rasterizer;
+                pso.depth_stencil_state         = depth_read_write;
+                pso.blend_state                 = new RHI_BlendState(false);
+                pso.render_target_depth_texture = atlas;
+                pso.clear_depth                 = cleared ? RHI_Definitions.rhi_depth_load : 0.0f;
+                cleared = true;
+                return pso;
+            }
+
+            // an empty frame still clears, the light pass reads stale depth otherwise
+            if (s_shadow_slices.Count == 0 || vertices == null || indices == null)
+            {
+                cmd.SetPipelineState(Pso(rasterizer_point_spot, false));
+                SetStandardResources(cmd);
+                cmd.EndMarker();
+                return;
+            }
+
+            foreach (ShadowSlice slice in s_shadow_slices)
+            {
+                Light light = slice.light;
+                if (!slice.rect.IsDefined() || light.GetIntensityRadiometric() == 0.0f)
+                    continue;
+                RHI_RasterizerState rasterizer = light.GetLightType() == LightType.Directional ? rasterizer_directional : rasterizer_point_spot;
+
+                foreach (bool alpha in new[] { false, true })
+                {
+                    List<DrawCall> draws = alpha ? s_draw_calls_alpha : s_draw_calls;
+                    bool pso_set = false;
+                    foreach (DrawCall draw_call in draws)
+                    {
+                        Render render = draw_call.render!;
+                        if (!render.HasFlag(RenderFlags.CastsShadows))
+                            continue;
+                        Material? material = GetRenderMaterial(render);
+                        if (material == null || material.IsTransparent())
+                            continue;
+                        if (!light.IsInViewFrustum(render, slice.slice_index))
+                            continue;
+
+                        if (!pso_set)
+                        {
+                            cmd.SetPipelineState(Pso(rasterizer, alpha));
+                            cmd.SetCullMode(alpha ? RHI_CullMode.None : RHI_CullMode.Back);
+                            SetStandardResources(cmd);
+                            cmd.SetViewport(new RHI_Viewport(slice.rect.X, slice.rect.Y, slice.rect.Width, slice.rect.Height));
+                            cmd.SetScissorRectangle(slice.rect);
+                            cmd.SetBufferVertex(vertices);
+                            cmd.SetBufferIndex(indices);
+                            pso_set = true;
+                        }
+
+                        var pass = new PassBufferData { draw_index = draw_call.draw_index, material_index = draw_call.material_index };
+                        pass.Set(0, material.HasTextureOfType(MaterialTextureType.Color)); // pass_depth_light::has_albedo
+                        pass.Set(1, light.GetIndex());                                    // pass_depth_light::light_index
+                        pass.Set(2, slice.slice_index);                                   // pass_depth_light::array_index
+                        cmd.PushConstants(pass);
+                        cmd.DrawIndexed(draw_call.index_count, draw_call.index_offset, (int)draw_call.vertex_offset);
+                    }
+                }
+            }
+
+            if (!cleared)
+            {
+                cmd.SetPipelineState(Pso(rasterizer_point_spot, false));
+                SetStandardResources(cmd);
+            }
+        }
+        cmd.EndMarker();
+    }
+
     // the g-buffer textures the lighting passes read (spartan: SetCommonTextures, Renderer.cpp:2870-2885)
     private static void SetCommonTextures(RHI_CommandList cmd)
     {
@@ -190,6 +292,7 @@ public static partial class Renderer
             SetCommonTextures(cmd);
             cmd.SetTexture((uint)Renderer_BindingsUav.tex,  light_diffuse,  storage: true);
             cmd.SetTexture((uint)Renderer_BindingsUav.tex2, light_specular, storage: true);
+            cmd.SetTexture((uint)Renderer_BindingsSrv.tex2, GetRenderTargetTexture(RenderTarget.shadow_atlas)!); // Renderer_Passes_Lighting.cpp:1592
             var pass = new PassBufferData();
             pass.Set(0, (float)GetLightCount()); // values[0].x (spartan: buffer_frame.cluster_light_count)
             cmd.PushConstants(pass);

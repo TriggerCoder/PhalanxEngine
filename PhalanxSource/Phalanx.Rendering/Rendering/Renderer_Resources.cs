@@ -26,7 +26,7 @@ using MaterialTextureType = Phalanx.World.MaterialTextureType;
 namespace Phalanx.Rendering;
 
 // spartan's shader names; resolve_c is Phalanx's stand-in for light, composition and tonemapping
-internal enum Renderer_Shader { gbuffer_v, gbuffer_p, depth_prepass_alpha_p, light_c, light_composition_c, output_c, blit_c, max }
+internal enum Renderer_Shader { gbuffer_v, gbuffer_p, depth_prepass_alpha_p, light_c, light_composition_c, output_c, blit_c, depth_light_v, depth_light_alpha_p, max }
 
 public static partial class Renderer
 {
@@ -132,6 +132,16 @@ public static partial class Renderer
             // light (Renderer_Resources.cpp:809-810)
             Replace(RenderTarget.light_diffuse,  s_resolution_render_width, s_resolution_render_height, RHI_Format.R11G11B10_Float);
             Replace(RenderTarget.light_specular, s_resolution_render_width, s_resolution_render_height, RHI_Format.R11G11B10_Float);
+
+            // shadow atlas (Renderer_Resources.cpp:842), d32, independent of the resolution: created once
+            Texture? atlas = s_render_targets[(int)RenderTarget.shadow_atlas];
+            if (atlas == null || atlas.GetWidth() != ShadowAtlasResolution)
+            {
+                atlas?.Dispose();
+                s_render_targets[(int)RenderTarget.shadow_atlas] = new Texture(RHI_Texture_Type.Type2D, ShadowAtlasResolution, ShadowAtlasResolution, 1, 1, RHI_Format.D32_Float,
+                    RHI_Texture_Flags.RHI_Texture_Rtv | RHI_Texture_Flags.RHI_Texture_Srv | RHI_Texture_Flags.RHI_Texture_ClearBlit, "shadow_atlas");
+                RenderView.SetRenderTargetSize(RenderTarget.shadow_atlas, ShadowAtlasResolution, ShadowAtlasResolution);
+            }
         }
         if (create_output)
         {
@@ -159,6 +169,8 @@ public static partial class Renderer
         Compile(Renderer_Shader.light_composition_c, RHI_Shader_Type.Compute, "light_composition.comp");
         Compile(Renderer_Shader.output_c,            RHI_Shader_Type.Compute, "output.comp");
         Compile(Renderer_Shader.blit_c,         RHI_Shader_Type.Compute, "blit.comp");
+        Compile(Renderer_Shader.depth_light_v,       RHI_Shader_Type.Vertex,  "depth_light.vert", RHI_Vertex_Type.PosUvNorTan);
+        Compile(Renderer_Shader.depth_light_alpha_p, RHI_Shader_Type.Pixel,   "depth_light_alpha.frag");
     }
 
     private static readonly Mesh?[] s_standard_meshes = new Mesh?[(int)Phalanx.Geometry.MeshType.Max];
@@ -166,17 +178,22 @@ public static partial class Renderer
 
     private static void CreateStandardMeshes()
     {
-        var vertices = new List<Phalanx.Geometry.RHI_Vertex_PosTexNorTan>();
-        var indices  = new List<uint>();
-        Phalanx.Geometry.GeometryGeneration.generate_cube(vertices, indices);
-        var mesh = new Mesh();
-        mesh.SetResourceName("standard_cube"); // spartan: SetResourceFilePath(project directory + name), no project directory yet
-        mesh.SetFlag((uint)MeshFlags.PostProcessOptimize, false);
-        mesh.AddGeometry(vertices, indices, false);
-        mesh.SetMeshType(Phalanx.Geometry.MeshType.Cube);
-        mesh.CreateGpuBuffers();
-        s_standard_meshes[(int)Phalanx.Geometry.MeshType.Cube] = mesh;
-        RenderView.SetStandardMesh(Phalanx.Geometry.MeshType.Cube, mesh); // Render::SetMesh(MeshType) reads it
+        void Create(Phalanx.Geometry.MeshType type, Action<List<Phalanx.Geometry.RHI_Vertex_PosTexNorTan>, List<uint>> generate, string name)
+        {
+            var vertices = new List<Phalanx.Geometry.RHI_Vertex_PosTexNorTan>();
+            var indices  = new List<uint>();
+            generate(vertices, indices);
+            var mesh = new Mesh();
+            mesh.SetResourceName(name); // spartan: SetResourceFilePath(project directory + name), no project directory yet
+            mesh.SetFlag((uint)MeshFlags.PostProcessOptimize, false);
+            mesh.AddGeometry(vertices, indices, false);
+            mesh.SetMeshType(type);
+            mesh.CreateGpuBuffers();
+            s_standard_meshes[(int)type] = mesh;
+            RenderView.SetStandardMesh(type, mesh); // Render::SetMesh(MeshType) reads it
+        }
+        Create(Phalanx.Geometry.MeshType.Cube, Phalanx.Geometry.GeometryGeneration.generate_cube, "standard_cube");
+        Create(Phalanx.Geometry.MeshType.Quad, Phalanx.Geometry.GeometryGeneration.generate_quad, "standard_quad");
     }
 
     // Renderer_Resources.cpp:1598. Not ported: SetPersistent and the data directory (no material files yet).

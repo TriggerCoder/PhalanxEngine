@@ -53,6 +53,7 @@ float lighting_spot_half_angle(float angle) { return clamp(angle, 0.01, 1.570796
 struct Surface
 {
     uint  flags;
+    float subsurface_scattering;
     vec3  albedo;
     float alpha;
     float roughness;
@@ -75,6 +76,9 @@ bool surface_is_opaque(Surface s)      { return s.alpha == 1.0; }
 bool surface_is_transparent(Surface s) { return s.alpha > 0.0 && s.alpha < 1.0; }
 
 // Surface::Build, point sampled through texelFetch (render resolution, same as sampler_point_clamp at texel centres)
+// common_structs.hlsl:73, the foliage bit (grass blades and flowers aren't ported)
+bool surface_is_foliage(Surface s) { return (s.flags & (1u << 21)) != 0u; }
+
 Surface surface_build(uvec2 position_screen, vec2 resolution_out, bool use_albedo, bool replace_color_with_one)
 {
     Surface s;
@@ -90,6 +94,7 @@ Surface surface_build(uvec2 position_screen, vec2 resolution_out, bool use_albed
     s.depth     = sample_depth;
     s.normal    = sample_normal.xyz;
     s.flags     = material.flags;
+    s.subsurface_scattering = material.subsurface_scattering;
     s.albedo    = replace_color_with_one ? vec3(1.0) : sample_albedo.rgb;
     s.alpha     = sample_albedo.a;
     s.roughness = sample_material.r;
@@ -112,6 +117,7 @@ Surface surface_build(uvec2 position_screen, vec2 resolution_out, bool use_albed
 
 struct Light
 {
+    uint  index;
     uint  flags;
     vec3  color;
     vec3  position;
@@ -133,6 +139,7 @@ bool light_is_directional(Light l) { return (l.flags & (1u << 0)) != 0u; }
 bool light_is_point(Light l)       { return (l.flags & (1u << 1)) != 0u; }
 bool light_is_spot(Light l)        { return (l.flags & (1u << 2)) != 0u; }
 bool light_is_area(Light l)        { return (l.flags & (1u << 6)) != 0u; }
+bool light_has_shadows(Light l)    { return (l.flags & (1u << 3)) != 0u; }
 
 float light_attenuation_range(Light l, float distance_to_light)
 {
@@ -172,6 +179,7 @@ Light light_build(uint light_index, Surface surface)
 {
     LightParameters p = light_parameters[light_index];
     Light l;
+    l.index             = light_index;
     l.flags             = p.flags;
     l.color             = p.color.rgb;
     l.position          = p.position;

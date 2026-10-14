@@ -1,5 +1,5 @@
 // Port of SpartanEngine source/geometry/GeometryGeneration.cpp @ 4c07baa, the standard meshes ported so far:
-// generate_cube (:89-153). The other generators (quad, grid, sphere, cylinder, cone) come with the meshes that use them.
+// generate_cube (:89-153) and generate_quad (:156-173). The other generators come with the meshes that use them.
 using System.Numerics;
 
 namespace Phalanx.Geometry;
@@ -53,5 +53,17 @@ public static class GeometryGeneration
         I(14, 13, 12); I(15, 13, 14); // top
         I(16, 17, 18); I(18, 17, 19); // left
         I(22, 21, 20); I(23, 21, 22); // right
+    }
+
+    public static void generate_quad(List<RHI_Vertex_PosTexNorTan> vertices, List<uint> indices)
+    {
+        void V(float x, float y, float z, float u, float v) =>
+            vertices.Add(new RHI_Vertex_PosTexNorTan(new Vector3(x, y, z), new Vector2(u, v), new Vector3(0, 1, 0), new Vector3(1, 0, 0)));
+        V(-0.5f, 0.0f,  0.5f, 0, 0);
+        V( 0.5f, 0.0f,  0.5f, 1, 0);
+        V(-0.5f, 0.0f, -0.5f, 0, 1);
+        V( 0.5f, 0.0f, -0.5f, 1, 1);
+        indices.Add(3); indices.Add(2); indices.Add(0);
+        indices.Add(3); indices.Add(0); indices.Add(1);
     }
 }

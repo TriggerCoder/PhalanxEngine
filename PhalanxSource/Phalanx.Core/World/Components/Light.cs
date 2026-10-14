@@ -53,10 +53,12 @@ public enum LightFlags : uint
 [Serializable]
 public class Light : Component
 {
-    // directional matrix parameters
-    const float cascade_near_extent = 20.0f;
-    const float cascade_far_extent = 300.0f;
-    const float cascade_depth = 1000.0f;
+    // directional matrix parameters (Light.cpp:39-44)
+    const float cascade_near_extent = 64.0f;
+    const float cascade_far_extent = 2000.0f;
+    const float cascade_depth_behind = 2000.0f;
+    const float cascade_depth_ahead = 8000.0f;
+    const float cascade_depth = cascade_depth_behind + cascade_depth_ahead;
     const float cascade_far_max_extent = float.MaxValue;
     private LightIntensity m_intensity = LightIntensity.bulb_500_watt;
     private float m_intensity_lumens_lux = 2600.0f;
@@ -75,6 +77,7 @@ public class Light : Component
     private Vector3 m_far_cascade_max = Vector3.Zero;
     private bool m_is_active_previous_frame = false;
     private float m_draw_distance = 512.0f; // max distance at which light will affect objects (meters)
+    private float m_distance_shadows = 64.0f; // max distance at which shadow maps are rendered (meters, Light.h:253)
 
     // matrices/frustums per slice/face/cascade
     private Frustum[] m_frustums = new Frustum[6];
@@ -95,6 +98,7 @@ public class Light : Component
         RegisterAttribute(() => m_color_rgb, v => m_color_rgb = v);
         RegisterAttribute(() => m_temperature_kelvin, v => m_temperature_kelvin = v);
         RegisterAttribute(() => m_draw_distance, v => m_draw_distance = v);
+        RegisterAttribute(() => m_distance_shadows, v => m_distance_shadows = v);
         RegisterAttribute(() => m_bounding_box, v => m_bounding_box = v);
         RegisterAttribute(() => m_far_cascade_min, v => m_far_cascade_min = v);
         RegisterAttribute(() => m_far_cascade_max, v => m_far_cascade_max = v);
@@ -206,7 +210,14 @@ public class Light : Component
                 return Color.LightDirectSunlight;
         }
     }
-    private void UpdateMatrices()
+    // Light::Tick (Light.cpp:142-180) updates the matrices when the light or the camera moved; here every tick, the
+    // renderer also refreshes them after it packs the atlas (the directional snapping reads the atlas rectangles)
+    public override void Tick()
+    {
+        UpdateMatrices();
+    }
+
+    public void UpdateMatrices()
     {
         UpdateViewMatrix();
         UpdateProjectionMatrix();
@@ -224,11 +235,14 @@ public class Light : Component
                 if (camera is null)
                     return;
 
-                // both cascades follow the camera
+                // both cascades follow the camera, most of the depth sits ahead so the ground stays in range when flying
                 Vector3 cameraPos = camera.GetEntity().GetPosition();
                 Vector3 lightForward = GetEntity().GetForward();
-                position = cameraPos - lightForward * cascade_depth * 0.5f;
-                m_matrix_view[0] = Matrix4x4.CreateLookAtLeftHanded(position, cameraPos, MathEx.Vector3.Up);
+                position = cameraPos - lightForward * cascade_depth_behind;
+                // spartan uses world up unconditionally, a sun pointing straight up or down collapses the basis
+                // (phalanx: the entity's up then, see the renderer-6 notes)
+                Vector3 up = MathF.Abs(Vector3.Dot(lightForward, MathEx.Vector3.Up)) > 0.9999f ? GetEntity().GetUp() : MathEx.Vector3.Up;
+                m_matrix_view[0] = Matrix4x4.CreateLookAtLeftHanded(position, cameraPos, up);
                 m_matrix_view[1] = m_matrix_view[0];
 
                 // move the light in world units per texel to avoid shimmering
@@ -240,6 +254,8 @@ public class Light : Component
                     for (int i = 0; i < 2; i++)
                     {
                         float rectWidth = m_atlas_rectangles[i].Width;                   // cascade rectangle width in atlas
+                        if (rectWidth <= 0.0f)
+                            continue; // not packed yet: spartan divides by zero here and snaps to nan
                         float atlasScale = rectWidth / atlasWidth;                      // proportion of atlas used by cascade
                         float effectiveRes = atlasWidth * atlasScale;                   // effective resolution for cascade
                         float texelSizeWorld = (2.0f * extents[i]) / effectiveRes;      // world units per texel
@@ -269,8 +285,8 @@ public class Light : Component
             case LightType.Spot:
             case LightType.Area:
             {
-                Vector3 forward = GetEntity().GetForward();
-                m_matrix_view[0] = Matrix4x4.CreateLookAtLeftHanded(position, position + forward, MathEx.Vector3.Up);
+                // the entity's own up so a forward of world up or down does not collapse the cross product
+                m_matrix_view[0] = Matrix4x4.CreateLookToLeftHanded(position, GetEntity().GetForward(), GetEntity().GetUp());
             }
             break;
             default:
@@ -301,15 +317,8 @@ public class Light : Component
             break;
             case LightType.Area:
             {
-                // area lights use orthographic projection based on their dimensions
-                float halfWidth = m_area_width * 0.5f;
-                float halfHeight = m_area_height * 0.5f;
-
-                m_matrix_projection[0] = Matrix4x4Extensions.CreateOrthoOffCenterLH(
-                        -halfWidth, halfWidth,
-                        -halfHeight, halfHeight,
-                        m_range, 0.05f);
-
+                // wide perspective from the rectangle center (Light.cpp:1022-1029)
+                m_matrix_projection[0] = Matrix4x4Extensions.CreatePerspectiveFieldOfViewLH(MathEx.DegToRad * 120.0f, 1.0f, m_range, 0.05f);
                 m_frustums[0] = new Frustum(m_matrix_view[0], m_matrix_projection[0]);
             }
             break;
@@ -708,6 +717,21 @@ public class Light : Component
     // draw distance
     public void SetDrawDistance(float distance) { m_draw_distance = distance; }
     public float GetDrawDistance() { return m_draw_distance; }
+
+    // shadow distance (Light.h:202-203) and IsShadowEffective (Light.cpp:1158, is_within_distance :1133)
+    public void SetShadowDistance(float distance) { m_distance_shadows = distance; }
+    public float GetShadowDistance() { return m_distance_shadows; }
+    public bool IsShadowEffective()
+    {
+        if (!GetFlag(LightFlags.Shadows))
+            return false;
+        if (m_light_type == LightType.Directional)
+            return true;
+        Camera? camera = World.GetCamera();
+        if (camera is null)
+            return false;
+        return Vector3.DistanceSquared(GetEntity().GetPosition(), camera.GetEntity().GetPosition()) <= m_distance_shadows * m_distance_shadows;
+    }
 
     // misc
     public bool NeedsSkysphereUpdate()

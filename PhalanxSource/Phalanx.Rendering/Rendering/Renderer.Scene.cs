@@ -20,6 +20,8 @@ using Phalanx.Rendering.RHI;
 using Phalanx.World;
 using static Phalanx.Rendering.Renderer_Definitions;
 using RHI_Texture = Phalanx.Rendering.RHI.RHI_Texture;
+using Texture = Phalanx.Rendering.RHI.RHI_Texture;
+using RenderTarget = Phalanx.World.Renderer_RenderTarget;
 
 namespace Phalanx.Rendering;
 
@@ -38,6 +40,7 @@ public static partial class Renderer
     private struct DrawCall
     {
         public uint draw_index, material_index, index_count, index_offset, vertex_offset;
+        public Render? render;
     }
     // spartan's two halves: opaque draws first, alpha tested draws (Material::IsAlphaTested) after
     // (Renderer_Passes_Geometry.cpp:1553 prepass, :1764 g-buffer)
@@ -69,6 +72,7 @@ public static partial class Renderer
                 index_count    = (uint)render.GetIndexCount(),
                 index_offset   = render.GetIndexOffset(),
                 vertex_offset  = render.GetVertexOffset(),
+                render         = render,
             });
         }
     }
@@ -284,21 +288,37 @@ public static partial class Renderer
         UploadIfChanged(cmd, Renderer_Buffer.MaterialParameters, MemoryMarshal.AsBytes(s_material_parameters.AsSpan(0, System.Math.Max(s_materials.Count, 1))), ref s_material_bytes_uploaded);
     }
 
+    private static readonly List<Light> s_lights = new();
+
+    // UpdateLights (Renderer.cpp:3255-3340): indices first, then the shadow atlas (UpdateShadowAtlas, spartan runs it
+    // when the lights changed, here every frame), then the matrices that depend on the atlas, then the table
     private static void UpdateLights(RHI_CommandList cmd)
     {
         s_light_count = 0;
+        s_lights.Clear();
         foreach (Entity light_entity in Phalanx.World.World.GetEntitiesLights())
         {
             if (light_entity.GetComponent<Light>() is not Light light)
                 continue;
             if (s_light_count >= RHI_Definitions.rhi_max_array_size)
                 break;
-            uint index = s_light_count++;
-            light.SetIndex(index);
+            light.SetIndex(s_light_count++);
+            s_lights.Add(light);
+        }
+
+        UpdateShadowAtlas();
+
+        foreach (Light light in s_lights)
+        {
+            light.UpdateMatrices(); // the directional cascades snap to the atlas texel they were just given
+            uint index = light.GetIndex();
             Entity entity = light.GetEntity()!;
             LightType type = light.GetLightType();
+            // phalanx: also needs a packed slice, spartan sets the bit for slices left unpacked past the minimum size
+            bool shadows_effective = light.IsShadowEffective() && light.GetAtlasRectangle(0).IsDefined();
             Phalanx.Math.Color color = light.GetColorEffective(); // Renderer.cpp:3290-3293
-            s_light_parameters[index] = new LightParameters
+            ref LightParameters entry = ref s_light_parameters[index];
+            entry = new LightParameters
             {
                 intensity       = light.GetIntensityRadiometric(),
                 range           = light.GetRange(),
@@ -309,14 +329,122 @@ public static partial class Renderer
                 direction_right = entity.GetRight(),
                 area_width      = light.GetAreaWidth(),
                 area_height     = light.GetAreaHeight(),
+                // bit 4 (screen space shadows) and 5 (volumetric) stay clear, those passes aren't ported
                 flags           = (type == LightType.Directional ? 1u << 0 : 0u) |
                                   (type == LightType.Point       ? 1u << 1 : 0u) |
                                   (type == LightType.Spot        ? 1u << 2 : 0u) |
+                                  (shadows_effective             ? 1u << 3 : 0u) |
                                   (type == LightType.Area        ? 1u << 6 : 0u),
             };
+            for (int i = 0; i < 6; i++)
+            {
+                if (i < light.GetSliceCount())
+                {
+                    entry.transform[i]         = light.GetViewProjectionMatrix((uint)i);
+                    entry.atlas_offsets[i]     = light.GetAtlasOffset((uint)i);
+                    entry.atlas_scales[i]      = light.GetAtlasScale((uint)i);
+                    Phalanx.Math.Rectangle rect = light.GetAtlasRectangle((uint)i);
+                    // spartan writes 1 / 0 = inf for unpacked slices, the shader never reads them (has_shadows is off)
+                    entry.atlas_texel_sizes[i] = rect.IsDefined() ? new Vector2(1.0f / rect.Width, 1.0f / rect.Height) : Vector2.Zero;
+                }
+            }
         }
         UploadIfChanged(cmd, Renderer_Buffer.LightParameters, MemoryMarshal.AsBytes(s_light_parameters.AsSpan(0, (int)System.Math.Max(s_light_count, 1u))), ref s_light_bytes_uploaded);
     }
+
+    // a shadow map slice: one directional cascade, one point light cube face or a spot light (Renderer.h ShadowSlice)
+    internal sealed record ShadowSlice(Light light, uint slice_index)
+    {
+        public uint resolution;
+        public Phalanx.Math.Rectangle rect;
+    }
+    private static readonly List<ShadowSlice> s_shadow_slices = new();
+    internal static IReadOnlyList<ShadowSlice> GetShadowSlices() => s_shadow_slices;
+
+    /// <summary>The shadow atlas size, square (spartan: renderer_resolution_shadow_atlas, 8192). Takes effect on the next
+    /// Initialize; a smaller atlas keeps software rasterizers fast.</summary>
+    public static uint ShadowAtlasResolution { get; set; } = Renderer_Definitions.renderer_resolution_shadow_atlas;
+
+    // UpdateShadowAtlas (Renderer.cpp:4739-4851): every slice of every light with effective shadows gets the same
+    // square size, the largest that row packs (8 texel borders) into the atlas, found by binary search
+    internal static void UpdateShadowAtlas()
+    {
+        Texture? atlas = GetRenderTargetTexture(RenderTarget.shadow_atlas);
+        s_shadow_slices.Clear();
+        if (atlas == null)
+            return;
+        uint resolution_atlas = atlas.GetWidth();
+        const uint min_slice_res = 256;
+
+        foreach (Light light in s_lights)
+        {
+            light.ClearAtlasRectangles();
+            if (!light.IsShadowEffective())
+                continue;
+            for (uint i = 0; i < light.GetSliceCount(); ++i)
+                s_shadow_slices.Add(new ShadowSlice(light, i));
+        }
+        if (s_shadow_slices.Count == 0)
+            return;
+
+        bool PackRow(uint slice_res, uint num_slices, bool assign) => PackShadowRow(slice_res, num_slices, resolution_atlas, assign ? s_shadow_slices : null);
+
+        // binary search for the largest uniform slice resolution
+        uint max_slice_res = resolution_atlas;
+        uint num_slices    = (uint)s_shadow_slices.Count;
+        if (num_slices > 1)
+        {
+            uint low = min_slice_res, high = resolution_atlas;
+            while (low < high)
+            {
+                uint mid = (low + high + 1) / 2;
+                if (PackRow(mid, num_slices, false))
+                    low = mid;
+                else
+                    high = mid - 1;
+            }
+            max_slice_res = low;
+        }
+        max_slice_res = System.Math.Max(max_slice_res, min_slice_res);
+
+        // assign rectangles (spartan ignores the result: past the minimum the trailing slices keep a zero rect)
+        PackRow(max_slice_res, num_slices, true);
+        foreach (ShadowSlice slice in s_shadow_slices)
+            slice.light.SetAtlasRectangle(slice.slice_index, slice.rect);
+    }
+
+    // row-based packing: uniform slices left to right with 8 texel borders, wrapping to the next row; assign only
+    // when given the slices (the PackRow lambda of UpdateShadowAtlas)
+    private static bool PackShadowRow(uint slice_res, uint num_slices, uint resolution_atlas, List<ShadowSlice>? assign)
+    {
+        const uint border = 8;
+        if (slice_res > resolution_atlas)
+            return false;
+        uint x = 0, y = 0, row_h = 0;
+        for (int i = 0; i < num_slices; ++i)
+        {
+            uint left_pad = x == 0 ? 0 : border;
+            uint placed_x = x + left_pad;
+            if (placed_x + slice_res > resolution_atlas)
+            {
+                y       += row_h + border;
+                x        = 0;
+                row_h    = 0;
+                placed_x = 0;
+            }
+            if (placed_x + slice_res > resolution_atlas || y + slice_res > resolution_atlas)
+                return false;
+            if (assign != null)
+            {
+                assign[i].resolution = slice_res;
+                assign[i].rect       = new Phalanx.Math.Rectangle(placed_x, y, slice_res, slice_res);
+            }
+            x     = placed_x + slice_res;
+            row_h = System.Math.Max(row_h, slice_res);
+        }
+        return true;
+    }
+    internal static bool PackRowForTest(uint slice_res, uint num_slices, uint resolution_atlas) => PackShadowRow(slice_res, num_slices, resolution_atlas, null);
 
     private static void UploadIfChanged(RHI_CommandList cmd, Renderer_Buffer type, ReadOnlySpan<byte> bytes, ref byte[]? uploaded)
     {

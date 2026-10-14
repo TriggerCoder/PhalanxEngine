@@ -58,6 +58,7 @@ public partial class RendererSceneTests
         Renderer.AntiAliasingUpsampling = aa;
         World.World.SetMainThread();
         World.World.ClearScene();
+        Renderer.ShadowAtlasResolution = 1024;
         Renderer.Initialize(Width, Height, validation: true);
         try
         {
@@ -71,6 +72,7 @@ public partial class RendererSceneTests
             Renderer.SkyFallbackNits     = new Vector3(1500.0f, 2200.0f, 3500.0f);
             Renderer.AmbientFallbackNits = new Vector3(150.0f, 220.0f, 350.0f);
             Renderer.Tonemapping         = Renderer_Tonemapping.GranTurismo7;
+            Renderer.ShadowAtlasResolution = 8192;
             Renderer.Shutdown();
             World.World.ClearScene();
         }
@@ -356,12 +358,13 @@ public partial class RendererSceneTests
     {
         Run(() =>
         {
-            // the standard cube is already in
-            Assert.Equal(24u, GeometryBuffer.GetVertexCount());
-            Assert.Equal(36u, GeometryBuffer.GetIndexCount());
+            // the standard cube then the standard quad are already in
+            const uint standard_vertices = 24u + 4u, standard_indices = 36u + 6u;
+            Assert.Equal(standard_vertices, GeometryBuffer.GetVertexCount());
+            Assert.Equal(standard_indices, GeometryBuffer.GetIndexCount());
             Assert.True(Renderer.Tick());
             RHI_Buffer first = GeometryBuffer.GetVertexBuffer()!;
-            Assert.Equal(GeometryBuffer.add_headroom(24, 24), first.GetElementCount()); // spartan's 25% headroom
+            Assert.Equal(GeometryBuffer.add_headroom(standard_vertices, 24), first.GetElementCount()); // spartan's 25% headroom
 
             // the identity instance sits in slot 0 of the instance buffer
             byte[] instance = RHI_Device.ReadbackBuffer(GeometryBuffer.GetInstanceBuffer()!, 0, 32);
@@ -372,21 +375,21 @@ public partial class RendererSceneTests
             var more = new RHI_Vertex_PosTexNorTan[100];
             for (int i = 0; i < more.Length; i++)
                 more[i] = new RHI_Vertex_PosTexNorTan(new Vector3(i, 0, 0), Vector2.Zero);
-            Assert.Equal(24u, GeometryBuffer.AppendVertices(more));
-            Assert.Equal(36u, GeometryBuffer.AppendIndices(new uint[] { 0, 1, 2 }));
+            Assert.Equal(standard_vertices, GeometryBuffer.AppendVertices(more));
+            Assert.Equal(standard_indices, GeometryBuffer.AppendIndices(new uint[] { 0, 1, 2 }));
             Assert.True(Renderer.Tick());
             RHI_Buffer grown = GeometryBuffer.GetVertexBuffer()!;
             Assert.NotSame(first, grown);
             RHI_Device.QueueWaitAll();
 
-            byte[] bytes = RHI_Device.ReadbackBuffer(grown, 0, 124 * 24);
+            byte[] bytes = RHI_Device.ReadbackBuffer(grown, 0, (int)((standard_vertices + 100) * 24));
             var gpu = MemoryMarshal.Cast<byte, RHI_Vertex_PosTexNorTan>(bytes);
             var cube_v = new List<RHI_Vertex_PosTexNorTan>(); var cube_i = new List<uint>();
             GeometryGeneration.generate_cube(cube_v, cube_i);
             for (int i = 0; i < 24; i++)
                 Assert.Equal(cube_v[i], gpu[i]);
             for (int i = 0; i < 100; i++)
-                Assert.Equal(new Vector3(i, 0, 0), gpu[24 + i].pos);
+                Assert.Equal(new Vector3(i, 0, 0), gpu[(int)standard_vertices + i].pos);
         });
     }
 

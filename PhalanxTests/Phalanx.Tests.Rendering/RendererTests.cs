@@ -20,6 +20,7 @@ public class RendererGpuTests
     private static void RunHeadless(Action body, uint width = Width, uint height = Height)
     {
         Skip.IfNot(RenderDevice.IsVulkanAvailable(out string reason), reason);
+        Renderer.ShadowAtlasResolution = 1024;
         Renderer.Initialize(width, height, validation: true);
         try
         {
@@ -31,6 +32,7 @@ public class RendererGpuTests
         {
             Renderer.SkyFallbackNits = new Vector3(1500.0f, 2200.0f, 3500.0f);
             Renderer.Tonemapping     = Renderer_Tonemapping.GranTurismo7;
+            Renderer.ShadowAtlasResolution = 8192;
             Renderer.Shutdown();
         }
     }
@@ -187,6 +189,7 @@ public class RendererGpuTests
         }
         finally
         {
+            Renderer.ShadowAtlasResolution = 8192;
             Renderer.Shutdown();
         }
     }

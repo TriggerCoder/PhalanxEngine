@@ -1,14 +1,16 @@
 // GLSL port of SpartanEngine data/shaders/light.hlsl @ 4c07baa (evaluate_light :143-345, main_cs :347-421): the
 // direct diffuse (demodulated, albedo one) and specular of every light into light_diffuse (tex_uav) and
 // light_specular (tex_uav2).
+// Shadow maps come from common_shadow.glsl (shadow_mapping.hlsl), the atlas is tex2.
 // Deviations: every light is evaluated for every pixel (spartan: slot 0 is the sun, the rest come from the light
-// cluster grid); no shadows (shadow maps, ray traced, contact, cloud), no water transmission, no subsurface
+// cluster grid); no ray traced, contact or cloud shadows, no water transmission, no subsurface
 // scattering, clearcoat, anisotropy, flakes or sheen, no area lights and no restir; the transparent pass isn't run.
 #version 460
 #extension GL_GOOGLE_include_directive : require
 
 #include "common_resources.glsl"
 #include "common_light.glsl"
+#include "common_shadow.glsl"
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -32,6 +34,14 @@ void evaluate_light(uint light_index, Surface surface, bool is_transparent, vec3
 
     if (!surface_is_sky(surface) && light_can_contribute && has_brdf)
     {
+        // shadow maps (light.hlsl:176-251): the primary shadow scales the radiance; no ray traced, cloud or contact
+        // shadows, no water transmission
+        float L_shadow = 1.0;
+        if (light_has_shadows(light))
+            L_shadow = compute_shadow(surface, light);
+        light.radiance     *= L_shadow;
+        light_radiance_raw *= L_shadow;
+
         AngularInfo angular_info = angular_info_build(light, surface);
         micro_shadow = microw_shadowing_cod(angular_info.n_dot_l, surface.occlusion);
 

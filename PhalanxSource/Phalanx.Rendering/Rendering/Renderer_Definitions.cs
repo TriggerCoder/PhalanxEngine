@@ -18,6 +18,9 @@ internal static class Renderer_Definitions
     public const uint renderer_resolution_render_height = 1080;
     // Renderer::Tick, nothing renders below this (Renderer.cpp:746)
     public const uint renderer_min_render_dimension = 64;
+
+    // Renderer_Definitions.h:151, total shadow atlas, packed by row of square slices
+    public const uint renderer_resolution_shadow_atlas = 8192;
 }
 
 internal enum Renderer_BindingsCb : uint { frame }

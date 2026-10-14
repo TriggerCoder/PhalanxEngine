@@ -21,6 +21,7 @@ public class RendererMaterialTextureTests
         Renderer.AntiAliasingUpsampling = Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear;
         World.World.SetMainThread();
         World.World.ClearScene();
+        Renderer.ShadowAtlasResolution = 1024;
         Renderer.Initialize(Width, Height, validation: true);
         try
         {
@@ -32,6 +33,7 @@ public class RendererMaterialTextureTests
         finally
         {
             Renderer.AntiAliasingUpsampling = Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau;
+            Renderer.ShadowAtlasResolution = 8192;
             Renderer.Shutdown();
             World.World.ClearScene();
         }
