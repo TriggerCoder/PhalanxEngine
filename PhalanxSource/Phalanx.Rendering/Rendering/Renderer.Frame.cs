@@ -41,8 +41,11 @@ public static partial class Renderer
     private static uint s_jitter_phase_index;
     private static Vector2 s_jitter_offset;
 
-    /// <summary>spartan's r.antialiasing_upsampling (default taau, ConsoleVariables.cpp:189); only taau jitters so far.</summary>
-    public static Renderer_AntiAliasing_Upsampling AntiAliasingUpsampling { get; set; } = Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau;
+    /// <summary>spartan's r.antialiasing_upsampling (default taau, ConsoleVariables.cpp:189); only taau jitters so far.
+    /// Deviation: the default is AA_Off_Upscale_Linear until the TAA/TAAU resolve pass is ported. Taau jitters the
+    /// projection every frame and without the resolve the jitter reaches the screen as flicker (seen on an rtx 3080).
+    /// The enum and the taau jitter path are kept.</summary>
+    public static Renderer_AntiAliasing_Upsampling AntiAliasingUpsampling { get; set; } = Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear;
 
     /// <summary>Whether <see cref="Initialize(IWindow, bool)"/> (or the headless overload) ran and <see cref="Shutdown"/> did not.</summary>
     public static bool IsInitialized => s_initialized;

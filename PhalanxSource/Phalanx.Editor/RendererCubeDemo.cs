@@ -143,4 +143,26 @@ internal static class RendererCubeDemo
             World.World.ClearScene();
         }
     }
+
+    // no window: settles a few frames at w x h and writes frame_output (display encoded rgba16f) as an 8 bit png
+    public static void RunOffscreenPng(string path, uint width, uint height, float time, bool validation, string? texture_path = null, bool point_light = false)
+    {
+        Renderer.Initialize(width, height, validation);
+        try
+        {
+            Scene scene = CreateScene(texture_path, point_light);
+            for (int i = 0; i < 4; i++) // temporal history settles
+            {
+                Animate(scene, time);
+                Renderer.Tick();
+            }
+            byte[] rgba = Renderer.ReadOutputRgba8();
+            PngWriter.Write(path, width, height, rgba);
+        }
+        finally
+        {
+            Renderer.Shutdown();
+            World.World.ClearScene();
+        }
+    }
 }

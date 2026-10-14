@@ -15,7 +15,8 @@ namespace Phalanx.Editor;
 //   Phalanx.Editor --rhi-cube [frames]       draws a rotating textured cube every frame (depth, index buffer, texture)
 //   Phalanx.Editor --rhi-triangle-offscreen / --rhi-cube-offscreen   no window: renders one frame and prints the center pixel
 //   Phalanx.Editor --renderer-cube [frames]  spartan's standard cube through the renderer (g-buffer, resolve) with a camera
-//   Phalanx.Editor --renderer-cube-offscreen  no window: renders that frame and prints frame_output's center pixel
+//   Phalanx.Editor --renderer-cube-offscreen  no window: renders that frame and prints frame_output's center pixel;
+//     with --png <file> [--size w h] [--time t] it writes the whole frame (default 1920x1080) as a png instead
 //   add --texture <image file> to either to texture the cube; --point-light adds a bright point light
 //   add --validation to enable VK_LAYER_KHRONOS_validation (Debug builds enable it by default)
 public static class Program
@@ -62,6 +63,19 @@ public static class Program
             }
             int texture_arg = Array.IndexOf(args, "--texture");
             string? texture_path = texture_arg >= 0 && texture_arg + 1 < args.Length ? args[texture_arg + 1] : null;
+            int png_arg = Array.IndexOf(args, "--png");
+            if (renderer_cube_offscreen && png_arg >= 0 && png_arg + 1 < args.Length)
+            {
+                // --renderer-cube-offscreen --png <file> [--size w h] [--time t]: the whole frame_output as a png
+                uint w = 1920, h = 1080; float t = 0.0f;
+                int size_arg = Array.IndexOf(args, "--size");
+                if (size_arg >= 0 && size_arg + 2 < args.Length) { w = uint.Parse(args[size_arg + 1], CultureInfo.InvariantCulture); h = uint.Parse(args[size_arg + 2], CultureInfo.InvariantCulture); }
+                int time_arg = Array.IndexOf(args, "--time");
+                if (time_arg >= 0 && time_arg + 1 < args.Length) t = float.Parse(args[time_arg + 1], CultureInfo.InvariantCulture);
+                RendererCubeDemo.RunOffscreenPng(args[png_arg + 1], w, h, t, validation, texture_path, Array.IndexOf(args, "--point-light") >= 0);
+                Console.WriteLine($"renderer-cube-offscreen: wrote {args[png_arg + 1]} ({w}x{h})");
+                return 0;
+            }
             if (renderer_cube_offscreen)
             {
                 System.Numerics.Vector4 c = RendererCubeDemo.RunOffscreen(128, validation, texture_path, Array.IndexOf(args, "--point-light") >= 0);

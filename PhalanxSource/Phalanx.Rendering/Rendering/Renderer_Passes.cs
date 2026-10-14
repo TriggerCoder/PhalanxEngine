@@ -55,6 +55,24 @@ public static partial class Renderer
         return new Vector4(H(0), H(1), H(2), H(3));
     }
 
+    /// <summary>frame_output (display encoded) as rgba8, clamped, row major from the top.</summary>
+    public static byte[] ReadOutputRgba8()
+    {
+        RHI_Device.QueueWaitAll();
+        RHI_Texture output = GetRenderTargetTexture(RenderTarget.frame_output)!;
+        byte[] bytes = RHI_Device.ReadbackTexture(output, 0, 0);
+        int count = (int)(output.GetWidth() * output.GetHeight());
+        var rgba = new byte[count * 4];
+        for (int i = 0; i < count * 4; i++)
+        {
+            float v = (float)BitConverter.UInt16BitsToHalf(BitConverter.ToUInt16(bytes, i * 2));
+            rgba[i] = (byte)System.Math.Clamp((int)(v * 255.0f + 0.5f), 0, 255);
+        }
+        for (int i = 3; i < rgba.Length; i += 4)
+            rgba[i] = 255;
+        return rgba;
+    }
+
     private static void ProduceFrame(RHI_CommandList cmd)
     {
         RHI_Texture rt_render   = GetRenderTargetTexture(RenderTarget.frame_render)!;

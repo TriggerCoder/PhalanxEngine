@@ -52,13 +52,13 @@ public partial class RendererSceneTests
         return new Scene { camera = camera, cube = cube, material = material };
     }
 
-    private static void Run(Action body, Renderer_AntiAliasing_Upsampling aa = Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear)
+    private static void Run(Action body, Renderer_AntiAliasing_Upsampling aa = Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear, uint shadow_atlas = 1024)
     {
         Skip.IfNot(RenderDevice.IsVulkanAvailable(out string reason), reason);
         Renderer.AntiAliasingUpsampling = aa;
         World.World.SetMainThread();
         World.World.ClearScene();
-        Renderer.ShadowAtlasResolution = 1024;
+        Renderer.ShadowAtlasResolution = shadow_atlas;
         Renderer.Initialize(Width, Height, validation: true);
         try
         {
@@ -68,7 +68,7 @@ public partial class RendererSceneTests
         }
         finally
         {
-            Renderer.AntiAliasingUpsampling = Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau;
+            Renderer.AntiAliasingUpsampling = Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear;
             Renderer.SkyFallbackNits     = new Vector3(1500.0f, 2200.0f, 3500.0f);
             Renderer.AmbientFallbackNits = new Vector3(150.0f, 220.0f, 350.0f);
             Renderer.Tonemapping         = Renderer_Tonemapping.GranTurismo7;

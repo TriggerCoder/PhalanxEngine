@@ -254,4 +254,84 @@ public partial class RendererSceneTests
                 Assert.True(slice.rect.IsDefined());
         });
     }
+
+    // light_diffuse's red channel for the whole frame (r11g11b10, one readback)
+    private static float[] DiffuseRed()
+    {
+        byte[] b = Read(Renderer_RenderTarget.light_diffuse);
+        var r = new float[Width * Height];
+        for (int i = 0; i < r.Length; i++)
+            r[i] = UFloat(BitConverter.ToUInt32(b, i * 4) & 0x7FF, 6);
+        return r;
+    }
+
+    // the ground's shadow factor per pixel: light_diffuse with shadows over light_diffuse without (ground pixels only)
+    private static float[] ShadowFactors(Scene scene, Light light)
+    {
+        Frame(scene); Frame(scene);
+        byte[] normal = Read(Renderer_RenderTarget.gbuffer_normal);
+        float[] shadowed = DiffuseRed();
+        light.SetFlag(LightFlags.Shadows, false);
+        Frame(scene); Frame(scene);
+        float[] lit = DiffuseRed();
+        light.SetFlag(LightFlags.Shadows, true);
+        var factors = new float[Width * Height];
+        for (int i = 0; i < factors.Length; i++)
+            factors[i] = Half(normal, i * 8 + 2) > 0.99f && lit[i] > 1e-3f ? shadowed[i] / lit[i] : float.NaN;
+        return factors;
+    }
+
+    [SkippableFact]
+    public void The_sun_shadow_edge_is_filtered_not_stair_stepped()
+    {
+        Run(() =>
+        {
+            Scene scene = CreateShadowScene();
+            scene.cube.SetScale(new Vector3(2, 2, 2));
+            scene.cube.SetPosition(new Vector3(0, 0.5f, 0));
+            scene.cube.SetRotation(Quaternion.CreateFromYawPitchRoll(0.4f, 0, 0)); // edges oblique to the texel grid
+            Light sun = AddLight(LightType.Directional, new Vector3(0, 10, 0), new Vector3(2, -1, 0.3f));
+            float[] f = ShadowFactors(scene, sun);
+
+            int full = 0, partial = 0;
+            foreach (float v in f)
+            {
+                if (float.IsNaN(v)) continue;
+                if (v < 0.05f) full++;
+                else if (v < 0.95f) partial++;
+            }
+            // the umbra is there, and its rim is a band of partial pixels: pinned 4c07baa's centre tap early out
+            // left only the one texel bilinear rim (the stair steps), upstream's full footprint widens it
+            Assert.True(full > 50, $"umbra {full}");
+            Assert.True(partial > 0.5f * System.MathF.Sqrt(full) * 4, $"partial {partial} umbra {full}");
+
+            // and along each row crossing the shadow, the transition from shadow to lit spans more than 2 pixels
+            int rows = 0, wide = 0;
+            for (uint y = 0; y < Height; y++)
+            {
+                int first_partial = -1, last_partial = -1; bool saw_full = false;
+                for (uint x = 0; x < Width; x++)
+                {
+                    float v = f[Index(x, y)];
+                    if (float.IsNaN(v)) continue;
+                    if (v < 0.05f) saw_full = true;
+                    else if (v < 0.95f && saw_full) { if (first_partial < 0) first_partial = (int)x; last_partial = (int)x; }
+                    else if (v >= 0.95f && saw_full && first_partial >= 0) break;
+                }
+                if (!saw_full || first_partial < 0) continue;
+                rows++;
+                if (last_partial - first_partial + 1 > 2) wide++;
+            }
+            Assert.True(rows > 5, $"rows {rows}");
+            Assert.True(wide > 0.75f * rows, $"wide transitions {wide} of {rows} rows");
+        }, shadow_atlas: 4096);
+    }
+
+    // deviation until taa/taau is ported: no projection jitter by default (unresolved jitter flickers on screen)
+    [Fact]
+    public void Anti_aliasing_defaults_to_off_until_the_taa_resolve_is_ported()
+    {
+        Assert.Equal(Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear, (Renderer_AntiAliasing_Upsampling)0);
+        Assert.Equal(Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear, Renderer.AntiAliasingUpsampling);
+    }
 }

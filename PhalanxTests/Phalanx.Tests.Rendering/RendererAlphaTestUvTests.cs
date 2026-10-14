@@ -33,7 +33,7 @@ public class RendererAlphaTestUvTests
         }
         finally
         {
-            Renderer.AntiAliasingUpsampling = Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau;
+            Renderer.AntiAliasingUpsampling = Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear;
             Renderer.ShadowAtlasResolution = 8192;
             Renderer.Shutdown();
             World.World.ClearScene();

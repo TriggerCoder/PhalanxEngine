@@ -3,8 +3,9 @@
 // the helpers it reads from common.hlsl: ndc_to_uv (:635), cascade_edge_fade (:1136-1148), cascade_contains (:1150),
 // light_get_transform / light_get_atlas_scale / light_get_atlas_texel_size (:1269-1282), light_compare_depth
 // (:1291-1318) and light_sample_depth (:1320-1340). The atlas is tex2. Needs common_light.glsl.
-// Deviations: compute_normal_offset takes the clip x scale from column 0, not row 0, of the view_projection (see
-// there); otherwise none in the maths. The foliage normal flip is kept, but no material sets the foliage bit yet.
+// vogel_depth and directional_filter_radius are upstream 67a6e8b's (see there), which fix pinned's texel grid stair
+// steps. Deviations: compute_normal_offset takes the clip x scale from column 0, not row 0, of the view_projection
+// (see there); otherwise none in the maths. The foliage normal flip is kept, but no material sets the foliage bit yet.
 #ifndef PHALANX_COMMON_SHADOW
 #define PHALANX_COMMON_SHADOW
 
@@ -133,52 +134,88 @@ float compute_penumbra(Light light, float rotation_angle, vec3 sample_coords, fl
     return clamp(penumbra, g_minimum_penumbra_size, g_maximum_penumbra_size);
 }
 
-// shadow factor using vogel disk sampling
+// upstream 67a6e8b directional_filter_radius (shadow_mapping.hlsl:113-141): orthographic reverse-z stores nearer
+// blockers at larger depth, the separation is converted to metres before the sun's angular radius is applied
+vec2 directional_filter_radius(Light light, vec3 coords, float receiver_depth, vec2 texel)
+{
+    // hlsl transform[r][c] is m[r][c] here (row-major upload): column 0 / 1 / 2 are the clip x / y / z scales
+    mat4 m           = light_get_transform(light, uint(coords.z));
+    vec2 world_to_uv = 0.5 * vec2(length(vec3(m[0][0], m[1][0], m[2][0])), length(vec3(m[0][1], m[1][1], m[2][1])));
+    float world_to_depth = length(vec3(m[0][2], m[1][2], m[2][2]));
+    const float sun_angular_radius = 0.00465;
+    vec2 search_radius   = max(texel * 2.0, 50.0 * sun_angular_radius * world_to_uv);
+    float separation_sum = 0.0;
+    uint blocker_count   = 0u;
+    for (uint i = 0u; i < g_penumbra_sample_count; i++)
+    {
+        vec2 uv = coords.xy + g_vogel_samples_penumbra[i] * search_radius;
+        if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0))))
+            continue;
+        float blocker = light_sample_depth(light, vec3(uv, coords.z));
+        if (blocker > receiver_depth + 1e-6)
+        {
+            separation_sum += (blocker - receiver_depth) / max(world_to_depth, 1e-6);
+            blocker_count++;
+        }
+    }
+    float separation = separation_sum / max(float(blocker_count), 1.0);
+    return clamp(separation * sun_angular_radius * world_to_uv, texel * 1.5, texel * 32.0);
+}
+
+// shadow factor using vogel disk sampling, upstream 67a6e8b (shadow_mapping.hlsl:143-193): no centre tap early out
+// (a fully lit or shadowed centre doesn't make the footprint uniform, skipping the taps exposes the texel grid), the
+// texel size is the cpu's 1 / slice resolution (pinned 4c07baa divided it by the atlas scale again, :131-139), the
+// near sun cascade filters by the sun's angular size, out of slice taps count as lit and taps stay half a texel
+// inside the slice
 float vogel_depth(Light light, Surface surface, vec3 sample_coords, float receiver_depth, float filter_size_multiplier)
 {
     uint cascade_index   = uint(sample_coords.z);
     bool far_directional = light_is_directional(light) && cascade_index == 1u;
 
-    // early out, the far cascade skips the fully shadowed out
-    float center = light_compare_depth(light, sample_coords, receiver_depth);
-    if (!far_directional && center <= 0.001)
-        return 0.0;
-    if (center >= 0.999)
-        return 1.0;
+    // bisect-A: without the spot/point depth scaled bias (variant C) the full footprint gives spot/point acne, so they
+    // keep renderer-6's centre tap early out here; the sun takes upstream's path unchanged
+    if (!light_is_directional(light))
+    {
+        float center = light_compare_depth(light, sample_coords, receiver_depth);
+        if (center <= 0.001)
+            return 0.0;
+        if (center >= 0.999)
+            return 1.0;
+    }
 
-    vec2 texel_size_cascade_local = light_get_atlas_texel_size(light, cascade_index) / light_get_atlas_scale(light, cascade_index);
+    vec2 texel_size_cascade_local = light_get_atlas_texel_size(light, cascade_index);
     float rotation_angle          = float(cascade_index) * 0.785398163;
     float shadow_factor           = 0.0;
 
     // the far cascade uses a fixed kernel
-    float penumbra = 1.0;
-    if (!far_directional)
+    vec2 filter_size = texel_size_cascade_local * g_shadow_filter_size;
+    if (light_is_directional(light) && !far_directional)
     {
-        float light_distance = light_is_directional(light) ? 1000.0 : length(surface.position - light.position);
-        penumbra             = compute_penumbra(light, rotation_angle, sample_coords, receiver_depth, light_distance, texel_size_cascade_local);
+        filter_size = directional_filter_radius(light, sample_coords, receiver_depth, texel_size_cascade_local);
     }
+    else if (!far_directional)
+    {
+        float light_distance = length(surface.position - light.position);
+        filter_size *= compute_penumbra(light, rotation_angle, sample_coords, receiver_depth, light_distance, texel_size_cascade_local);
+    }
+    filter_size *= filter_size_multiplier;
 
-    float valid_sample_count = 0.0;
     for (uint i = 0u; i < g_shadow_sample_count; i++)
     {
-        vec2 filter_size = texel_size_cascade_local * g_shadow_filter_size * filter_size_multiplier * penumbra;
-        vec2 offset      = vogel_disk_sample(i, g_shadow_sample_count, rotation_angle) * filter_size;
-        vec2 sample_uv   = sample_coords.xy + offset;
+        vec2 offset    = vogel_disk_sample(i, g_shadow_sample_count, rotation_angle) * filter_size;
+        vec2 sample_uv = sample_coords.xy + offset;
 
-        // check bounds and fade
-        vec2 uv_clamped   = clamp(sample_uv, 0.0, 1.0);
-        vec2 fade_dist    = min(sample_uv, 1.0 - sample_uv) * 10.0;
-        float fade_factor = clamp(min(fade_dist.x, fade_dist.y), 0.0, 1.0);
-        float is_valid    = step(0.0, sample_uv.x) * step(sample_uv.x, 1.0) * step(0.0, sample_uv.y) * step(sample_uv.y, 1.0);
-
-        float depth_sample = light_compare_depth(light, vec3(uv_clamped, sample_coords.z), receiver_depth);
-        depth_sample       = mix(1.0, depth_sample, fade_factor * is_valid + (1.0 - is_valid));
-
-        shadow_factor      += depth_sample;
-        valid_sample_count += is_valid;
+        if (any(lessThan(sample_uv, vec2(0.0))) || any(greaterThan(sample_uv, vec2(1.0))))
+        {
+            shadow_factor += 1.0;
+            continue;
+        }
+        // keep the bilinear taps inside this slice instead of reading a neighbour
+        vec2 uv_clamped = clamp(sample_uv, texel_size_cascade_local * 0.5, 1.0 - texel_size_cascade_local * 0.5);
+        shadow_factor  += light_compare_depth(light, vec3(uv_clamped, sample_coords.z), receiver_depth);
     }
 
-    return shadow_factor / max(valid_sample_count, 1.0);
+    return shadow_factor * g_shadow_sample_reciprocal;
 }
 
 // slope scaled normal offset in world space
