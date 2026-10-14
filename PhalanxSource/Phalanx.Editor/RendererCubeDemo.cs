@@ -10,22 +10,25 @@ namespace Phalanx.Editor;
 // camera 3 m away and lit by a directional light; the cube turns so every face shows.
 internal static class RendererCubeDemo
 {
-    private sealed record Scene(Camera Camera, Entity Cube);
+    private sealed record Scene(Entity Cube);
 
+    // the scene is World entities: a camera, a directional light and the standard cube with a Render component
     private static Scene CreateScene()
     {
-        var camera_entity = new Entity();
-        var camera = new Camera(camera_entity);
-        camera_entity.SetPosition(new Vector3(0, 0, -3));
-        camera.Initialize();
-        Renderer.SetViewCamera(camera);
+        World.World.SetMainThread();
+        World.World.ClearScene();
 
-        var light_entity = new Entity();
+        Entity camera_entity = World.World.CreateEntity();
+        camera_entity.SetObjectName("camera");
+        camera_entity.AddComponent<Camera>(); // the camera constructor places its entity at (0, 3, -5)
+        camera_entity.SetPosition(new Vector3(0, 0, -3));
+
+        Entity light_entity = World.World.CreateEntity();
+        light_entity.SetObjectName("light_directional");
         light_entity.SetRotation(Quaternion.CreateFromYawPitchRoll(0.5f, 0.6f, 0.0f));
-        var light = new Light(light_entity);
+        Light light = light_entity.AddComponent<Light>()!;
         light.SetLightType(LightType.Directional);
         light.SetColor(new Phalanx.Math.Color(1.0f, 1.0f, 1.0f, 1.0f));
-        Renderer.AddLight(light);
 
         var material = new Material();
         material.SetProperty(MaterialProperty.ColorR, 0.9f);
@@ -33,16 +36,22 @@ internal static class RendererCubeDemo
         material.SetProperty(MaterialProperty.ColorB, 0.2f);
         material.SetProperty(MaterialProperty.ColorA, 1.0f);
 
-        var cube = new Entity();
-        Renderer.AddRenderable(Renderer.GetStandardMesh(MeshType.Cube)!, cube, material);
+        Entity cube = World.World.CreateEntity();
+        cube.SetObjectName("cube");
+        Render render = cube.AddComponent<Render>()!;
+        render.SetMesh(MeshType.Cube);
+        render.SetMaterial(material);
+
         Renderer.ResolveBackgroundColor = new Vector4(0.08f, 0.09f, 0.12f, 1.0f);
-        return new Scene(camera, cube);
+        World.World.Tick(); // publish the entities (spartan: the world load commits them before the first frame)
+        return new Scene(cube);
     }
 
+    // Engine::Tick order: World::Tick (entities, camera) then Renderer::Tick
     private static void Animate(Scene scene, float time)
     {
         scene.Cube.SetRotation(Quaternion.CreateFromYawPitchRoll(0.6f + time * 0.8f, 0.45f + time * 0.3f, 0.0f));
-        scene.Camera.Tick();
+        World.World.Tick();
     }
 
     public static int Run(IWindow window, int frames, bool validation)
@@ -65,6 +74,7 @@ internal static class RendererCubeDemo
         finally
         {
             Renderer.Shutdown();
+            World.World.ClearScene();
         }
     }
 
@@ -82,6 +92,7 @@ internal static class RendererCubeDemo
         finally
         {
             Renderer.Shutdown();
+            World.World.ClearScene();
         }
     }
 }

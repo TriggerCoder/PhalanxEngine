@@ -48,7 +48,7 @@ internal sealed class RHI_Texture_Slice
     public uint GetMipCount() => (uint)mips.Count;
 }
 
-internal sealed unsafe class RHI_Texture : IDisposable
+internal sealed unsafe class RHI_Texture : Phalanx.World.RHI_Texture, IDisposable
 {
     private uint m_width, m_height, m_depth, m_mip_count, m_bits_per_channel, m_channel_count;
     private RHI_Format m_format = RHI_Format.Max;
@@ -71,7 +71,7 @@ internal sealed unsafe class RHI_Texture : IDisposable
     public string Name { get; }
 
     public RHI_Texture(RHI_Texture_Type type, uint width, uint height, uint depth, uint mip_count, RHI_Format format,
-                       RHI_Texture_Flags flags, string name, List<RHI_Texture_Slice>? slices = null)
+                       RHI_Texture_Flags flags, string name, List<RHI_Texture_Slice>? slices = null) : base(width, height)
     {
         if (type == RHI_Texture_Type.TypeCube && depth != 6) throw new ArgumentException("cube textures have 6 faces (depth = 6)", nameof(depth));
         if (mip_count == 0 || mip_count > RHI_Definitions.rhi_max_mip_count) throw new ArgumentOutOfRangeException(nameof(mip_count));
@@ -99,8 +99,8 @@ internal sealed unsafe class RHI_Texture : IDisposable
 
     // ------------------------------------------------------------------------------------------------------------
     // properties (spartan names)
-    public uint GetWidth() => m_width;
-    public uint GetHeight() => m_height;
+    public override uint GetWidth() => m_width;
+    public override uint GetHeight() => m_height;
     public uint GetDepth() => m_depth;
     public uint GetMipCount() => m_mip_count;
     public uint GetArrayLength() => m_type == RHI_Texture_Type.Type3D ? 1 : m_depth;

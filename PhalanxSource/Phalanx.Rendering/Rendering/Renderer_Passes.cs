@@ -4,9 +4,15 @@
 // Renderer_Passes_Geometry.cpp (Pass_GBuffer), Pass_Blit is a port of Renderer_Passes_Post.cpp:590-619.
 // Pass_Resolve is not in spartan: it shades the g-buffer into frame_render, standing in for the light, composition
 // and post process passes until they are ported.
-// Deviations: no depth prepass, so the g-buffer draws with read/write reverse-z depth (spartan: an equal test against
-// the prepass) and clears the depth itself; no gpu-driven indirect path, culling or lods; frame_render goes to
+// Pass_Depth_Prepass ports the opaque half of Renderer_Passes_Geometry.cpp:1463, then the g-buffer shades only the
+// prepass survivors with an equal depth test (ReadEqual, the state spartan's alpha half uses at :1764).
+// Deviations: spartan's opaque indirect g-buffer keeps GreaterEqual (:1695) because its prepass and g-buffer run
+// different mesh shaders that are not bit identical; Phalanx's prepass runs the g-buffer's own vertex shader module
+// (spartan: a separate depth_prepass_v) with an invariant gl_Position, so the depths match by construction and the
+// equal test is safe. The prepass culls back faces (spartan: cull None, its triangles are culled on the gpu before).
+// No alpha-tested half, previous depth copy or hi-z yet; no gpu-driven indirect path, culling or lods; frame_render goes to
 // frame_output through Pass_Blit; the passes have no gpu timing (no profiler yet), they are markers.
+using Phalanx.Geometry;
 using System.Numerics;
 using Phalanx.Rendering.RHI;
 using RenderTarget = Phalanx.World.Renderer_RenderTarget;
@@ -34,9 +40,47 @@ public static partial class Renderer
         RHI_Texture rt_render = GetRenderTargetTexture(RenderTarget.frame_render)!;
         RHI_Texture rt_output = GetRenderTargetTexture(RenderTarget.frame_output)!;
 
+        Pass_Depth_Prepass(cmd);
         Pass_GBuffer(cmd);
         Pass_Resolve(cmd, rt_render);
         Pass_Blit(cmd, rt_render, rt_output);
+    }
+
+    // Renderer_Passes_Geometry.cpp:1463, the opaque half: no pixel shader, ReadWrite depth, clears the depth (reverse-z 0)
+    private static void Pass_Depth_Prepass(RHI_CommandList cmd)
+    {
+        cmd.BeginMarker("depth_prepass");
+        {
+            var pso = new RHI_PipelineState { name = "depth_prepass" };
+            pso.SetShader(RHI_Shader_Type.Vertex, GetShader(Renderer_Shader.gbuffer_v)!);
+            pso.rasterizer_state            = new RHI_RasterizerState(RHI_PolygonMode.Solid, true);
+            pso.depth_stencil_state         = new RHI_DepthStencilState(true, true, RHI_Comparison_Function.GreaterEqual);
+            pso.blend_state                 = new RHI_BlendState(false);
+            pso.render_target_depth_texture = GetRenderTargetTexture(RenderTarget.gbuffer_depth)!;
+            pso.clear_depth                 = 0.0f; // reverse-z, unconditionally so an empty scene still has a fresh depth
+            cmd.SetPipelineState(pso);
+            cmd.SetCullMode(RHI_CullMode.Back);
+            SetStandardResources(cmd);
+            DrawOpaque(cmd);
+        }
+        cmd.EndMarker();
+    }
+
+    // the cpu draw loop both passes share, over the frame's draw calls
+    private static void DrawOpaque(RHI_CommandList cmd)
+    {
+        RHI_Buffer? vertices = GeometryBuffer.GetVertexBuffer();
+        RHI_Buffer? indices  = GeometryBuffer.GetIndexBuffer();
+        if (vertices == null || indices == null || s_draw_calls.Count == 0)
+            return;
+        cmd.SetBufferVertex(vertices);
+        cmd.SetBufferIndex(indices);
+        foreach (DrawCall draw_call in s_draw_calls)
+        {
+            var pass = new PassBufferData { draw_index = draw_call.draw_index, material_index = draw_call.material_index };
+            cmd.PushConstants(pass);
+            cmd.DrawIndexed(draw_call.index_count, draw_call.index_offset, (int)draw_call.vertex_offset);
+        }
     }
 
     private static void Pass_GBuffer(RHI_CommandList cmd)
@@ -53,9 +97,10 @@ public static partial class Renderer
             var pso = new RHI_PipelineState { name = "g_buffer" };
             pso.SetShader(RHI_Shader_Type.Vertex, GetShader(Renderer_Shader.gbuffer_v)!);
             pso.SetShader(RHI_Shader_Type.Pixel, GetShader(Renderer_Shader.gbuffer_p)!);
-            // spartan's standard Solid rasterizer, ReadWrite (reverse-z, greater equal) depth and Off blend states
+            // spartan's standard Solid rasterizer, Off blend and ReadEqual depth states: only the prepass survivors
+            // shade (Renderer_Passes_Geometry.cpp:1764), the depth is loaded
             pso.rasterizer_state    = new RHI_RasterizerState(RHI_PolygonMode.Solid, true);
-            pso.depth_stencil_state = new RHI_DepthStencilState(true, true, RHI_Comparison_Function.GreaterEqual);
+            pso.depth_stencil_state = new RHI_DepthStencilState(true, false, RHI_Comparison_Function.Equal);
             pso.blend_state         = new RHI_BlendState(false);
             pso.render_target_color_textures[0] = tex_color;
             pso.render_target_color_textures[1] = tex_normal;
@@ -65,41 +110,12 @@ public static partial class Renderer
             pso.render_target_depth_texture     = tex_depth;
             for (int i = 0; i < 5; i++)
                 pso.clear_color[i] = new Phalanx.Math.Color(0.0f, 0.0f, 0.0f, 0.0f);
-            pso.clear_depth = 0.0f; // reverse-z
+            pso.clear_depth = RHI_Definitions.rhi_depth_load; // the prepass cleared and wrote it
             cmd.SetPipelineState(pso);
             cmd.SetCullMode(RHI_CullMode.Back);
             SetStandardResources(cmd);
 
-            RHI_Buffer? vertices = GeometryBuffer.GetVertexBuffer();
-            RHI_Buffer? indices  = GeometryBuffer.GetIndexBuffer();
-            if (vertices != null && indices != null && s_renderables.Count > 0)
-            {
-                cmd.SetBufferVertex(vertices);
-                cmd.SetBufferIndex(indices);
-                foreach (Renderable r in s_renderables)
-                {
-                    if (!r.mesh.HasGpuBuffers())
-                        continue;
-                    Matrix4x4 transform = r.entity.GetMatrix();
-                    Matrix4x4 transform_previous = r.has_previous ? r.transform_previous : transform;
-                    r.transform_previous = transform;
-                    r.has_previous       = true;
-
-                    uint material_index = GetMaterialIndex(r.material);
-                    uint draw_index = WriteDrawData(transform, transform_previous, material_index, 0);
-                    if (draw_index == uint.MaxValue)
-                        break;
-
-                    for (int sub_mesh = 0; sub_mesh < r.mesh.GetSubMeshCount(); sub_mesh++)
-                    {
-                        MeshLod lod = r.mesh.GetLod(sub_mesh, 0);
-                        var pass = new PassBufferData { draw_index = draw_index, material_index = material_index };
-                        cmd.PushConstants(pass);
-                        cmd.DrawIndexed(lod.index_count, r.mesh.GetGlobalIndexOffset() + lod.index_offset,
-                                        (int)(r.mesh.GetGlobalVertexOffset() + lod.vertex_offset));
-                    }
-                }
-            }
+            DrawOpaque(cmd);
         }
         cmd.EndMarker();
     }

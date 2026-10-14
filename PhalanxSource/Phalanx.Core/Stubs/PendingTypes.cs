@@ -22,29 +22,15 @@ public struct RHI_Viewport
     public static readonly RHI_Viewport Undefined = new RHI_Viewport(0, 0, 0, 0, 0, 0);
 }
 
-// TODO(port): source/world/components/Render.h
-public class Render : Component
-{
-    private BoundingBox m_bounding_box;
-    private Material? m_material;
-    public Render(Entity entity) : base(entity) { }
-    public BoundingBox GetBoundingBox() { return m_bounding_box; }
-    public int GetIndexCount() { return 0; }
-    public int GetVertexCount() { return 0; }
-    public void GetGeometry(List<uint> indices, List<RHI_Vertex_PosTexNorTan> vertices) { }
-    public Material? GetMaterial() { return m_material; }
-    public void SetMaterial(Material? material) { m_material = material; }
-    public void SetMesh(MeshType type) { }
-    public void SetDefaultMaterial() { }
-}
-
 // TODO(port): source/rhi/RHI_Texture.h
+// The gpu-agnostic face of a texture: what Phalanx.Core reads (sizes) and holds (Material textures). Phalanx.Rendering's
+// RHI_Texture derives from it, so a Material holds the gpu texture like spartan's Material holds an RHI_Texture*.
 public class RHI_Texture
 {
     private readonly uint m_width, m_height;
     public RHI_Texture(uint width, uint height) { m_width = width; m_height = height; }
-    public uint GetWidth() { return m_width; }
-    public uint GetHeight() { return m_height; }
+    public virtual uint GetWidth() { return m_width; }
+    public virtual uint GetHeight() { return m_height; }
 }
 
 // TODO(port): source/rendering/Renderer_Definitions.h (only the targets referenced so far)

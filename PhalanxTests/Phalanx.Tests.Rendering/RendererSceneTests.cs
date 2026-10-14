@@ -29,13 +29,12 @@ public class RendererSceneTests
     // a unit cube at the origin, the camera 3 m in front of it looking down +z
     private static Scene CreateScene(Vector4 color)
     {
-        var camera_entity = new Entity();
-        var camera = new Camera(camera_entity);
+        Entity camera_entity = World.World.CreateEntity();
+        Camera camera = camera_entity.AddComponent<Camera>()!; // the camera constructor places its entity at (0, 3, -5)
         camera_entity.SetPosition(new Vector3(0, 0, -3));
         camera_entity.SetRotation(Quaternion.Identity);
-        camera.Initialize();
 
-        var cube = new Entity();
+        Entity cube = World.World.CreateEntity();
         cube.SetPosition(Vector3.Zero);
 
         var material = new Material();
@@ -46,8 +45,10 @@ public class RendererSceneTests
         material.SetProperty(MaterialProperty.Roughness, 0.5f);
         material.SetProperty(MaterialProperty.Metalness, 0.25f);
 
-        Renderer.SetViewCamera(camera);
-        Renderer.AddRenderable(Renderer.GetStandardMesh(MeshType.Cube)!, cube, material);
+        Render render = cube.AddComponent<Render>()!;
+        render.SetMesh(MeshType.Cube);
+        render.SetMaterial(material);
+        World.World.Tick(); // publish the entities (spartan: the world load commits them before the first frame)
         return new Scene { camera = camera, cube = cube, material = material };
     }
 
@@ -55,6 +56,8 @@ public class RendererSceneTests
     {
         Skip.IfNot(RenderDevice.IsVulkanAvailable(out string reason), reason);
         Renderer.AntiAliasingUpsampling = aa;
+        World.World.SetMainThread();
+        World.World.ClearScene();
         Renderer.Initialize(Width, Height, validation: true);
         try
         {
@@ -67,12 +70,14 @@ public class RendererSceneTests
             Renderer.AntiAliasingUpsampling = Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau;
             Renderer.ResolveBackgroundColor = new Vector4(0, 0, 0, 1);
             Renderer.Shutdown();
+            World.World.ClearScene();
         }
     }
 
+    // Engine::Tick order: World::Tick then Renderer::Tick
     private static void Frame(Scene scene)
     {
-        scene.camera.Tick();
+        World.World.Tick();
         Assert.True(Renderer.Tick());
     }
 
@@ -239,12 +244,11 @@ public class RendererSceneTests
             Near(Renderer.ResolveBackgroundColor, Output(0, 0));
 
             // a directional light shining down +z onto the front face: ambient 0.25 plus the light colour
-            var light_entity = new Entity();
+            Entity light_entity = World.World.CreateEntity();
             light_entity.SetPosition(new Vector3(0, 5, 0)); // computes the directions, forward is +z
-            var light = new Light(light_entity);
+            Light light = light_entity.AddComponent<Light>()!;
             light.SetLightType(LightType.Directional);
             light.SetColor(new Phalanx.Math.Color(0.5f, 0.5f, 0.5f, 1.0f));
-            Renderer.AddLight(light);
             Frame(scene);
             Assert.Equal(0u, light.GetIndex());
             Assert.Equal(1u, Renderer.GetLightCount());
@@ -262,6 +266,86 @@ public class RendererSceneTests
             MaterialParameters m = MemoryMarshal.Read<MaterialParameters>(materials);
             Assert.Equal(new Vector4(0.5f, 0.25f, 1.0f, 1.0f), m.color);
             Assert.Equal(0.5f, m.roughness);
+        });
+    }
+
+    [SkippableFact]
+    public void The_renderer_draws_the_worlds_render_entities_and_drops_removed_ones()
+    {
+        Run(() =>
+        {
+            Scene scene = CreateScene(new Vector4(0.0f, 1.0f, 0.0f, 1.0f));
+            Frame(scene);
+            byte[] depth = Read(Renderer_RenderTarget.gbuffer_depth);
+            Assert.True(BitConverter.ToSingle(depth, Index(Width / 2, Height / 2) * 4) > 0);
+
+            // a second cube, created through the world, to the left: drawn once the world published it
+            Entity left = World.World.CreateEntity();
+            left.SetPosition(new Vector3(-1.5f, 0, 0));
+            left.AddComponent<Render>()!.SetMesh(MeshType.Cube);
+            Frame(scene); // the world publishes it at the end of its tick, the renderer draws it this frame
+            Vector4 clip = Vector4.Transform(new Vector4(-1.5f, 0, -0.5f, 1), scene.camera.GetViewMatrix() * scene.camera.GetProjectionMatrix());
+            uint x_left = (uint)((clip.X / clip.W * 0.5f + 0.5f) * Width);
+            depth = Read(Renderer_RenderTarget.gbuffer_depth);
+            Assert.True(BitConverter.ToSingle(depth, Index(x_left, Height / 2) * 4) > 0);
+
+            // no material: the renderer's standard material, white with the checkerboard (srgb decoded greys)
+            byte[] albedo = Read(Renderer_RenderTarget.gbuffer_color);
+            int c = Index(x_left, Height / 2) * 4;
+            Assert.Contains(albedo[c], new byte[] { 13, 33 });
+            Assert.Equal(albedo[c], albedo[c + 1]);
+            Assert.Equal(albedo[c], albedo[c + 2]);
+            Assert.Equal(new byte[] { 0, 255, 0, 255 }, albedo[(Index(Width / 2, Height / 2) * 4)..(Index(Width / 2, Height / 2) * 4 + 4)]);
+
+            // removed: gone from the next frame
+            World.World.RemoveEntity(scene.cube);
+            Frame(scene);
+            depth = Read(Renderer_RenderTarget.gbuffer_depth);
+            Assert.Equal(0.0f, BitConverter.ToSingle(depth, Index(Width / 2, Height / 2) * 4));
+            Assert.Single(World.World.GetEntitiesRenderables());
+        });
+    }
+
+    [SkippableFact]
+    public void The_gbuffer_shades_exactly_the_prepass_survivors_with_the_equal_depth_test()
+    {
+        Run(() =>
+        {
+            // a red cube in front, a blue one behind it and offset to the right: they overlap on screen
+            Scene scene = CreateScene(new Vector4(1, 0, 0, 1));
+            Entity back = World.World.CreateEntity();
+            back.SetPosition(new Vector3(0.6f, 0.3f, 1.0f));
+            var blue = new Material();
+            blue.SetProperty(MaterialProperty.ColorB, 1.0f);
+            blue.SetProperty(MaterialProperty.ColorA, 1.0f);
+            Render render = back.AddComponent<Render>()!;
+            render.SetMesh(MeshType.Cube);
+            render.SetMaterial(blue);
+            Frame(scene);
+            Frame(scene);
+
+            byte[] depth  = Read(Renderer_RenderTarget.gbuffer_depth);
+            byte[] albedo = Read(Renderer_RenderTarget.gbuffer_color);
+            int covered = 0, shaded = 0, blue_pixels = 0;
+            for (uint y = 0; y < Height; y++)
+                for (uint x = 0; x < Width; x++)
+                {
+                    int i = Index(x, y);
+                    bool has_depth = BitConverter.ToSingle(depth, i * 4) > 0;
+                    bool has_color = albedo[i * 4 + 3] > 0;
+                    covered += has_depth ? 1 : 0;
+                    shaded  += has_depth && has_color ? 1 : 0;
+                    blue_pixels += albedo[i * 4 + 2] == 255 ? 1 : 0;
+                    Assert.False(!has_depth && has_color, $"colour without depth at {x},{y}");
+                }
+            Assert.Equal(covered, shaded); // the equal test drops nothing the prepass kept (bit identical depth)
+            Assert.True(blue_pixels > 0);  // the back cube shows where the front one doesn't cover it
+
+            // the centre belongs to the front cube: red, at the front face's depth
+            int c = Index(Width / 2, Height / 2);
+            Assert.Equal(new byte[] { 255, 0, 0, 255 }, albedo[(c * 4)..(c * 4 + 4)]);
+            Vector4 clip = Vector4.Transform(new Vector4(0, 0, -0.5f, 1), scene.camera.GetViewMatrix() * scene.camera.GetProjectionMatrix());
+            Assert.Equal(clip.Z / clip.W, BitConverter.ToSingle(depth, c * 4), 4);
         });
     }
 

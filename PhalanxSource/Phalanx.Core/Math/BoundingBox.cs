@@ -89,6 +89,26 @@ public struct BoundingBox : IEquatable<BoundingBox>
         m_max = Vector3.Max(m_max, box.m_max);
     }
 
+    // BoundingBox::operator*(Matrix) (math/BoundingBox.h:39): transform the center, project the extents on the
+    // absolute rotation-scale rows (row vectors); an infinite box keeps a zero center and infinite extents
+    public readonly BoundingBox Transform(Matrix4x4 transform)
+    {
+        bool infinite = float.IsNegativeInfinity(m_min.X) && float.IsNegativeInfinity(m_min.Y) && float.IsNegativeInfinity(m_min.Z) &&
+                        float.IsPositiveInfinity(m_max.X) && float.IsPositiveInfinity(m_max.Y) && float.IsPositiveInfinity(m_max.Z);
+        Vector3 center = infinite ? Vector3.Zero : (m_max + m_min) * 0.5f;
+        Vector3 extent = infinite ? new Vector3(float.PositiveInfinity) : (m_max - m_min) * 0.5f;
+
+        Vector4 c = Vector4.Transform(new Vector4(center, 1.0f), transform);
+        Vector3 center_new = c.W != 1.0f ? new Vector3(c.X, c.Y, c.Z) / c.W : new Vector3(c.X, c.Y, c.Z);
+
+        Vector3 row0 = Vector3.Abs(new Vector3(transform.M11, transform.M12, transform.M13));
+        Vector3 row1 = Vector3.Abs(new Vector3(transform.M21, transform.M22, transform.M23));
+        Vector3 row2 = Vector3.Abs(new Vector3(transform.M31, transform.M32, transform.M33));
+        Vector3 extent_new = row0 * extent.X + row1 * extent.Y + row2 * extent.Z;
+        return new BoundingBox(center_new - extent_new, center_new + extent_new);
+    }
+    public static BoundingBox operator *(BoundingBox box, Matrix4x4 transform) => box.Transform(transform);
+
     public readonly Vector3 GetMin() { return m_min; }
     public readonly Vector3 GetMax() { return m_max; }
     public readonly Vector3 GetCenter() { return (m_max + m_min) * 0.5f; }

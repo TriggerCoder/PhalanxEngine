@@ -100,7 +100,8 @@ public static class World
     private static readonly Dictionary<ulong, ulong> m_light_state_hashes = new Dictionary<ulong, ulong>();
     private static void MarkEntityChanged(ulong id, EntityChange change)
     {
-        entity_states[id] |= (uint)change;
+        entity_states.TryGetValue(id, out uint state);
+        entity_states[id] = state | (uint)change;
         resolve = true;
     }
     /*
@@ -190,6 +191,130 @@ public static class World
         Helpers.PLXAssertMsg(Environment.CurrentManagedThreadId == main_thread_id, "World/entity hierarchy accessed off the main thread");
     }
     public static IReadOnlyList<Entity> GetEntities() { AssertMainThread(); return entities; }
+    public static IReadOnlyList<Entity> GetEntitiesLights() { AssertMainThread(); return entities_lights; }           // World.cpp:2688 (views.lights)
+    public static IReadOnlyList<Entity> GetEntitiesRenderables() { AssertMainThread(); return entities_renderables; } // views.render
+    public static Entity? GetDirectionalLight() { return light; }
+    public static BoundingBox GetBoundingBox() { return bounding_box; }
+
+    // World::Tick (World.cpp:833), the part that exists in Phalanx: removals, render then logic entity ticks,
+    // additions, then the resolve (World.cpp:1122) rebuilding the camera, the directional light and the views.
+    // Not ported: world io/loading, play mode snapshots, physics/scripts pretick, parallel render ticks, weather,
+    // volumes/ragdolls/particles/icons views, the player-camera preference of pick_default_camera (no Physics yet).
+    private static readonly List<Entity> entities_logic = new List<Entity>();
+    public static void Tick()
+    {
+        AssertMainThread();
+        ProcessPendingRemovals();
+
+        for (int i = 0; i < entities_renderables.Count; i++)
+            if (entities_renderables[i].GetActive())
+                entities_renderables[i].Tick();
+        for (int i = 0; i < entities_logic.Count; i++)
+            if (entities_logic[i].GetActive())
+                entities_logic[i].Tick();
+
+        ProcessPendingAdditions();
+
+        if (resolve)
+        {
+            // the incumbent camera keeps the seat unless it is gone or went inactive
+            Entity? camera_incumbent   = camera;
+            bool camera_incumbent_live = false;
+            camera = null;
+            light  = null;
+            entities_lights.Clear();
+            entities_renderables.Clear();
+            entities_logic.Clear();
+            foreach (Entity entity in entities)
+            {
+                if (pending_remove.Contains(entity.GetObjectId()) || !entity.GetActive())
+                    continue;
+
+                if (camera == null && entity.GetComponent<Camera>() != null)
+                    camera = entity;
+                camera_incumbent_live |= entity == camera_incumbent;
+
+                if (entity.GetComponent<Light>() is Light light_comp)
+                {
+                    if (light == null && light_comp.GetLightType() == LightType.Directional)
+                        light = entity;
+                    entities_lights.Add(entity);
+                }
+
+                if (entity.GetComponent<Render>() != null)
+                    entities_renderables.Add(entity);
+                else if (entity.GetComponentCount() > 0)
+                    entities_logic.Add(entity); // lights, scripts, audio, etc without a mesh still need Entity::Tick
+            }
+            if (camera_incumbent_live)
+                camera = camera_incumbent;
+
+            ComputeBoundingBox();
+            resolve = false;
+        }
+    }
+
+    private static void ComputeBoundingBox()
+    {
+        bounding_box = BoundingBox.Unit;
+        bool first = true;
+        foreach (Entity entity in entities_renderables)
+        {
+            BoundingBox box = entity.GetComponent<Render>()!.GetBoundingBox();
+            if (first) { bounding_box = box; first = false; }
+            else bounding_box.Merge(box);
+        }
+    }
+
+    // World::ProcessPendingRemovals
+    private static void ProcessPendingRemovals()
+    {
+        lock (entity_access_mutex)
+        {
+            if (pending_remove.Count == 0)
+                return;
+            entities.RemoveAll(e => pending_remove.Contains(e.GetObjectId()));
+            pending_add.RemoveAll(e => pending_remove.Contains(e.GetObjectId()));
+            foreach (ulong id in pending_remove)
+                entity_states.Remove(id);
+            pending_remove.Clear();
+            // the tracked lists still point at the removed entities
+            resolve = true;
+        }
+    }
+
+    // World::ProcessPendingAdditions (World.cpp:634)
+    private static void ProcessPendingAdditions()
+    {
+        lock (entity_access_mutex)
+        {
+            if (pending_add.Count == 0)
+                return;
+            entities.AddRange(pending_add);
+            pending_add.Clear();
+            resolve = true;
+        }
+    }
+
+    // World::ClearScene (World.cpp:657), the entity part
+    public static void ClearScene()
+    {
+        lock (entity_access_mutex)
+        {
+            camera = null;
+            light  = null;
+            entities.Clear();
+            pending_add.Clear();
+            pending_remove.Clear();
+            entities_lights.Clear();
+            entities_renderables.Clear();
+            entities_logic.Clear();
+            entity_states.Clear();
+            bounding_box = BoundingBox.Unit;
+            resolve = false;
+        }
+    }
+
     public static Camera? GetCamera() { return (camera != null) ? camera.GetComponent<Camera>() : null; }
     public static float GetTimeOfDay(bool use_real_world_time) { return WorldTime.GetTimeOfDay(use_real_world_time); }
     public static void SetTimeOfDay(float TimeOfDay)

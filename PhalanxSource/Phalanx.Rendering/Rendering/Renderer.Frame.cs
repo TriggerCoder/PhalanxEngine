@@ -96,6 +96,7 @@ public static partial class Renderer
 
             CreateBuffers();
             CreateStandardMeshes();
+            CreateStandardMaterials();
             CreateRenderTargets(true, true);
             CreateSamplers();
             UpdateBindlessResources();

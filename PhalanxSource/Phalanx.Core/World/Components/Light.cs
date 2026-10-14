@@ -596,7 +596,7 @@ public class Light : Component
     public float GetAreaHeight() { return m_area_height; }
 
     // matrices
-    public Matrix4x4 GetViewProjectionMatrix(uint index) { return m_matrix_view[index] * m_matrix_view[index]; }
+    public Matrix4x4 GetViewProjectionMatrix(uint index) { return m_matrix_view[index] * m_matrix_projection[index]; } // Light.h:183
 
     // frustum
     public bool IsInViewFrustum(Render renderable, uint array_index)

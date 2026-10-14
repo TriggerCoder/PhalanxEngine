@@ -28,4 +28,13 @@ public static class RenderView
     }
     public static RHI_Texture GetRenderTarget(Renderer_RenderTarget rt) { return s_render_targets[(int)rt]; }
     public static void SetRenderTargetSize(Renderer_RenderTarget rt, uint width, uint height) { s_render_targets[(int)rt] = new RHI_Texture(width, height); }
+
+    // the standard meshes and the standard material (spartan: Renderer::GetStandardMesh / GetStandardMaterial), the
+    // renderer publishes them when it creates them (CreateStandardMeshes / CreateStandardMaterials), Render reads them
+    private static readonly IMesh?[] s_standard_meshes = new IMesh?[(int)MeshType.Max];
+    private static Material? s_standard_material;
+    public static IMesh? GetStandardMesh(MeshType type) { return s_standard_meshes[(int)type]; }
+    public static void SetStandardMesh(MeshType type, IMesh? mesh) { s_standard_meshes[(int)type] = mesh; }
+    public static Material? GetStandardMaterial() { return s_standard_material; }
+    public static void SetStandardMaterial(Material? material) { s_standard_material = material; }
 }

@@ -190,6 +190,18 @@ public class Material : IResource
     }
 
     // textures
+    public RHI_Texture? GetTexture(MaterialTextureType texture_type, uint slot = 0)
+    {
+        Helpers.PLXAssert(slot < slots_per_texture);
+        return m_textures[(int)(((uint)texture_type * slots_per_texture) + slot)];
+    }
+    public bool HasTextureOfType(MaterialTextureType texture_type)
+    {
+        for (uint slot = 0; slot < slots_per_texture; slot++)
+            if (GetTexture(texture_type, slot) != null)
+                return true;
+        return false;
+    }
     public void SetTexture(MaterialTextureType texture_type, RHI_Texture? texture, uint slot = 0, bool auto_adjust_multipler = true)
     {
         Helpers.PLXAssert(slot < slots_per_texture);

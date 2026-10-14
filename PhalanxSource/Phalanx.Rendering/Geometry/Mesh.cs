@@ -25,15 +25,6 @@ public enum MeshFlags : uint
     PostProcessSkipCache            = 1 << 9, // the owning generator caches the complete prepared mesh
 }
 
-public struct MeshLod
-{
-    public uint vertex_offset; // starting offset in m_vertices
-    public uint vertex_count;  // number of vertices for this LOD
-    public uint index_offset;  // starting offset in m_indices
-    public uint index_count;   // number of indices for this LOD
-    public BoundingBox aabb;   // bounding box of this LOD
-}
-
 // class (not struct): it owns a list, and a struct copy out of List<SubMesh> would hide writes
 public sealed class MeshImpostor
 {
@@ -72,7 +63,7 @@ public sealed class SubMesh
 }
 
 [Serializable]
-public class Mesh : IResource, IDisposable
+public class Mesh : IResource, IMesh, IDisposable
 {
     public const int MeshLodCount = 5;
     public const float MeshLodMinReduction = 0.9f; // a lod must be at least 10% cheaper than the one above it

@@ -19,6 +19,9 @@ using static Phalanx.Rendering.Renderer_Definitions;
 using RenderTarget = Phalanx.World.Renderer_RenderTarget;
 using RenderView   = Phalanx.World.RenderView;
 using Texture      = Phalanx.Rendering.RHI.RHI_Texture;
+using Material     = Phalanx.World.Material;
+using MaterialProperty    = Phalanx.World.MaterialProperty;
+using MaterialTextureType = Phalanx.World.MaterialTextureType;
 
 namespace Phalanx.Rendering;
 
@@ -163,6 +166,49 @@ public static partial class Renderer
         mesh.SetMeshType(Phalanx.Geometry.MeshType.Cube);
         mesh.CreateGpuBuffers();
         s_standard_meshes[(int)Phalanx.Geometry.MeshType.Cube] = mesh;
+        RenderView.SetStandardMesh(Phalanx.Geometry.MeshType.Cube, mesh); // Render::SetMesh(MeshType) reads it
+    }
+
+    // Renderer_Resources.cpp:1598. Not ported: SetPersistent and the data directory (no material files yet).
+    private static Material? s_standard_material;
+    public static Material? GetStandardMaterial() => s_standard_material;
+    private static void CreateStandardMaterials()
+    {
+        var material = new Material();
+        material.SetResourceName("standard" + FileSystem.EXTENSION_MATERIAL);
+        material.SetProperty(MaterialProperty.TextureTilingX, 1.0f);
+        material.SetProperty(MaterialProperty.TextureTilingY, 1.0f);
+        material.SetProperty(MaterialProperty.ColorR,         1.0f);
+        material.SetProperty(MaterialProperty.ColorG,         1.0f);
+        material.SetProperty(MaterialProperty.ColorB,         1.0f);
+        material.SetProperty(MaterialProperty.ColorA,         1.0f);
+        material.SetProperty(MaterialProperty.WorldSpaceUv,   1.0f);
+        material.SetTexture(MaterialTextureType.Color,        GetStandardTexture(Renderer_StandardTexture.Checkerboard));
+        s_standard_material = material;
+        RenderView.SetStandardMaterial(material);
+    }
+
+    // Textures the application creates from pixels, for materials. Spartan loads them through the resource cache and
+    // its texture importer (ResourceCache::Load<RHI_Texture>), which Phalanx doesn't have yet; the gpu texture type is
+    // internal, so this hands out the Phalanx.World.RHI_Texture base that Material.SetTexture takes. The renderer owns
+    // them, Shutdown destroys them.
+    private static readonly List<Texture> s_user_textures = new();
+
+    /// <summary>A 2D, single mip, rgba8 texture from <paramref name="rgba8"/> (width * height * 4 bytes) for
+    /// <see cref="Material.SetTexture"/>. Colour and emission textures in this format are decoded as sRGB unless
+    /// <paramref name="greyscale"/> (spartan: should_decode_as_srgb). Valid until <see cref="Shutdown"/>.</summary>
+    public static Phalanx.World.RHI_Texture CreateTexture(string name, uint width, uint height, byte[] rgba8, bool greyscale = false)
+    {
+        Helpers.PLXAssertMsg(s_initialized, "the renderer creates textures between Initialize and Shutdown");
+        if (rgba8.Length != (long)width * height * 4)
+            throw new ArgumentException($"expected {width}x{height}x4 bytes, got {rgba8.Length}", nameof(rgba8));
+        var slice = new RHI_Texture_Slice();
+        slice.mips.Add(new RHI_Texture_Mip { bytes = rgba8 });
+        RHI_Texture_Flags flags = RHI_Texture_Flags.RHI_Texture_Srv | (greyscale ? RHI_Texture_Flags.RHI_Texture_Greyscale : 0);
+        var texture = new Texture(RHI_Texture_Type.Type2D, width, height, 1, 1, RHI_Format.R8G8B8A8_Unorm, flags, name,
+                                  new List<RHI_Texture_Slice> { slice });
+        s_user_textures.Add(texture);
+        return texture;
     }
 
     private static void CreateStandardTextures()
@@ -192,12 +238,19 @@ public static partial class Renderer
                 item?.Dispose();
             Array.Clear(items);
         }
+        foreach (Texture texture in s_user_textures)
+            texture.Dispose();
+        s_user_textures.Clear();
         DisposeAll(s_render_targets);
         DisposeAll(s_standard_textures);
         DisposeAll(s_samplers);
         DisposeAll(s_buffers);
         DisposeAll(s_shaders);
         DisposeAll(s_standard_meshes);
+        for (int i = 0; i < (int)Phalanx.Geometry.MeshType.Max; i++)
+            RenderView.SetStandardMesh((Phalanx.Geometry.MeshType)i, null);
+        s_standard_material = null;
+        RenderView.SetStandardMaterial(null);
         s_samplers_created = false;
         s_mip_bias         = float.MaxValue;
     }
