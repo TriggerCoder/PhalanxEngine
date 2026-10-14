@@ -182,6 +182,134 @@ internal sealed unsafe class RHI_CommandList : IDisposable
         RHI_Context.Vk.CmdCopyImageToBuffer(m_rhi_resource, image, layout, buffer, 1, in region);
     }
 
+    // ------------------------------------------------------------------------------------------------------------
+    // immediate execution (spartan: ImmediateExecutionBegin/End). one at a time per queue type; the list comes from
+    // the device queue of that type (spartan keeps separate immediate queues).
+    private static readonly object[] s_immediate_mutexes = { new(), new(), new(), new() };
+
+    public static RHI_CommandList ImmediateExecutionBegin(RHI_Queue_Type queue_type)
+    {
+        Monitor.Enter(s_immediate_mutexes[(int)queue_type]);
+        try
+        {
+            RHI_CommandList cmd_list = RHI_Device.GetQueue(queue_type).NextCommandList();
+            cmd_list.Begin();
+            cmd_list.m_immediate_queue_type = queue_type;
+            return cmd_list;
+        }
+        catch
+        {
+            Monitor.Exit(s_immediate_mutexes[(int)queue_type]);
+            throw;
+        }
+    }
+
+    public static RHI_Work ImmediateExecutionEnd(RHI_CommandList cmd_list, bool wait = true)
+    {
+        RHI_Queue_Type queue_type = cmd_list.m_immediate_queue_type ?? throw new InvalidOperationException($"{cmd_list.Name} is not an immediate list");
+        try
+        {
+            cmd_list.End();
+            RHI_Work work = cmd_list.Queue.Submit(cmd_list, null, null);
+            if (wait)
+                cmd_list.WaitForExecution();
+            return work;
+        }
+        finally
+        {
+            cmd_list.m_immediate_queue_type = null;
+            Monitor.Exit(s_immediate_mutexes[(int)queue_type]);
+        }
+    }
+
+    private RHI_Queue_Type? m_immediate_queue_type;
+
+    // ------------------------------------------------------------------------------------------------------------
+    // texture layout tracking (spartan: InsertBarrier(RHI_Barrier::image_layout(texture, layout, mip, range))).
+    // engine textures always end up in GENERAL; the tracker is per mip (all array layers share it) like spartan.
+
+    public void InsertBarrier(RHI_Texture texture, RHI_Image_Layout layout, uint mip_index = RHI_Definitions.rhi_all_mips, uint mip_range = 0)
+    {
+        if (m_state != RHI_CommandListState.Recording)
+            throw new InvalidOperationException($"{Name}: InsertBarrier while {m_state}");
+        _ = layout; // spartan: textures are parked in general regardless of the requested layout
+        const RHI_Image_Layout target_layout = RHI_Image_Layout.General;
+
+        bool mip_specified = mip_index != RHI_Definitions.rhi_all_mips;
+        uint index = mip_specified ? mip_index : 0;
+        uint range = mip_specified ? mip_range : texture.GetMipCount();
+        if (index + range > RHI_Definitions.rhi_max_mip_count || index + range > texture.GetMipCount() || range == 0)
+            throw new ArgumentOutOfRangeException(nameof(mip_index), $"{texture.Name}: mips {index}+{range}");
+
+        RHI_Image_Layout first = texture.GetLayout(index);
+        bool all_match_target = true, all_same_source = true;
+        for (uint i = index; i < index + range; i++)
+        {
+            if (texture.GetLayout(i) != target_layout) all_match_target = false;
+            if (texture.GetLayout(i) != first)         all_same_source  = false;
+        }
+        if (all_match_target)
+            return;
+
+        ImageAspectFlags aspect = texture.GetAspectMask();
+        Span<ImageMemoryBarrier2> barriers = stackalloc ImageMemoryBarrier2[(int)RHI_Definitions.rhi_max_mip_count];
+        int count = 0;
+        if (all_same_source)
+            barriers[count++] = CreateImageBarrier(first, target_layout, texture.GetRhiResource(), aspect, index, range);
+        else
+            for (uint i = index; i < index + range; i++)
+                if (texture.GetLayout(i) != target_layout)
+                    barriers[count++] = CreateImageBarrier(texture.GetLayout(i), target_layout, texture.GetRhiResource(), aspect, i, 1);
+
+        fixed (ImageMemoryBarrier2* p = barriers)
+        {
+            DependencyInfo dependency = new() { SType = StructureType.DependencyInfo, ImageMemoryBarrierCount = (uint)count, PImageMemoryBarriers = p };
+            RHI_Context.Vk.CmdPipelineBarrier2(m_rhi_resource, in dependency);
+        }
+        texture.SetLayoutDirect(index, range, target_layout);
+    }
+
+    // conservative stages/access like spartan's Auto scope (no shader stages exist yet, so all commands)
+    private static ImageMemoryBarrier2 CreateImageBarrier(RHI_Image_Layout layout_old, RHI_Image_Layout layout_new, Image image,
+                                                          ImageAspectFlags aspect, uint mip_index, uint mip_range) => new()
+    {
+        SType               = StructureType.ImageMemoryBarrier2,
+        SrcStageMask        = PipelineStageFlags2.AllCommandsBit,
+        SrcAccessMask       = layout_old == RHI_Image_Layout.Max ? AccessFlags2.None : AccessFlags2.MemoryWriteBit,
+        DstStageMask        = PipelineStageFlags2.AllCommandsBit,
+        DstAccessMask       = AccessFlags2.MemoryReadBit | AccessFlags2.MemoryWriteBit,
+        OldLayout           = ToVulkan(layout_old),
+        NewLayout           = ToVulkan(layout_new),
+        SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+        DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+        Image               = image,
+        SubresourceRange    = new ImageSubresourceRange(aspect, mip_index, mip_range, 0, Vk.RemainingArrayLayers)
+    };
+
+    // spartan: PrepareTextureForUpload -> every mip to general
+    public void PrepareTextureForUpload(RHI_Texture texture) => InsertBarrier(texture, RHI_Image_Layout.General);
+
+    // a full memory barrier, used around transfers until RHI_Barrier scopes are ported
+    public void InsertBarrierMemory(bool host_read = false)
+    {
+        MemoryBarrier2 barrier = new()
+        {
+            SType         = StructureType.MemoryBarrier2,
+            SrcStageMask  = PipelineStageFlags2.AllCommandsBit,
+            SrcAccessMask = AccessFlags2.MemoryWriteBit,
+            DstStageMask  = PipelineStageFlags2.AllCommandsBit | (host_read ? PipelineStageFlags2.HostBit : 0),
+            DstAccessMask = AccessFlags2.MemoryReadBit | AccessFlags2.MemoryWriteBit | (host_read ? AccessFlags2.HostReadBit : 0)
+        };
+        DependencyInfo dependency = new() { SType = StructureType.DependencyInfo, MemoryBarrierCount = 1, PMemoryBarriers = &barrier };
+        RHI_Context.Vk.CmdPipelineBarrier2(m_rhi_resource, in dependency);
+    }
+
+    public void CopyBuffer(Silk.NET.Vulkan.Buffer source, ulong source_offset, Silk.NET.Vulkan.Buffer destination, ulong destination_offset, ulong size)
+    {
+        BufferCopy region = new(source_offset, destination_offset, size);
+        RHI_Context.Vk.CmdCopyBuffer(m_rhi_resource, source, destination, 1, in region);
+    }
+
     public void Dispose()
     {
         lock (s_lists) s_lists.Remove(this);

@@ -36,6 +36,7 @@ internal static unsafe partial class RHI_Device
     public static ulong  PropertyMinStorageBufferOffsetAlignment { get; private set; }
     public static uint   PropertyMaxPushConstantSize { get; private set; }
     public static uint   PropertyMaxTexture2dDimension { get; private set; }
+    public static ulong  PropertyOptimalBufferCopyOffsetAlignment { get; private set; }
 
     // instance_extensions: what the window system needs (IVkSurface.GetRequiredExtensions), empty for headless
     public static void Initialize(IReadOnlyList<string> instance_extensions, bool validation)
@@ -500,6 +501,7 @@ internal static unsafe partial class RHI_Device
         PropertyMinStorageBufferOffsetAlignment = props.Limits.MinStorageBufferOffsetAlignment;
         PropertyMaxPushConstantSize             = props.Limits.MaxPushConstantsSize;
         PropertyMaxTexture2dDimension           = props.Limits.MaxImageDimension2D;
+        PropertyOptimalBufferCopyOffsetAlignment = System.Math.Max(4UL, props.Limits.OptimalBufferCopyOffsetAlignment); // 4: copy offsets must be multiples of 4 for any format
 
         // queues (queue types that share a family share the vulkan queue and its lock)
         var by_family = new Dictionary<uint, (Queue queue, object mutex)>();

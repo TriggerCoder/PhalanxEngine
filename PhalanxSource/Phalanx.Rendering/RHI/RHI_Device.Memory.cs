@@ -15,7 +15,23 @@ internal static unsafe partial class RHI_Device
     public static RHI_Allocation MemoryBufferCreate(out Buffer buffer, ulong size, BufferUsageFlags usage, RHI_Memory_Usage memory_usage,
                                                     ReadOnlySpan<byte> data_initial, string name)
     {
-        BufferCreateInfo info = new() { SType = StructureType.BufferCreateInfo, Size = size, Usage = usage, SharingMode = SharingMode.Exclusive };
+        // spartan: concurrent sharing across the graphics/compute/copy families so buffers need no ownership transfers
+        uint* families = stackalloc uint[3];
+        uint family_count = 0;
+        foreach (RHI_Queue_Type type in stackalloc[] { RHI_Queue_Type.Graphics, RHI_Queue_Type.Compute, RHI_Queue_Type.Copy })
+        {
+            uint family = GetQueueIndex(type);
+            bool seen = false;
+            for (uint i = 0; i < family_count; i++) seen |= families[i] == family;
+            if (!seen) families[family_count++] = family;
+        }
+        BufferCreateInfo info = new()
+        {
+            SType = StructureType.BufferCreateInfo, Size = size, Usage = usage,
+            SharingMode = family_count > 1 ? SharingMode.Concurrent : SharingMode.Exclusive,
+            QueueFamilyIndexCount = family_count > 1 ? family_count : 0,
+            PQueueFamilyIndices = family_count > 1 ? families : null
+        };
         Check(RHI_Context.Vk.CreateBuffer(RHI_Context.Device, in info, null, out buffer), "vkCreateBuffer");
         SetResourceName(buffer.Handle, RHI_Resource_Type.Buffer, name);
 
@@ -43,7 +59,70 @@ internal static unsafe partial class RHI_Device
         Allocator.Free(allocation);
     }
 
-    public static RHI_Allocation MemoryTextureCreate(out Image image, in ImageCreateInfo info, string name)
+    // spartan: get_image_usage_flags
+    public static ImageUsageFlags GetImageUsageFlags(RHI_Texture texture)
+    {
+        ImageUsageFlags flags = 0;
+        if (texture.IsSrv()) flags |= ImageUsageFlags.SampledBit;
+        if (texture.IsUav()) flags |= ImageUsageFlags.StorageBit;
+        if (texture.IsVrs()) flags |= ImageUsageFlags.FragmentShadingRateAttachmentBitKhr;
+        if (texture.IsDsv()) flags |= ImageUsageFlags.DepthStencilAttachmentBit;
+        if (texture.IsRtv()) flags |= ImageUsageFlags.ColorAttachmentBit;
+        // staged data or clear/blit participation needs the transfer bits
+        if (texture.HasData() || (texture.GetFlags() & RHI_Texture_Flags.RHI_Texture_ClearBlit) != 0)
+            flags |= ImageUsageFlags.TransferSrcBit | ImageUsageFlags.TransferDstBit;
+        return flags;
+    }
+
+    // spartan: get_format_tiling (optimal if the format supports the requested features optimally, else linear)
+    private static ImageTiling GetFormatTiling(RHI_Texture texture)
+    {
+        FormatFeatureFlags required = 0;
+        if (texture.IsSrv()) required |= FormatFeatureFlags.SampledImageBit;
+        if (texture.IsUav()) required |= FormatFeatureFlags.StorageImageBit;
+        if (texture.IsRtv()) required |= FormatFeatureFlags.ColorAttachmentBit;
+        if (texture.IsDsv()) required |= FormatFeatureFlags.DepthStencilAttachmentBit;
+        RHI_Context.Vk.GetPhysicalDeviceFormatProperties(RHI_Context.DevicePhysical, ToVulkan(texture.GetFormat()), out FormatProperties props);
+        if ((props.OptimalTilingFeatures & required) == required) return ImageTiling.Optimal;
+        if ((props.LinearTilingFeatures & required) == required) return ImageTiling.Linear;
+        throw new NotSupportedException($"{texture.Name}: {texture.GetFormat()} supports neither optimal nor linear tiling for {required}");
+    }
+
+    public const ulong TextureDedicatedThreshold = 16UL * 1024 * 1024; // spartan: textures >= 16 MB are dedicated
+
+    // spartan: MemoryTextureCreate(RHI_Texture*)
+    public static RHI_Allocation MemoryTextureCreate(RHI_Texture texture, out Image image)
+    {
+        bool is_3d   = texture.Type == RHI_Texture_Type.Type3D;
+        uint* families = stackalloc uint[2] { GetQueueIndex(RHI_Queue_Type.Graphics), GetQueueIndex(RHI_Queue_Type.Compute) };
+        bool concurrent = (texture.GetFlags() & RHI_Texture_Flags.RHI_Texture_ConcurrentSharing) != 0 && families[0] != families[1];
+        ImageCreateInfo info = new()
+        {
+            SType         = StructureType.ImageCreateInfo,
+            ImageType     = is_3d ? ImageType.Type3D : ImageType.Type2D,
+            Flags         = texture.Type == RHI_Texture_Type.TypeCube ? ImageCreateFlags.CreateCubeCompatibleBit : 0,
+            Usage         = GetImageUsageFlags(texture),
+            Extent        = new Extent3D(texture.GetWidth(), texture.GetHeight(), is_3d ? texture.GetDepth() : 1),
+            MipLevels     = texture.GetMipCount(),
+            ArrayLayers   = is_3d ? 1 : texture.GetDepth(),
+            Format        = ToVulkan(texture.GetFormat()),
+            Tiling        = GetFormatTiling(texture),
+            InitialLayout = ToVulkan(texture.GetLayout(0)),
+            Samples       = SampleCountFlags.Count1Bit,
+            SharingMode   = concurrent ? SharingMode.Concurrent : SharingMode.Exclusive,
+            QueueFamilyIndexCount = concurrent ? 2u : 0u,
+            PQueueFamilyIndices   = concurrent ? families : null
+        };
+
+        Result support = RHI_Context.Vk.GetPhysicalDeviceImageFormatProperties(RHI_Context.DevicePhysical, info.Format, info.ImageType, info.Tiling, info.Usage, info.Flags, out _);
+        if (support == Result.ErrorFormatNotSupported)
+            throw new NotSupportedException($"{texture.Name}: the GPU doesn't support {texture.GetFormat()} with the specified properties");
+
+        ulong texture_size = (ulong)texture.GetWidth() * texture.GetHeight() * texture.GetDepth() * texture.GetMipCount() * RHI_Definitions.rhi_format_to_bytes(texture.GetFormat());
+        return MemoryTextureCreate(out image, in info, texture.Name, texture_size >= TextureDedicatedThreshold);
+    }
+
+    public static RHI_Allocation MemoryTextureCreate(out Image image, in ImageCreateInfo info, string name, bool dedicated_force = false)
     {
         Check(RHI_Context.Vk.CreateImage(RHI_Context.Device, in info, null, out image), "vkCreateImage");
         SetResourceName(image.Handle, RHI_Resource_Type.Image, name);
@@ -54,7 +133,7 @@ internal static unsafe partial class RHI_Device
         RHI_Context.Vk.GetImageMemoryRequirements2(RHI_Context.Device, &req_info, &requirements);
 
         RHI_Memory_Kind kind = info.Tiling == ImageTiling.Optimal ? RHI_Memory_Kind.Optimal : RHI_Memory_Kind.Linear;
-        bool dedicated_required = dedicated.RequiresDedicatedAllocation || dedicated.PrefersDedicatedAllocation;
+        bool dedicated_required = dedicated_force || dedicated.RequiresDedicatedAllocation || dedicated.PrefersDedicatedAllocation;
         RHI_Allocation allocation = Allocator.Allocate(requirements.MemoryRequirements, RHI_Memory_Usage.GpuOnly, kind,
                                                        dedicated_required, image, default, name);
         Check(RHI_Context.Vk.BindImageMemory(RHI_Context.Device, image, allocation.Memory, allocation.Offset), "vkBindImageMemory");

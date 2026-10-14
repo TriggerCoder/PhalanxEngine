@@ -54,8 +54,14 @@ internal sealed unsafe class RHI_Queue : IDisposable
     // round robin, waits if the next list is still executing
     public RHI_CommandList NextCommandList()
     {
-        m_index = (m_index + 1) % (uint)m_cmd_lists.Length;
-        RHI_CommandList cmd_list = m_cmd_lists[m_index];
+        // skip lists still recording (the frame's list while an immediate execution runs)
+        RHI_CommandList cmd_list;
+        int tries = 0;
+        do
+        {
+            m_index = (m_index + 1) % (uint)m_cmd_lists.Length;
+            cmd_list = m_cmd_lists[m_index];
+        } while (cmd_list.State == RHI_CommandListState.Recording && ++tries < m_cmd_lists.Length);
         cmd_list.WaitForExecution();
         return cmd_list;
     }
