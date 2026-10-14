@@ -7,8 +7,8 @@
 //   that isn't in the geometry buffer yet is uploaded on first sight and released at Shutdown. No camera override.
 // - Materials upload colour, roughness, metalness, normal, height, the emissive scale, the texture flags and the
 //   Color/Normal/Emission/Packed texture indices (Renderer.cpp:2973-3122) into the deduped bindless texture table.
-//   No packing (the occlusion/roughness/metalness/height bits need a Packed texture), no alpha test bit, no terrain,
-//   vegetation, paint or clearcoat properties, no Material::SetIndex. Lights upload colour, intensity (the watt
+//   Cpu textures are uploaded on first use. No terrain, vegetation, paint or clearcoat properties, no
+//   Material::SetIndex. Lights upload colour, intensity (the watt
 //   approximation, Phalanx has no radiometric conversion yet), position, direction, range, angle and the type flags;
 //   no shadows, slices or ies.
 // - Material and light tables are rewritten only when their contents change, at offset 0 (spartan: the same).
@@ -39,13 +39,17 @@ public static partial class Renderer
     {
         public uint draw_index, material_index, index_count, index_offset, vertex_offset;
     }
-    private static readonly List<DrawCall> s_draw_calls = new();
+    // spartan's two halves: opaque draws first, alpha tested draws (Material::IsAlphaTested) after
+    // (Renderer_Passes_Geometry.cpp:1553 prepass, :1764 g-buffer)
+    private static readonly List<DrawCall> s_draw_calls       = new();
+    private static readonly List<DrawCall> s_draw_calls_alpha = new();
 
     // UpdateDrawCalls, the part that exists: every active render entity with gpu geometry, lod 0, one draw data
     // entry each (no culling, sorting, instancing or lod selection)
     private static void UpdateDrawCalls()
     {
         s_draw_calls.Clear();
+        s_draw_calls_alpha.Clear();
         foreach (Entity entity in Phalanx.World.World.GetEntitiesRenderables())
         {
             if (entity.GetComponent<Render>() is not Render render || render.GetMesh() is not Mesh mesh || !mesh.HasGpuBuffers())
@@ -53,11 +57,12 @@ public static partial class Renderer
             if (render.GetIndexCount() == 0)
                 continue;
             Matrix4x4 transform = entity.GetMatrix();
-            uint material_index = GetMaterialIndex(GetRenderMaterial(render));
-            uint draw_index     = WriteDrawData(transform, GetPreviousTransform(entity, transform), material_index, 0);
+            Material? material  = GetRenderMaterial(render);
+            uint material_index = GetMaterialIndex(material);
+            uint draw_index     = WriteDrawData(transform, entity.GetMatrixPrevious(), material_index, 0, render);
             if (draw_index == uint.MaxValue)
                 break;
-            s_draw_calls.Add(new DrawCall
+            (material != null && material.IsAlphaTested() ? s_draw_calls_alpha : s_draw_calls).Add(new DrawCall
             {
                 draw_index     = draw_index,
                 material_index = material_index,
@@ -66,22 +71,6 @@ public static partial class Renderer
                 vertex_offset  = render.GetVertexOffset(),
             });
         }
-    }
-    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Entity, StrongBox<Matrix4x4>> s_transform_drawn = new();
-
-    // the transform the entity was drawn with last frame, for velocity. Spartan reads Entity::GetMatrixPrevious
-    // (Entity.cpp:1015, an epoch committed per rendered frame); Phalanx's Entity has no transform history epoch
-    // yet, so the renderer remembers the last drawn transform per entity.
-    private static Matrix4x4 GetPreviousTransform(Entity entity, Matrix4x4 transform)
-    {
-        if (!s_transform_drawn.TryGetValue(entity, out StrongBox<Matrix4x4>? box))
-        {
-            s_transform_drawn.Add(entity, new StrongBox<Matrix4x4>(transform));
-            return transform;
-        }
-        Matrix4x4 previous = box.Value;
-        box.Value = transform;
-        return previous;
     }
 
     /// <summary>The camera the frame renders from (Renderer::GetCamera): the world's.</summary>
@@ -165,25 +154,59 @@ public static partial class Renderer
                format == RHI_Format.BC1_Unorm || format == RHI_Format.BC3_Unorm || format == RHI_Format.BC7_Unorm;
     }
 
-    // Renderer.cpp:3066-3093, the bits g_buffer.frag reads. Phalanx has no texture packing yet (Material::PrepareForGpu
-    // packs occlusion/roughness/metalness/height into the Packed texture): those four bits are set only when the
-    // material carries a Packed texture, so the shader never samples a packed slot that isn't there.
+    // Renderer.cpp:3066-3093, the bits g_buffer.frag reads (the terrain/vegetation/paint/road bits come with them)
     private static uint MaterialFlags(Material m)
     {
-        bool packed = m.HasTextureOfType(MaterialTextureType.Packed);
         uint flags = 0;
-        flags |= packed && m.HasTextureOfType(MaterialTextureType.Height)    ? 1u << 0 : 0u;
-        flags |= m.HasTextureOfType(MaterialTextureType.Normal)              ? 1u << 1 : 0u;
-        flags |= m.HasTextureOfType(MaterialTextureType.Color)               ? 1u << 2 : 0u;
-        flags |= packed && m.HasTextureOfType(MaterialTextureType.Roughness) ? 1u << 3 : 0u;
-        flags |= packed && m.HasTextureOfType(MaterialTextureType.Metalness) ? 1u << 4 : 0u;
-        flags |= m.HasTextureOfType(MaterialTextureType.AlphaMask)           ? 1u << 5 : 0u;
-        flags |= m.HasTextureOfType(MaterialTextureType.Emission)            ? 1u << 6 : 0u;
-        flags |= packed && m.HasTextureOfType(MaterialTextureType.Occlusion) ? 1u << 7 : 0u;
-        flags |= m.GetProperty(MaterialProperty.EmissiveFromAlbedo) != 0.0f  ? 1u << 15 : 0u;
-        flags |= ShouldDecodeAsSrgb(m.GetTexture(MaterialTextureType.Color) as RHI_Texture)    ? 1u << 17 : 0u;
-        flags |= ShouldDecodeAsSrgb(m.GetTexture(MaterialTextureType.Emission) as RHI_Texture) ? 1u << 18 : 0u;
+        flags |= m.HasTextureOfType(MaterialTextureType.Height)             ? 1u << 0 : 0u;
+        flags |= m.HasTextureOfType(MaterialTextureType.Normal)             ? 1u << 1 : 0u;
+        flags |= m.HasTextureOfType(MaterialTextureType.Color)              ? 1u << 2 : 0u;
+        flags |= m.HasTextureOfType(MaterialTextureType.Roughness)          ? 1u << 3 : 0u;
+        flags |= m.HasTextureOfType(MaterialTextureType.Metalness)          ? 1u << 4 : 0u;
+        flags |= m.HasTextureOfType(MaterialTextureType.AlphaMask)          ? 1u << 5 : 0u;
+        flags |= m.HasTextureOfType(MaterialTextureType.Emission)           ? 1u << 6 : 0u;
+        flags |= m.HasTextureOfType(MaterialTextureType.Occlusion)          ? 1u << 7 : 0u;
+        flags |= m.GetProperty(MaterialProperty.EmissiveFromAlbedo) != 0.0f ? 1u << 15 : 0u;
+        flags |= m.IsAlphaTested()                                          ? 1u << 16 : 0u;
+        flags |= ShouldDecodeAsSrgb(GetGpuTexture(m.GetTexture(MaterialTextureType.Color)))    ? 1u << 17 : 0u;
+        flags |= ShouldDecodeAsSrgb(GetGpuTexture(m.GetTexture(MaterialTextureType.Emission))) ? 1u << 18 : 0u;
         return flags;
+    }
+
+    // a material texture as a gpu texture: gpu ones as they are, cpu ones (importer, packing, CreateTexture) uploaded
+    // the first time they are bound and again when their pixels change (spartan: RHI_Texture::PrepareForGpu)
+    private static readonly Dictionary<Phalanx.World.RHI_Texture, (RHI_Texture gpu, ulong revision)> s_cpu_texture_uploads = new(ReferenceEqualityComparer.Instance);
+    internal static RHI_Texture? GetGpuTexture(Phalanx.World.RHI_Texture? texture)
+    {
+        if (texture == null)
+            return null;
+        if (texture is RHI_Texture gpu_texture)
+            return gpu_texture;
+        if (!texture.HasCpuData())
+            return null;
+        if (s_cpu_texture_uploads.TryGetValue(texture, out var upload))
+        {
+            if (upload.revision == texture.GetCpuRevision())
+                return upload.gpu;
+            RHI_Device.QueueWaitAll(); // the old copy may be in use by a frame in flight
+            upload.gpu.Dispose();
+        }
+        var slice = new RHI_Texture_Slice();
+        foreach (byte[] mip in texture.GetCpuMips())
+            slice.mips.Add(new RHI_Texture_Mip { bytes = mip });
+        var flags = RHI_Texture_Flags.RHI_Texture_Srv | (RHI_Texture_Flags)(uint)texture.GetCpuFlags(); // same bit values
+        string name = texture.GetTextureName().Length > 0 ? texture.GetTextureName() : "material_texture";
+        var gpu = new RHI_Texture(RHI_Texture_Type.Type2D, texture.GetWidth(), texture.GetHeight(), 1, (uint)texture.GetCpuMips().Count,
+                                  RHI_Format.R8G8B8A8_Unorm, flags, name, new List<RHI_Texture_Slice> { slice });
+        s_cpu_texture_uploads[texture] = (gpu, texture.GetCpuRevision());
+        return gpu;
+    }
+
+    private static void ReleaseCpuTextureUploads()
+    {
+        foreach (var upload in s_cpu_texture_uploads.Values)
+            upload.gpu.Dispose();
+        s_cpu_texture_uploads.Clear();
     }
 
     // Renderer.cpp:3098-3122, textures dedupe into the bindless table, unset slots keep index 0 (the flags gate them)
@@ -193,8 +216,8 @@ public static partial class Renderer
         {
             for (uint slot = 0; slot < Material.slots_per_texture; slot++)
             {
-                if (m.GetTexture(s_gpu_texture_types[type], slot) is not RHI_Texture texture)
-                    continue; // null, or a cpu-only texture the renderer can't bind
+                if (GetGpuTexture(m.GetTexture(s_gpu_texture_types[type], slot)) is not RHI_Texture texture)
+                    continue; // unset, or a size-only texture without pixels
                 if (!s_texture_indices.TryGetValue(texture, out uint index))
                 {
                     if (s_texture_indices.Count >= RHI_Definitions.rhi_max_array_size)
@@ -306,7 +329,7 @@ public static partial class Renderer
     }
 
     // WriteDrawData: the draw data buffer is partitioned into per-frame regions, each frame writes its own
-    internal static uint WriteDrawData(Matrix4x4 transform, Matrix4x4 transform_previous, uint material_index, uint is_transparent)
+    internal static uint WriteDrawData(Matrix4x4 transform, Matrix4x4 transform_previous, uint material_index, uint is_transparent, Render? render = null)
     {
         if (s_draw_data_count >= renderer_max_draw_calls)
         {
@@ -321,6 +344,15 @@ public static partial class Renderer
             material_index     = material_index,
             is_transparent     = is_transparent,
         };
+        // fill_uv_draw_fields_from_render (Renderer.cpp:451)
+        if (render != null)
+        {
+            entry.uv_tiling      = new Vector2(render.ResolveUvTilingX(), render.ResolveUvTilingY());
+            entry.uv_offset      = new Vector2(render.ResolveUvOffsetX(), render.ResolveUvOffsetY());
+            entry.uv_invert      = new Vector2(render.ResolveUvInvertX(), render.ResolveUvInvertY());
+            entry.uv_rotation    = render.ResolveUvRotation();
+            entry.uv_world_space = render.ResolveUvWorldSpace();
+        }
         uint global_index = s_frame_cb_ring_slot * renderer_max_draw_calls + index;
         RHI_Buffer buffer = GetBuffer(Renderer_Buffer.DrawData)!;
         buffer.UploadSubRegion(MemoryMarshal.AsBytes(new ReadOnlySpan<DrawData>(in entry)), (ulong)global_index * (ulong)System.Runtime.CompilerServices.Unsafe.SizeOf<DrawData>());
@@ -332,8 +364,8 @@ public static partial class Renderer
         foreach (Mesh mesh in s_uploaded_meshes)
             mesh.ReleaseGpuBuffers();
         s_uploaded_meshes.Clear();
-        s_transform_drawn.Clear();
         s_draw_calls.Clear();
+        s_draw_calls_alpha.Clear();
         s_materials.Clear();
         s_material_bytes_uploaded = s_light_bytes_uploaded = null;
         s_bound_vertex_id = s_bound_index_id = s_bound_instance_id = 0;

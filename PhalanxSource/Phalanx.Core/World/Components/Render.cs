@@ -128,4 +128,16 @@ public class Render : Component
     }
     public Material? GetMaterial() { return m_material; }
     public bool IsUsingDefaultMaterial() { return m_material_default; }
+
+    // the per-draw uv state (Render.h:170-240): spartan resolves a per-render MaterialOverride first and falls back to
+    // the material; Phalanx has no MaterialOverride yet, so these are the material's values (defaults with none)
+    private float ResolveUv(MaterialProperty property, float fallback) => m_material != null ? m_material.GetProperty(property) : fallback;
+    public float ResolveUvTilingX()    => ResolveUv(MaterialProperty.TextureTilingX, 1.0f);
+    public float ResolveUvTilingY()    => ResolveUv(MaterialProperty.TextureTilingY, 1.0f);
+    public float ResolveUvOffsetX()    => ResolveUv(MaterialProperty.TextureOffsetX, 0.0f);
+    public float ResolveUvOffsetY()    => ResolveUv(MaterialProperty.TextureOffsetY, 0.0f);
+    public float ResolveUvRotation()   => ResolveUv(MaterialProperty.TextureRotation, 0.0f);
+    public float ResolveUvInvertX()    => ResolveUv(MaterialProperty.TextureInvertX, 0.0f);
+    public float ResolveUvInvertY()    => ResolveUv(MaterialProperty.TextureInvertY, 0.0f);
+    public float ResolveUvWorldSpace() => ResolveUv(MaterialProperty.WorldSpaceUv, 0.0f);
 }

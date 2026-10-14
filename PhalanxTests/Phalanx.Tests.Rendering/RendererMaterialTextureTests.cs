@@ -178,28 +178,34 @@ public class RendererMaterialTextureTests
     }
 
     [SkippableFact]
-    public void The_packed_texture_scales_roughness_metalness_and_sets_occlusion()
+    public void Material_packing_feeds_occlusion_roughness_and_metalness_through_the_packed_texture()
     {
         Run(() =>
         {
             Material material = CreateScene();
             material.SetProperty(MaterialProperty.Roughness, 1.0f);
             material.SetProperty(MaterialProperty.Metalness, 1.0f);
-            Phalanx.World.RHI_Texture packed = Renderer.CreateTexture("packed", 4, 4, Solid(4, 51, 128, 255, 255), greyscale: true);
-            material.SetTexture(MaterialTextureType.Packed, packed, 0, false);
 
-            // a packed texture alone isn't sampled, the flags come from the source textures (Renderer.cpp:3069-3073)
+            // a packed texture set by hand isn't sampled, the flags come from the source textures (Renderer.cpp:3069-3073)
+            material.SetTexture(MaterialTextureType.Packed, Renderer.CreateTexture("packed", 4, 4, Solid(4, 51, 128, 0), greyscale: true), 0, false);
             Frame();
             Assert.Equal(new byte[] { 255, 255, 0, 255 }, Centre(Renderer_RenderTarget.gbuffer_material, 4));
 
-            material.SetTexture(MaterialTextureType.Occlusion, packed, 0, false);
-            material.SetTexture(MaterialTextureType.Roughness, packed, 0, false);
-            material.SetTexture(MaterialTextureType.Metalness, packed, 0, false);
+            // the sources: the material is prepared (Render.SetMaterial), so each SetTexture repacks (Material.cpp:1310)
+            material.SetTexture(MaterialTextureType.Occlusion, Renderer.CreateTexture("ao", 4, 4, Solid(4, 51, 51, 51), greyscale: true), 0, false);
+            material.SetTexture(MaterialTextureType.Roughness, Renderer.CreateTexture("rough", 8, 8, Solid(8, 128, 128, 128), greyscale: true), 0, false);
+            material.SetTexture(MaterialTextureType.Metalness, Renderer.CreateTexture("metal", 4, 4, Solid(4, 255, 255, 255), greyscale: true), 0, false);
+            Assert.Equal(8u, material.GetTexture(MaterialTextureType.Packed)!.GetWidth()); // the largest source
             Frame();
             byte[] m = Centre(Renderer_RenderTarget.gbuffer_material, 4);
-            Assert.InRange(m[0], 127, 129); // roughness 1 * g
-            Assert.Equal(255, m[1]);        // metalness 1 * b
-            Assert.InRange(m[3], 50, 52);   // occlusion r
+            Assert.InRange(m[0], 127, 129); // roughness 1 * packed.g
+            Assert.Equal(255, m[1]);        // metalness 1 * packed.b
+            Assert.InRange(m[3], 50, 52);   // occlusion packed.r
+
+            // a new source repacks and the renderer uploads the new packed texture
+            material.SetTexture(MaterialTextureType.Roughness, Renderer.CreateTexture("rough2", 8, 8, Solid(8, 64, 64, 64), greyscale: true), 0, false);
+            Frame();
+            Assert.InRange(Centre(Renderer_RenderTarget.gbuffer_material, 4)[0], 63, 65);
         });
     }
 

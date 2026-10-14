@@ -1,4 +1,5 @@
 using System.Numerics;
+using Phalanx.Assets.Import;
 using Phalanx.Geometry;
 using Phalanx.Rendering;
 using Phalanx.World;
@@ -7,13 +8,14 @@ using Silk.NET.Windowing;
 namespace Phalanx.Editor;
 
 // --renderer-cube: spartan's standard cube through the renderer (geometry buffer, g-buffer, resolve), seen by a
-// camera 3 m away and lit by a directional light; the cube turns so every face shows.
+// camera 3 m away and lit by a directional light; the cube turns so every face shows. --texture <file> loads an image
+// (ResourceCache / ImageImporter) as the cube's albedo.
 internal static class RendererCubeDemo
 {
     private sealed record Scene(Entity Cube);
 
     // the scene is World entities: a camera, a directional light and the standard cube with a Render component
-    private static Scene CreateScene()
+    private static Scene CreateScene(string? texture_path)
     {
         World.World.SetMainThread();
         World.World.ClearScene();
@@ -35,6 +37,18 @@ internal static class RendererCubeDemo
         material.SetProperty(MaterialProperty.ColorG, 0.55f);
         material.SetProperty(MaterialProperty.ColorB, 0.2f);
         material.SetProperty(MaterialProperty.ColorA, 1.0f);
+        if (texture_path != null)
+        {
+            if (ResourceCache.LoadTexture(texture_path) is RHI_Texture texture)
+            {
+                material.SetProperty(MaterialProperty.ColorR, 1.0f);
+                material.SetProperty(MaterialProperty.ColorG, 1.0f);
+                material.SetProperty(MaterialProperty.ColorB, 1.0f);
+                material.SetTexture(MaterialTextureType.Color, texture);
+            }
+            else
+                Console.Error.WriteLine($"renderer-cube: couldn't load '{texture_path}', using the plain colour");
+        }
 
         Entity cube = World.World.CreateEntity();
         cube.SetObjectName("cube");
@@ -54,12 +68,12 @@ internal static class RendererCubeDemo
         World.World.Tick();
     }
 
-    public static int Run(IWindow window, int frames, bool validation)
+    public static int Run(IWindow window, int frames, bool validation, string? texture_path = null)
     {
         Renderer.Initialize(window, validation);
         try
         {
-            Scene scene = CreateScene();
+            Scene scene = CreateScene(texture_path);
             var clock = System.Diagnostics.Stopwatch.StartNew();
             int presented = 0;
             while (!window.IsClosing && (frames <= 0 || presented < frames))
@@ -79,12 +93,12 @@ internal static class RendererCubeDemo
     }
 
     // no window: one frame at size x size, returns frame_output's centre pixel (rgba16f)
-    public static Vector4 RunOffscreen(uint size, bool validation)
+    public static Vector4 RunOffscreen(uint size, bool validation, string? texture_path = null)
     {
         Renderer.Initialize(size, size, validation);
         try
         {
-            Scene scene = CreateScene();
+            Scene scene = CreateScene(texture_path);
             Animate(scene, 0.0f);
             Renderer.Tick();
             return Renderer.ReadOutputPixel(size / 2, size / 2);

@@ -11,6 +11,7 @@ namespace Phalanx.Tests;
 // the type shares its name with the Phalanx.World namespace, which wins name lookup inside Phalanx.*
 using World = Phalanx.World.World;
 
+[Collection("World")] // the hierarchy tests set the main thread, so they share the World collection
 public class QuaternionTests
 {
     // scalar transcription of Spartan's SIMD Quaternion::Multiply (source/math/Quaternion.h):

@@ -13,4 +13,9 @@
     <ProjectReference Include="..\Phalanx.Rendering\Phalanx.Rendering.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- image decoding for ImageImporter (StbImageSharp: public domain or MIT, a C# port of stb_image) -->
+    <PackageReference Include="StbImageSharp" Version="2.30.15" />
+  </ItemGroup>
+
 </Project>

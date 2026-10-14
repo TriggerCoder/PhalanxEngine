@@ -22,17 +22,6 @@ public struct RHI_Viewport
     public static readonly RHI_Viewport Undefined = new RHI_Viewport(0, 0, 0, 0, 0, 0);
 }
 
-// TODO(port): source/rhi/RHI_Texture.h
-// The gpu-agnostic face of a texture: what Phalanx.Core reads (sizes) and holds (Material textures). Phalanx.Rendering's
-// RHI_Texture derives from it, so a Material holds the gpu texture like spartan's Material holds an RHI_Texture*.
-public class RHI_Texture
-{
-    private readonly uint m_width, m_height;
-    public RHI_Texture(uint width, uint height) { m_width = width; m_height = height; }
-    public virtual uint GetWidth() { return m_width; }
-    public virtual uint GetHeight() { return m_height; }
-}
-
 // TODO(port): source/rendering/Renderer_Definitions.h (only the targets referenced so far)
 // the render targets ported so far, in the relative order of spartan's Renderer_RenderTarget (Renderer_Definitions.h:505)
 // the targets created so far, in spartan's order (Renderer_Definitions.h:505); the ones in between come with their passes

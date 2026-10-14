@@ -115,9 +115,34 @@ public enum MaterialIor
 [Serializable]
 public class Material : IResource
 {
+    // Material.cpp:713 (Material::Material), the defaults set straight into the table: SetProperty would save
     public Material()
     {
         m_resource_type = ResourceType.Material;
+        void Default(MaterialProperty p, float v) => m_properties[(int)p] = v;
+        Default(MaterialProperty.ColorR,                1.0f);
+        Default(MaterialProperty.ColorG,                1.0f);
+        Default(MaterialProperty.ColorB,                1.0f);
+        Default(MaterialProperty.ColorA,                1.0f);
+        Default(MaterialProperty.Roughness,             1.0f);
+        Default(MaterialProperty.TextureTilingX,        1.0f);
+        Default(MaterialProperty.TextureTilingY,        1.0f);
+        Default(MaterialProperty.TextureInvertX,        0.0f);
+        Default(MaterialProperty.TextureInvertY,        0.0f);
+        Default(MaterialProperty.FlakeScale,            120.0f);
+        Default(MaterialProperty.PearlColorR,           1.0f);
+        Default(MaterialProperty.PearlColorG,           1.0f);
+        Default(MaterialProperty.PearlColorB,           1.0f);
+        Default(MaterialProperty.CoatTintR,             1.0f);
+        Default(MaterialProperty.CoatTintG,             1.0f);
+        Default(MaterialProperty.CoatTintB,             1.0f);
+        Default(MaterialProperty.Ior,                   1.52f); // EnumToIor(MaterialIor::Glass), Material.cpp:1695
+        Default(MaterialProperty.WorldHeight,           1.0f);
+        Default(MaterialProperty.CullMode,              (float)RHI_CullMode.Back);
+        Default(MaterialProperty.TerrainBlend,          1.0f);
+        Default(MaterialProperty.TerrainBlendSharpness, 0.5f);
+        Default(MaterialProperty.TerrainCoating,        0.0f);
+        Default(MaterialProperty.TerrainCoatingScale,   3.0f);
     }
 
     public const uint slots_per_texture = 4;
@@ -182,11 +207,50 @@ public class Material : IResource
             SaveToFile(GetResourceFilePath());
     }
 
-    // TODO(port): Material::PrepareForGpu (texture packing + gpu upload)
+    // Material::PrepareForGpu (Material.cpp:1470): packs every used slot, then the textures are ready for the renderer,
+    // which uploads cpu textures the first time it binds them (spartan uploads here, outside the lock).
+    // Deviations: synchronous, no compression, the cpu-only sources keep their data (nothing to release on the gpu).
     public void PrepareForGpu()
     {
-        m_needs_repack = false;
-        m_resource_state = ResourceState.PreparedForGpu;
+        lock (m_mutex)
+        {
+            // skip if already preparing or if no repack is needed for already-prepared materials
+            if (m_resource_state == ResourceState.PreparingForGpu)
+                return;
+            bool is_repack = m_resource_state == ResourceState.PreparedForGpu;
+            if (is_repack && !m_needs_repack)
+                return;
+            m_resource_state = ResourceState.PreparingForGpu;
+
+            for (uint slot = 0; slot < GetUsedSlotCount(); slot++)
+                MaterialTexturePacking.PackTextures(this, slot);
+
+            m_needs_repack   = false;
+            m_resource_state = ResourceState.PreparedForGpu;
+        }
+    }
+
+    // Material.cpp:1553
+    public uint GetUsedSlotCount()
+    {
+        uint max_used = 0;
+        for (uint type = 0; type < (uint)MaterialTextureType.Max; type++)
+            for (uint slot = 0; slot < slots_per_texture; slot++)
+                if (m_textures[type * slots_per_texture + slot] != null)
+                    max_used = System.Math.Max(max_used, slot + 1);
+        return System.Math.Max(max_used, 1u);
+    }
+
+    // Material.h:202-203, Material.cpp:1674
+    public bool IsTransparent() { return GetProperty(MaterialProperty.ColorA) < 1.0f; }
+    public bool IsAlphaTested()
+    {
+        // skids keep texture alpha for a multiply mask, clipping would punch holes in the ribbon
+        if (GetProperty(MaterialProperty.IsSkidMark) != 0.0f)
+            return false;
+        RHI_Texture? color = m_textures[(int)MaterialTextureType.Color * slots_per_texture];
+        bool albedo_mask = color != null && color.IsSemiTransparent();
+        return HasTextureOfType(MaterialTextureType.AlphaMask) || albedo_mask;
     }
 
     // textures

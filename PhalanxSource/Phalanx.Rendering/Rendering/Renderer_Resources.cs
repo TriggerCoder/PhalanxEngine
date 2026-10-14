@@ -26,7 +26,7 @@ using MaterialTextureType = Phalanx.World.MaterialTextureType;
 namespace Phalanx.Rendering;
 
 // spartan's shader names; resolve_c is Phalanx's stand-in for light, composition and tonemapping
-internal enum Renderer_Shader { gbuffer_v, gbuffer_p, resolve_c, blit_c, max }
+internal enum Renderer_Shader { gbuffer_v, gbuffer_p, depth_prepass_alpha_p, resolve_c, blit_c, max }
 
 public static partial class Renderer
 {
@@ -147,6 +147,7 @@ public static partial class Renderer
 
         Compile(Renderer_Shader.gbuffer_v, RHI_Shader_Type.Vertex,  "g_buffer.vert", RHI_Vertex_Type.PosUvNorTan);
         Compile(Renderer_Shader.gbuffer_p, RHI_Shader_Type.Pixel,   "g_buffer.frag");
+        Compile(Renderer_Shader.depth_prepass_alpha_p, RHI_Shader_Type.Pixel, "depth_prepass_alpha.frag");
         Compile(Renderer_Shader.resolve_c, RHI_Shader_Type.Compute, "resolve.comp");
         Compile(Renderer_Shader.blit_c,         RHI_Shader_Type.Compute, "blit.comp");
     }
@@ -188,27 +189,18 @@ public static partial class Renderer
         RenderView.SetStandardMaterial(material);
     }
 
-    // Textures the application creates from pixels, for materials. Spartan loads them through the resource cache and
-    // its texture importer (ResourceCache::Load<RHI_Texture>), which Phalanx doesn't have yet; the gpu texture type is
-    // internal, so this hands out the Phalanx.World.RHI_Texture base that Material.SetTexture takes. The renderer owns
-    // them, Shutdown destroys them.
-    private static readonly List<Texture> s_user_textures = new();
-
-    /// <summary>A 2D, single mip, rgba8 texture from <paramref name="rgba8"/> (width * height * 4 bytes) for
-    /// <see cref="Material.SetTexture"/>. Colour and emission textures in this format are decoded as sRGB unless
-    /// <paramref name="greyscale"/> (spartan: should_decode_as_srgb). Valid until <see cref="Shutdown"/>.</summary>
+    /// <summary>A cpu texture for <see cref="Phalanx.World.Material.SetTexture"/> from <paramref name="rgba8"/>
+    /// (width * height * 4 bytes) with its full mip chain; the renderer uploads it the first time a material binds it.
+    /// Colour and emission textures in this format are decoded as sRGB unless <paramref name="greyscale"/> (spartan:
+    /// should_decode_as_srgb); alpha below 255 marks it transparent, which alpha tests a colour map (spartan: the
+    /// importer's has_transparent_pixels). Files go through Phalanx.Assets' ImageImporter.</summary>
     public static Phalanx.World.RHI_Texture CreateTexture(string name, uint width, uint height, byte[] rgba8, bool greyscale = false)
     {
-        Helpers.PLXAssertMsg(s_initialized, "the renderer creates textures between Initialize and Shutdown");
         if (rgba8.Length != (long)width * height * 4)
             throw new ArgumentException($"expected {width}x{height}x4 bytes, got {rgba8.Length}", nameof(rgba8));
-        var slice = new RHI_Texture_Slice();
-        slice.mips.Add(new RHI_Texture_Mip { bytes = rgba8 });
-        RHI_Texture_Flags flags = RHI_Texture_Flags.RHI_Texture_Srv | (greyscale ? RHI_Texture_Flags.RHI_Texture_Greyscale : 0);
-        var texture = new Texture(RHI_Texture_Type.Type2D, width, height, 1, 1, RHI_Format.R8G8B8A8_Unorm, flags, name,
-                                  new List<RHI_Texture_Slice> { slice });
-        s_user_textures.Add(texture);
-        return texture;
+        var flags = (greyscale ? Phalanx.World.RHI_Texture_Cpu_Flags.Greyscale : 0) |
+                    (Phalanx.World.RHI_Texture.HasTransparentPixels(rgba8) ? Phalanx.World.RHI_Texture_Cpu_Flags.Transparent : 0);
+        return new Phalanx.World.RHI_Texture(name, width, height, Phalanx.World.RHI_Texture.GenerateMips(rgba8, width, height), flags);
     }
 
     private static void CreateStandardTextures()
@@ -238,9 +230,6 @@ public static partial class Renderer
                 item?.Dispose();
             Array.Clear(items);
         }
-        foreach (Texture texture in s_user_textures)
-            texture.Dispose();
-        s_user_textures.Clear();
         DisposeAll(s_render_targets);
         DisposeAll(s_standard_textures);
         DisposeAll(s_samplers);

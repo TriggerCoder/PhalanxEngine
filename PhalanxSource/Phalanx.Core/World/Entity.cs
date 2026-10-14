@@ -29,6 +29,13 @@ public class Entity : SpartanObject
     Matrix4x4 m_matrix_previous = Matrix4x4.Identity;
     Matrix4x4 m_matrix_local = Matrix4x4.Identity;
 
+    // transform history (Entity.cpp:69, :1014-1023, :1037-1045): the renderer commits an epoch per rendered frame,
+    // an entity captures its matrix once per epoch before the first change, GetMatrixPrevious is that capture
+    // while the epoch lasts and the current matrix after it
+    private static long s_transform_history_epoch = 1;
+    private long m_transform_history_epoch = 0;
+    private bool m_transform_updated = false;
+
     // computed during UpdateTransform() and cached for performance
     Vector3 m_forward = Vector3.Zero;
     Vector3 m_backward = Vector3.Zero;
@@ -83,11 +90,25 @@ public class Entity : SpartanObject
 
         m_matrix_local = Matrix4x4Extensions.CreateTRS(m_position_local, m_rotation_local, m_scale_local);
 
+        // capture once per rendered frame, before the first local or inherited change; repeated edits keep the last
+        // rendered pose. Deviation: an entity's first transform has no history (spartan captures the identity it was
+        // constructed with, a first frame velocity from the origin)
+        long history_epoch = Interlocked.Read(ref s_transform_history_epoch);
+        bool first_transform = !m_transform_updated;
+        if (m_transform_history_epoch != history_epoch)
+        {
+            m_matrix_previous = m_matrix;
+            m_transform_history_epoch = history_epoch;
+        }
+
         // compute world transform
         if (m_parent != null)
             m_matrix = m_matrix_local * m_parent.GetMatrix();
         else
             m_matrix = m_matrix_local;
+        if (first_transform)
+            m_matrix_previous = m_matrix;
+        m_transform_updated = true;
 
         // update directions directly from matrix (avoids unstable quaternion decomposition)
         // row-major layout: row 0 = right (X), row 1 = up (Y), row 2 = forward (Z)
@@ -129,8 +150,17 @@ public class Entity : SpartanObject
 
     public Matrix4x4 GetMatrix() { return m_matrix; }
     public Matrix4x4 GetLocalMatrix() { return m_matrix_local; }
-    public Matrix4x4 GetMatrixPrevious() { return m_matrix_previous; }
-    public void SetMatrixPrevious(Matrix4x4 matrix) { m_matrix_previous = matrix; }
+    public Matrix4x4 GetMatrixPrevious()
+    {
+        return m_transform_history_epoch == Interlocked.Read(ref s_transform_history_epoch) ? m_matrix_previous : m_matrix;
+    }
+    public void SetMatrixPrevious(Matrix4x4 matrix)
+    {
+        m_matrix_previous = matrix;
+        m_transform_history_epoch = Interlocked.Read(ref s_transform_history_epoch);
+    }
+    /// <summary>Ends the frame's transform history (spartan calls it after the opaque g-buffer, Renderer_Passes_Geometry.cpp:2022).</summary>
+    public static void CommitTransformHistory() { Interlocked.Increment(ref s_transform_history_epoch); }
     public float GetTimeSinceLastTransform() { return m_time_since_last_transform_sec; }
     public Component?[] GetAllComponents() { return m_components; }
 

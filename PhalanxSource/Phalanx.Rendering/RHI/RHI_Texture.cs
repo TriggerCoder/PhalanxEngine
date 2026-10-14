@@ -122,7 +122,8 @@ internal sealed unsafe class RHI_Texture : Phalanx.World.RHI_Texture, IDisposabl
     public bool IsRtv() => IsRt() && IsColorFormat();
     public bool HasPerMipViews() => (m_flags & RHI_Texture_Flags.RHI_Texture_PerMipViews) != 0;
     public bool IsGrayscale() => (m_flags & RHI_Texture_Flags.RHI_Texture_Greyscale) != 0;
-    public bool IsSemiTransparent() => (m_flags & RHI_Texture_Flags.RHI_Texture_Transparent) != 0;
+    public override bool IsSemiTransparent() => (m_flags & RHI_Texture_Flags.RHI_Texture_Transparent) != 0;
+    public override bool IsGreyscaleCpu() => IsGrayscale();
 
     public static bool IsDepthFormat(RHI_Format f) => f == RHI_Format.D16_Unorm || f == RHI_Format.D32_Float || f == RHI_Format.D32_Float_S8X24_Uint;
     public static bool IsStencilFormat(RHI_Format f) => f == RHI_Format.D32_Float_S8X24_Uint;

@@ -59,6 +59,12 @@ public static partial class Renderer
     /// <summary>
     /// Creates the device on <paramref name="window"/> (initialized here if needed), its swapchain and the renderer's
     /// resources. The output resolution is the window's, the render resolution 1920x1080 like spartan.
+    /// Spartan does not derive the render resolution from the window or display: Renderer::Initialize sets the output
+    /// to Window::GetWidthInPixels/GetHeightInPixels and the render to a fixed 1920x1080 (Renderer.cpp:604-607 @ 4c07baa,
+    /// :674-677 upstream 67a6e8b, "lower than output so taau works well"); only a saved settings file
+    /// (Settings.cpp:384-408) or the editor's render options change it. With a window smaller than 1080p (or not 16:9)
+    /// the render target is larger than (or a different aspect from) the output and TAAU downsamples; that is spartan's
+    /// behaviour and is kept.
     /// </summary>
     public static void Initialize(IWindow window, bool validation = false)
     {

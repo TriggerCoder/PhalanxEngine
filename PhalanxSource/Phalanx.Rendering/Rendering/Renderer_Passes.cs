@@ -4,17 +4,20 @@
 // Renderer_Passes_Geometry.cpp (Pass_GBuffer), Pass_Blit is a port of Renderer_Passes_Post.cpp:590-619.
 // Pass_Resolve is not in spartan: it shades the g-buffer into frame_render, standing in for the light, composition
 // and post process passes until they are ported.
-// Pass_Depth_Prepass ports the opaque half of Renderer_Passes_Geometry.cpp:1463, then the g-buffer shades only the
-// prepass survivors with an equal depth test (ReadEqual, the state spartan's alpha half uses at :1764).
+// Pass_Depth_Prepass ports both halves of Renderer_Passes_Geometry.cpp:1463: opaque draws without a pixel shader,
+// then alpha tested draws with depth_prepass_alpha (discard below the alpha threshold), depth loaded, cull None
+// (:1553-1570). The g-buffer shades only the prepass survivors with an equal depth test (ReadEqual, the state
+// spartan's alpha half uses at :1764), its alpha half loads the colour targets and culls None like spartan's.
 // Deviations: spartan's opaque indirect g-buffer keeps GreaterEqual (:1695) because its prepass and g-buffer run
 // different mesh shaders that are not bit identical; Phalanx's prepass runs the g-buffer's own vertex shader module
 // (spartan: a separate depth_prepass_v) with an invariant gl_Position, so the depths match by construction and the
 // equal test is safe. The prepass culls back faces (spartan: cull None, its triangles are culled on the gpu before).
-// No alpha-tested half, previous depth copy or hi-z yet; no gpu-driven indirect path, culling or lods; frame_render goes to
+// No previous depth copy or hi-z yet; no gpu-driven indirect path, culling or lods; frame_render goes to
 // frame_output through Pass_Blit; the passes have no gpu timing (no profiler yet), they are markers.
 using Phalanx.Geometry;
 using System.Numerics;
 using Phalanx.Rendering.RHI;
+using Entity = Phalanx.World.Entity;
 using RenderTarget = Phalanx.World.Renderer_RenderTarget;
 
 namespace Phalanx.Rendering;
@@ -42,11 +45,13 @@ public static partial class Renderer
 
         Pass_Depth_Prepass(cmd);
         Pass_GBuffer(cmd);
+        Entity.CommitTransformHistory(); // Renderer_Passes_Geometry.cpp:2022, after the opaque g-buffer
         Pass_Resolve(cmd, rt_render);
         Pass_Blit(cmd, rt_render, rt_output);
     }
 
-    // Renderer_Passes_Geometry.cpp:1463, the opaque half: no pixel shader, ReadWrite depth, clears the depth (reverse-z 0)
+    // Renderer_Passes_Geometry.cpp:1463: the opaque half has no pixel shader, ReadWrite depth and clears the depth
+    // (reverse-z 0); the alpha half (:1553-1570) discards with depth_prepass_alpha, loads the depth and culls None
     private static void Pass_Depth_Prepass(RHI_CommandList cmd)
     {
         cmd.BeginMarker("depth_prepass");
@@ -61,21 +66,37 @@ public static partial class Renderer
             cmd.SetPipelineState(pso);
             cmd.SetCullMode(RHI_CullMode.Back);
             SetStandardResources(cmd);
-            DrawOpaque(cmd);
+            Draw(cmd, s_draw_calls);
+
+            if (s_draw_calls_alpha.Count > 0)
+            {
+                var pso_alpha = new RHI_PipelineState { name = "depth_prepass_alpha" };
+                pso_alpha.SetShader(RHI_Shader_Type.Vertex, GetShader(Renderer_Shader.gbuffer_v)!);
+                pso_alpha.SetShader(RHI_Shader_Type.Pixel, GetShader(Renderer_Shader.depth_prepass_alpha_p)!);
+                pso_alpha.rasterizer_state            = pso.rasterizer_state;
+                pso_alpha.depth_stencil_state         = pso.depth_stencil_state;
+                pso_alpha.blend_state                 = pso.blend_state;
+                pso_alpha.render_target_depth_texture = pso.render_target_depth_texture;
+                pso_alpha.clear_depth                 = RHI_Definitions.rhi_depth_load;
+                cmd.SetPipelineState(pso_alpha);
+                cmd.SetCullMode(RHI_CullMode.None);
+                SetStandardResources(cmd);
+                Draw(cmd, s_draw_calls_alpha);
+            }
         }
         cmd.EndMarker();
     }
 
-    // the cpu draw loop both passes share, over the frame's draw calls
-    private static void DrawOpaque(RHI_CommandList cmd)
+    // the cpu draw loop both passes share
+    private static void Draw(RHI_CommandList cmd, List<DrawCall> draw_calls)
     {
         RHI_Buffer? vertices = GeometryBuffer.GetVertexBuffer();
         RHI_Buffer? indices  = GeometryBuffer.GetIndexBuffer();
-        if (vertices == null || indices == null || s_draw_calls.Count == 0)
+        if (vertices == null || indices == null || draw_calls.Count == 0)
             return;
         cmd.SetBufferVertex(vertices);
         cmd.SetBufferIndex(indices);
-        foreach (DrawCall draw_call in s_draw_calls)
+        foreach (DrawCall draw_call in draw_calls)
         {
             var pass = new PassBufferData { draw_index = draw_call.draw_index, material_index = draw_call.material_index };
             cmd.PushConstants(pass);
@@ -114,8 +135,19 @@ public static partial class Renderer
             cmd.SetPipelineState(pso);
             cmd.SetCullMode(RHI_CullMode.Back);
             SetStandardResources(cmd);
+            Draw(cmd, s_draw_calls);
 
-            DrawOpaque(cmd);
+            // the alpha half loads what the opaque half wrote and shades the cutout survivors
+            if (s_draw_calls_alpha.Count > 0)
+            {
+                for (int i = 0; i < 5; i++)
+                    pso.clear_color[i] = RHI_Definitions.rhi_color_load;
+                pso.name = "g_buffer_alpha";
+                cmd.SetPipelineState(pso);
+                cmd.SetCullMode(RHI_CullMode.None);
+                SetStandardResources(cmd);
+                Draw(cmd, s_draw_calls_alpha);
+            }
         }
         cmd.EndMarker();
     }
