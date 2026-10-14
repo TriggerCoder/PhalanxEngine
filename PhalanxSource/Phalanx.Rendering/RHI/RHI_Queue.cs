@@ -1,6 +1,5 @@
 // Port of SpartanEngine source/rhi/RHI_Queue.h + vulkan/Vulkan_Queue.cpp @ 4c07baa (first slice).
 // Differences: each command list has its own fence (spartan tracks submissions with timeline semaphores);
-// the timeline path is kept in Submit for later steps.
 using Silk.NET.Vulkan;
 using Semaphore = Silk.NET.Vulkan.Semaphore;
 using static Phalanx.Rendering.RHI.RHI_Implementation;

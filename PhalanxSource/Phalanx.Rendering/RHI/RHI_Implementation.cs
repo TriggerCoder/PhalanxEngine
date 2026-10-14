@@ -81,6 +81,51 @@ internal static class RHI_Implementation
         ImageLayout.Undefined
     };
 
+    // indexed by RHI_Filter
+    public static readonly Filter[] VulkanFilter = { Filter.Nearest, Filter.Linear };
+
+    // indexed by RHI_Filter
+    public static readonly SamplerMipmapMode[] VulkanMipmapMode = { SamplerMipmapMode.Nearest, SamplerMipmapMode.Linear };
+
+    // indexed by RHI_Sampler_Address_Mode
+    public static readonly SamplerAddressMode[] VulkanSamplerAddressMode =
+    {
+        SamplerAddressMode.Repeat,
+        SamplerAddressMode.MirroredRepeat,
+        SamplerAddressMode.ClampToEdge,
+        SamplerAddressMode.ClampToBorder,
+        SamplerAddressMode.MirrorClampToEdge
+    };
+
+    // indexed by RHI_Comparison_Function
+    public static readonly CompareOp[] VulkanCompareOperator =
+    {
+        CompareOp.Never,
+        CompareOp.Less,
+        CompareOp.Equal,
+        CompareOp.LessOrEqual,
+        CompareOp.Greater,
+        CompareOp.NotEqual,
+        CompareOp.GreaterOrEqual,
+        CompareOp.Always
+    };
+
+    // spartan: the stage mask -> vk loop in Vulkan_DescriptorSetLayout.cpp:85-121 / Vulkan_Pipeline.cpp
+    public static ShaderStageFlags ToVulkanStageFlags(uint stage_mask)
+    {
+        ShaderStageFlags flags = 0;
+        if ((stage_mask & RHI_Definitions.rhi_shader_type_to_mask(RHI_Shader_Type.Vertex))        != 0) flags |= ShaderStageFlags.VertexBit;
+        if ((stage_mask & RHI_Definitions.rhi_shader_type_to_mask(RHI_Shader_Type.Hull))          != 0) flags |= ShaderStageFlags.TessellationControlBit;
+        if ((stage_mask & RHI_Definitions.rhi_shader_type_to_mask(RHI_Shader_Type.Domain))        != 0) flags |= ShaderStageFlags.TessellationEvaluationBit;
+        if ((stage_mask & RHI_Definitions.rhi_shader_type_to_mask(RHI_Shader_Type.Pixel))         != 0) flags |= ShaderStageFlags.FragmentBit;
+        if ((stage_mask & RHI_Definitions.rhi_shader_type_to_mask(RHI_Shader_Type.Compute))       != 0) flags |= ShaderStageFlags.ComputeBit;
+        if ((stage_mask & RHI_Definitions.rhi_shader_type_to_mask(RHI_Shader_Type.RayGeneration)) != 0) flags |= ShaderStageFlags.RaygenBitKhr;
+        if ((stage_mask & RHI_Definitions.rhi_shader_type_to_mask(RHI_Shader_Type.RayMiss))       != 0) flags |= ShaderStageFlags.MissBitKhr;
+        if ((stage_mask & RHI_Definitions.rhi_shader_type_to_mask(RHI_Shader_Type.RayHit))        != 0) flags |= ShaderStageFlags.ClosestHitBitKhr;
+        if ((stage_mask & RHI_Definitions.rhi_shader_type_to_mask(RHI_Shader_Type.MeshShader))    != 0) flags |= ShaderStageFlags.MeshBitExt;
+        return flags;
+    }
+
     // indexed by RHI_Resource_Type
     public static readonly ObjectType[] VulkanObjectType =
     {

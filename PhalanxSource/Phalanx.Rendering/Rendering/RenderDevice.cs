@@ -4,9 +4,8 @@ using Silk.NET.Windowing;
 namespace Phalanx.Rendering;
 
 /// <summary>
-/// The public face of the internal Vulkan RHI (architecture §2: "a minimal RenderDevice (opaque handles)").
-/// Step 1 only exposes what the clear sample and the tests need; the renderer takes this over in later steps.
-/// No Vulkan types or unsafe code here: those stay in Rendering/RHI (rule 10).
+/// The public face of the internal Vulkan RHI
+/// No Vulkan types or unsafe code here: those stay in Rendering/RHI
 /// </summary>
 public static class RenderDevice
 {

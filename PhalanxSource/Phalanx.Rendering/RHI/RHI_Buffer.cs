@@ -1,6 +1,6 @@
-// Port of SpartanEngine source/rhi/RHI_Buffer.h + vulkan/Vulkan_Buffer.cpp @ 4c07baa (step 3).
+// Port of SpartanEngine source/rhi/RHI_Buffer.h + vulkan/Vulkan_Buffer.cpp @ 4c07baa
 // Deviations: no ShaderBindingTable (ray tracing step), no device address / acceleration structure usage yet,
-// no descriptor-cache invalidation (descriptors arrive in step 5). Non-mappable Storage buffers with initial data
+// Non-mappable Storage buffers with initial data
 // are staged like vertex/index buffers (spartan asserts mappable there). Vertex/index/instance buffers also get
 // TRANSFER_SRC so they can be copied or read back.
 using Silk.NET.Vulkan;
@@ -114,6 +114,7 @@ internal sealed unsafe class RHI_Buffer : IDisposable
     {
         if (m_rhi_resource.Handle == 0)
             return;
+        RHI_Device.DescriptorSetInvalidateReferencingResource(this); // spartan Vulkan_Buffer.cpp:27
         RHI_Device.DeletionQueueAdd(RHI_Resource_Type.Buffer, m_rhi_resource.Handle, m_allocation);
         m_rhi_resource = default;
         m_allocation   = null;

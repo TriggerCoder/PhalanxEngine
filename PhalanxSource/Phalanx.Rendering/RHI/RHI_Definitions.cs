@@ -1,6 +1,5 @@
 // Port of SpartanEngine source/rhi/RHI_Definitions.h @ 4c07baa (the enums the first RHI slice needs).
-// Step 3 adds the RHI_Definitions constants/format helpers.
-// TODO(port): the remaining enums (blend, depth-stencil, rasterizer, shader stage, descriptor, barrier types).
+// TODO(port): the remaining enums (blend, depth-stencil, rasterizer, barrier types).
 namespace Phalanx.Rendering.RHI;
 
 internal enum RHI_PhysicalDevice_Type
@@ -101,6 +100,83 @@ internal enum RHI_Resource_Type
     Max
 }
 
+// order matters: it indexes RHI_Implementation.VulkanFilter / VulkanMipmapMode
+internal enum RHI_Filter
+{
+    Nearest,
+    Linear,
+}
+
+// order matters: it indexes RHI_Implementation.VulkanSamplerAddressMode
+internal enum RHI_Sampler_Address_Mode
+{
+    Wrap,
+    Mirror,
+    Clamp,
+    ClampToZero,
+    MirrorOnce,
+}
+
+// order matters: it indexes RHI_Implementation.VulkanCompareOperator
+internal enum RHI_Comparison_Function
+{
+    Never,
+    Less,
+    Equal,
+    LessEqual,
+    Greater,
+    NotEqual,
+    GreaterEqual,
+    Always
+}
+
+internal enum RHI_Descriptor_Type
+{
+    Image,
+    TextureStorage,
+    PushConstantBuffer,
+    ConstantBuffer,
+    StructuredBuffer,
+    AccelerationStructure,
+    // phalanx (GLSL): reflected so a misuse is reported, spartan's dxc path never produces them. Only valid as bindless
+    // (the sampler arrays in sets 6/7), a per-pass sampler or sampler2D is rejected by RHI_DescriptorSetLayout.
+    Sampler,
+    CombinedImageSampler,
+    Max
+}
+
+// spartan's names (Pixel = fragment, MeshShader = mesh)
+internal enum RHI_Shader_Type
+{
+    Vertex,
+    Hull,
+    Domain,
+    Pixel,
+    Compute,
+    RayGeneration,
+    RayMiss,
+    RayHit,
+    MeshShader,
+    Max
+}
+
+// must match the order of appearance in common_resources.glsl (spartan: common_resources_bindless.hlsl),
+// the vulkan set index of each is (int)value + 1, set 0 is the per-pass set
+internal enum RHI_Device_Bindless_Resource
+{
+    MaterialTextures,
+    MaterialParameters,
+    LightParameters,
+    Aabbs,
+    DrawData,
+    SamplersComparison,
+    SamplersRegular,
+    GeometryVertices,
+    GeometryIndices,
+    Instances,
+    Max
+}
+
 internal enum RHI_SyncPrimitive_Type
 {
     Fence,
@@ -122,6 +198,35 @@ internal static class RHI_Definitions
     public const uint rhi_max_mip_count           = 13;
     public const uint rhi_all_mips                = uint.MaxValue;
     public const int  rhi_max_render_target_count = 8;
+
+    // shader register slot shifts (spartan: required to produce spirv from hlsl; phalanx's glsl uses the shifted
+    // bindings directly, see common_resources.glsl). 000-099 is the push constant buffer range.
+    public const uint rhi_shader_register_shift_u   = 100;
+    public const uint rhi_shader_register_shift_b   = 200;
+    public const uint rhi_shader_register_shift_t   = 300;
+    public const uint rhi_shader_register_shift_s   = 400;
+    public const uint rhi_max_resource_slots        = 96;
+    public const uint rhi_max_dynamic_offsets       = 16; // structured + constant buffers per pipeline
+    public const uint rhi_max_array_size            = 16384;
+    public const uint rhi_max_sampler_count         = 9;
+    public const uint rhi_max_descriptor_set_count  = 512;
+    public const uint rhi_dynamic_offset_empty      = uint.MaxValue;
+
+    public static ulong rhi_hash_combine(ulong a, ulong b) => unchecked(a * 31 + b);
+
+    public static uint rhi_shader_type_to_mask(RHI_Shader_Type type) => type switch
+    {
+        RHI_Shader_Type.Vertex        => 1u << 0,
+        RHI_Shader_Type.Hull          => 1u << 1,
+        RHI_Shader_Type.Domain        => 1u << 2,
+        RHI_Shader_Type.Pixel         => 1u << 3,
+        RHI_Shader_Type.Compute       => 1u << 4,
+        RHI_Shader_Type.RayGeneration => 1u << 5,
+        RHI_Shader_Type.RayMiss       => 1u << 6,
+        RHI_Shader_Type.RayHit        => 1u << 7,
+        RHI_Shader_Type.MeshShader    => 1u << 8,
+        _                             => 0
+    };
 
     public static uint rhi_format_to_bits_per_channel(RHI_Format format) => format switch
     {

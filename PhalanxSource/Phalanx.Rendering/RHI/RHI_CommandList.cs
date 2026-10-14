@@ -98,6 +98,11 @@ internal sealed unsafe partial class RHI_CommandList : IDisposable
             throw new InvalidOperationException($"{Name}: Begin while {m_state}");
 
         Check(RHI_Context.Vk.ResetCommandBuffer(m_rhi_resource, 0), "vkResetCommandBuffer");
+        m_pipeline = null; // bound state does not survive a reset
+        m_descriptor_layout_current = null;
+        m_dynamic_descriptor_set  = default;
+        m_dynamic_pipeline_layout = default;
+        m_dynamic_offset_count    = 0;
         CommandBufferBeginInfo info = new() { SType = StructureType.CommandBufferBeginInfo, Flags = CommandBufferUsageFlags.OneTimeSubmitBit };
         Check(RHI_Context.Vk.BeginCommandBuffer(m_rhi_resource, in info), "vkBeginCommandBuffer");
         m_state = RHI_CommandListState.Recording;

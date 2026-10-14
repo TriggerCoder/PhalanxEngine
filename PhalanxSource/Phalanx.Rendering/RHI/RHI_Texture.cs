@@ -1,4 +1,4 @@
-// Port of SpartanEngine source/rhi/RHI_Texture.h/.cpp + vulkan/Vulkan_Texture.cpp @ 4c07baa (step 3: creation,
+// Port of SpartanEngine source/rhi/RHI_Texture.h/.cpp + vulkan/Vulkan_Texture.cpp @ 4c07baa (creation,
 // staging upload of all slices/mips, layout tracking, views). Not ported yet: file load/save, compression,
 // streaming (RHI_TextureStreaming), UpdateRegion, descriptor-cache invalidation, debug breadcrumbs.
 // Synced with upstream 67a6e8b: pixel sizes come from rhi_format_to_bytes, 3D textures stage one slice with mip
@@ -386,6 +386,8 @@ internal sealed unsafe class RHI_Texture : IDisposable
 
     public void RHI_DestroyResource()
     {
+        if (m_rhi_resource.Handle != 0)
+            RHI_Device.DescriptorSetInvalidateReferencingResource(this); // spartan Vulkan_Texture.cpp:552
         static void Queue(ref ImageView view)
         {
             if (view.Handle == 0) return;

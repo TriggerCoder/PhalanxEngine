@@ -1,4 +1,4 @@
-// Port of SpartanEngine RHI_Device::Memory* (Vulkan_Device.cpp, VMA there) @ 4c07baa (step 2), on RHI_Allocator.
+// Port of SpartanEngine RHI_Device::Memory* (Vulkan_Device.cpp, VMA there) @ 4c07baa, on RHI_Allocator.
 // Buffers are linear, optimal-tiling images are optimal (separate blocks, so bufferImageGranularity never applies).
 using Silk.NET.Vulkan;
 using Buffer = Silk.NET.Vulkan.Buffer;

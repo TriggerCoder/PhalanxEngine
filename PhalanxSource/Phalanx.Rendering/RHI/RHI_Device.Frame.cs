@@ -83,6 +83,7 @@ internal static unsafe partial class RHI_Device
         s_frame_work[s_frame_index % FramesInFlight].Wait();
         FrameCpuWaitMs = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
 
+        DescriptorSetTick(s_frame_index); // spartan RHI_Device::Tick: descriptor frame + eviction, then the deletion queue
         DeletionQueueParse();
         Array.Clear(s_frame_lists);
         s_frame_wait = default;
@@ -223,6 +224,7 @@ internal static unsafe partial class RHI_Device
             case RHI_Resource_Type.Fence:       vk.DestroyFence(device, new Fence(entry.Resource), null); break;
             case RHI_Resource_Type.Pipeline:    vk.DestroyPipeline(device, new Pipeline(entry.Resource), null); break;
             case RHI_Resource_Type.PipelineLayout: vk.DestroyPipelineLayout(device, new PipelineLayout(entry.Resource), null); break;
+            case RHI_Resource_Type.DescriptorSet: ReleaseDescriptorSet(entry.Resource); break;
             case RHI_Resource_Type.DescriptorSetLayout: vk.DestroyDescriptorSetLayout(device, new DescriptorSetLayout(entry.Resource), null); break;
             case RHI_Resource_Type.QueryPool:   vk.DestroyQueryPool(device, new QueryPool(entry.Resource), null); break;
             case RHI_Resource_Type.Shader:      vk.DestroyShaderModule(device, new ShaderModule(entry.Resource), null); break;

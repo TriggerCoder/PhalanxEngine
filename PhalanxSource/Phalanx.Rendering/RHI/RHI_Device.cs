@@ -2,8 +2,9 @@
 // instance (+ optional validation through VK_EXT_debug_utils), physical device registration/selection,
 // queue family detection (dedicated compute/copy when available), logical device with Vulkan 1.3
 // dynamic rendering + synchronization2 and 1.2 timeline semaphores, queues, object naming.
-// Frames + deletion queue: RHI_Device.Frame.cs, memory: RHI_Device.Memory.cs (step 2).
-// TODO(port): descriptors + bindless, pipeline cache, staging pool, compute frame lists,
+// Frames + deletion queue: RHI_Device.Frame.cs, memory: RHI_Device.Memory.cs
+// descriptor features + robustness2 here, pools/sets/bindless in RHI_Device.Descriptors.cs.
+// TODO(port): pipeline cache, staging pool, compute frame lists,
 // vendor technologies (FSR/XeSS/DLSS), ray tracing, mesh shaders, VRS, calibrated timestamps.
 using System.Runtime.InteropServices;
 using Silk.NET.Core;
@@ -35,6 +36,8 @@ internal static unsafe partial class RHI_Device
     public static ulong  PropertyMinUniformBufferOffsetAlignment { get; private set; }
     public static ulong  PropertyMinStorageBufferOffsetAlignment { get; private set; }
     public static uint   PropertyMaxPushConstantSize { get; private set; }
+    public static float  PropertyMaxSamplerAnisotropy { get; private set; }
+    public static uint   PropertyMaxBoundDescriptorSets { get; private set; }
     public static uint   PropertyMaxTexture2dDimension { get; private set; }
     public static ulong  PropertyOptimalBufferCopyOffsetAlignment { get; private set; }
 
@@ -134,6 +137,9 @@ internal static unsafe partial class RHI_Device
         // memory + frame state
         s_allocator = new RHI_Allocator_Custom();
         FrameReset();
+
+        // descriptor pools + bindless sets
+        DescriptorsInitialize();
     }
 
     // true when a loader exists and some device reports vulkan 1.3; creates and destroys a bare instance
@@ -181,6 +187,7 @@ internal static unsafe partial class RHI_Device
             vk.DeviceWaitIdle(RHI_Context.Device);
             DestroySwapChain();
             DeletionQueueFlush();
+            DescriptorsDestroy();
             FrameReset();
             s_allocator?.Dispose();
             s_allocator = null;
@@ -444,6 +451,21 @@ internal static unsafe partial class RHI_Device
         throw new NotSupportedException("No Vulkan 1.3 device with graphics, compute and transfer queues was found");
     }
 
+    public static string? MissingRequiredFeature(in PhysicalDeviceVulkan12Features f, in PhysicalDeviceFeatures core)
+    {
+        if (!f.DescriptorIndexing)                            return "descriptorIndexing";
+        if (!f.DescriptorBindingVariableDescriptorCount)      return "descriptorBindingVariableDescriptorCount";
+        if (!f.DescriptorBindingSampledImageUpdateAfterBind)  return "descriptorBindingSampledImageUpdateAfterBind";
+        if (!f.DescriptorBindingStorageBufferUpdateAfterBind) return "descriptorBindingStorageBufferUpdateAfterBind";
+        if (!f.DescriptorBindingPartiallyBound)               return "descriptorBindingPartiallyBound";
+        if (!f.RuntimeDescriptorArray)                        return "runtimeDescriptorArray";
+        if (!f.ShaderSampledImageArrayNonUniformIndexing)     return "shaderSampledImageArrayNonUniformIndexing";
+        if (!f.ShaderStorageBufferArrayNonUniformIndexing)    return "shaderStorageBufferArrayNonUniformIndexing";
+        if (!core.SamplerAnisotropy)                          return "samplerAnisotropy";
+        if (!core.ShaderFloat64)                              return "shaderFloat64";
+        return null;
+    }
+
     private static void CreateDevice()
     {
         Vk vk = RHI_Context.Vk;
@@ -457,13 +479,45 @@ internal static unsafe partial class RHI_Device
         if (!support_1_3.DynamicRendering || !support_1_3.Synchronization2 || !support_1_2.TimelineSemaphore)
             throw new NotSupportedException("The device lacks dynamic rendering, synchronization2 or timeline semaphores");
 
+        // spartan Vulkan_Device.cpp:1758-1787 (descriptors), :1699 (anisotropy), :1754 (float64), all asserted there
+        string? missing = MissingRequiredFeature(support_1_2, support.Features);
+        if (missing != null)
+            throw new NotSupportedException($"The device lacks {missing}");
+
         PhysicalDeviceVulkan13Features features_1_3 = new() { SType = StructureType.PhysicalDeviceVulkan13Features, DynamicRendering = true, Synchronization2 = true };
-        PhysicalDeviceVulkan12Features features_1_2 = new() { SType = StructureType.PhysicalDeviceVulkan12Features, PNext = &features_1_3, TimelineSemaphore = true };
+        PhysicalDeviceVulkan12Features features_1_2 = new()
+        {
+            SType = StructureType.PhysicalDeviceVulkan12Features, PNext = &features_1_3, TimelineSemaphore = true,
+            DescriptorIndexing                            = true,
+            DescriptorBindingVariableDescriptorCount      = true,
+            DescriptorBindingSampledImageUpdateAfterBind  = true,
+            DescriptorBindingStorageBufferUpdateAfterBind = true,
+            DescriptorBindingPartiallyBound               = true,
+            RuntimeDescriptorArray                        = true,
+            ShaderSampledImageArrayNonUniformIndexing     = true,
+            ShaderStorageBufferArrayNonUniformIndexing    = true,
+        };
         PhysicalDeviceFeatures2 features = new() { SType = StructureType.PhysicalDeviceFeatures2, PNext = &features_1_2 };
+        features.Features.SamplerAnisotropy = true;
+        features.Features.ShaderFloat64     = true; // shared_buffers.glsl (FrameBufferData) declares doubles
 
         // extensions
         HashSet<string> available = GetDeviceExtensions(physical);
         var extensions = new List<string>();
+
+        // robustness2 nullDescriptor: unbound per-pass slots (spartan asserts it, Vulkan_Device.cpp:1785)
+        string? robustness2 = available.Contains("VK_KHR_robustness2") ? "VK_KHR_robustness2" : available.Contains("VK_EXT_robustness2") ? "VK_EXT_robustness2" : null;
+        PhysicalDeviceRobustness2FeaturesEXT support_robustness = new() { SType = StructureType.PhysicalDeviceRobustness2FeaturesExt };
+        if (robustness2 != null)
+        {
+            PhysicalDeviceFeatures2 query = new() { SType = StructureType.PhysicalDeviceFeatures2, PNext = &support_robustness };
+            vk.GetPhysicalDeviceFeatures2(physical, &query);
+        }
+        if (robustness2 == null || !support_robustness.NullDescriptor)
+            throw new NotSupportedException("The device lacks robustness2 nullDescriptor");
+        extensions.Add(robustness2);
+        PhysicalDeviceRobustness2FeaturesEXT features_robustness = new() { SType = StructureType.PhysicalDeviceRobustness2FeaturesExt, NullDescriptor = true };
+        features_1_3.PNext = &features_robustness;
         if (RHI_Context.Surface != null && available.Contains(KhrSwapchain.ExtensionName))
             extensions.Add(KhrSwapchain.ExtensionName);
         // spartan Vulkan_Device.cpp:274 (memory budget) and the hdr metadata used by the swapchain, both optional
@@ -512,6 +566,10 @@ internal static unsafe partial class RHI_Device
         PropertyMinUniformBufferOffsetAlignment = props.Limits.MinUniformBufferOffsetAlignment;
         PropertyMinStorageBufferOffsetAlignment = props.Limits.MinStorageBufferOffsetAlignment;
         PropertyMaxPushConstantSize             = props.Limits.MaxPushConstantsSize;
+        PropertyMaxSamplerAnisotropy            = props.Limits.MaxSamplerAnisotropy;
+        PropertyMaxBoundDescriptorSets          = props.Limits.MaxBoundDescriptorSets;
+        // the stages the device runs with the features phalanx enables (no tessellation/mesh/ray tracing yet)
+        SupportedStageFlags = ShaderStageFlags.VertexBit | ShaderStageFlags.FragmentBit | ShaderStageFlags.ComputeBit;
         PropertyMaxTexture2dDimension           = props.Limits.MaxImageDimension2D;
         PropertyOptimalBufferCopyOffsetAlignment = System.Math.Max(4UL, props.Limits.OptimalBufferCopyOffsetAlignment); // 4: copy offsets must be multiples of 4 for any format
 

@@ -2,7 +2,7 @@ using System.IO.Hashing;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
-using Silk.NET.Shaderc;
+using Phalanx.Rendering.RHI;
 using Phalanx.Geometry;
 using Phalanx.World;
 using Phalanx.Input;
@@ -26,21 +26,26 @@ public sealed class ShaderCompileException : Exception
 /// <para>The expanded source plus defines, stage, entry point and options are hashed (XxHash64) to key a disk cache of
 /// .spv files, so any change to an included header invalidates dependents automatically.</para>
 /// </summary>
-public sealed unsafe class ShaderCompiler : IDisposable
+public sealed class ShaderCompiler : IDisposable
 {
     private static readonly Regex IncludeRe = new(@"^\s*#\s*include\s+[""<]([^"">]+)["">]", RegexOptions.Compiled);
     private static readonly Regex VersionRe = new(@"^\s*#\s*version\b", RegexOptions.Compiled);
-    private const uint CacheFormatVersion = 1;
+    private const uint CacheFormatVersion = 2; // 2: preserve bindings
 
-    private readonly Shaderc api;
-    private readonly Compiler* compiler;
-    private readonly object compiler_lock = new(); // a shaderc compiler object is not thread safe
+    private readonly RHI_ShaderCompilerNative native; // shaderc interop, the unsafe part lives in Rendering/RHI (rule 10)
     private readonly string shader_root;
     private readonly string? cache_directory;
     private bool disposed;
 
     public bool Optimize { get; set; } = true;
     public bool DebugInfo { get; set; }
+
+    /// <summary>
+    /// Keep OpName (resource names) in optimized SPIR-V without the rest of the debug info. The optimizer strips names,
+    /// which the RHI reflection needs (spartan binds some resources by name, DXC keeps them). Implemented as a debug-info
+    /// compile followed by stripping OpSource/OpString/OpLine. The RHI's shader compiler turns it on.
+    /// </summary>
+    public bool KeepNames { get; set; }
 
     /// <param name="shaderRoot">folder with the .glsl/.vert/.frag/.comp files, defaults to &lt;app&gt;/shaders</param>
     /// <param name="cacheDirectory">where compiled .spv files are cached, null disables the disk cache</param>
@@ -50,10 +55,7 @@ public sealed unsafe class ShaderCompiler : IDisposable
         cache_directory = cacheDirectory;
         if (cache_directory != null)
             Directory.CreateDirectory(cache_directory);
-        api = Shaderc.GetApi();
-        compiler = api.CompilerInitialize();
-        if (compiler == null)
-            throw new InvalidOperationException("shaderc_compiler_initialize failed");
+        native = new RHI_ShaderCompilerNative();
     }
 
     public string ShaderRoot => shader_root;
@@ -167,53 +169,20 @@ public sealed unsafe class ShaderCompiler : IDisposable
         Add(entryPoint);
         Add(Optimize ? "O" : "O0");
         Add(DebugInfo ? "g" : "");
+        Add(KeepNames ? "n" : "");
         foreach (var kv in defines) { Add(kv.Key); Add(kv.Value); }
         return Convert.ToHexString(h.GetCurrentHash()).ToLowerInvariant();
     }
 
-    private uint[] CompileNative(string source, ShaderStage stage, string name, string entryPoint, KeyValuePair<string, string>[] defines)
-    {
-        lock (compiler_lock)
-        {
-            CompileOptions* options = api.CompileOptionsInitialize();
-            CompilationResult* result = null;
-            try
-            {
-                api.CompileOptionsSetTargetEnv(options, TargetEnv.Vulkan, (uint)EnvVersion.Vulkan13);
-                api.CompileOptionsSetTargetSpirv(options, SpirvVersion.Shaderc16);
-                api.CompileOptionsSetOptimizationLevel(options, Optimize ? OptimizationLevel.Performance : OptimizationLevel.Zero);
-                if (DebugInfo)
-                    api.CompileOptionsSetGenerateDebugInfo(options);
-                foreach (var kv in defines)
-                    api.CompileOptionsAddMacroDefinition(options, kv.Key, (nuint)Encoding.UTF8.GetByteCount(kv.Key), kv.Value, (nuint)Encoding.UTF8.GetByteCount(kv.Value));
-
-                ShaderKind kind = stage switch
-                {
-                    ShaderStage.Vertex   => ShaderKind.VertexShader,
-                    ShaderStage.Fragment => ShaderKind.FragmentShader,
-                    _                    => ShaderKind.ComputeShader,
-                };
-                result = api.CompileIntoSpv(compiler, source, (nuint)Encoding.UTF8.GetByteCount(source), kind, name, entryPoint, options);
-                if (api.ResultGetCompilationStatus(result) != CompilationStatus.Success)
-                    throw new ShaderCompileException($"{name}: {api.ResultGetErrorMessageS(result)}");
-
-                int length = (int)api.ResultGetLength(result);
-                var bytes = new ReadOnlySpan<byte>(api.ResultGetBytes(result), length);
-                return MemoryMarshal.Cast<byte, uint>(bytes).ToArray();
-            }
-            finally
-            {
-                if (result != null) api.ResultRelease(result);
-                api.CompileOptionsRelease(options);
-            }
-        }
-    }
+    private uint[] CompileNative(string source, ShaderStage stage, string name, string entryPoint, KeyValuePair<string, string>[] defines) =>
+        KeepNames && !DebugInfo
+            ? RHI_SpirvReflection.StripSourceDebugInfo(native.Compile(source, stage, name, entryPoint, defines, Optimize, debugInfo: true))
+            : native.Compile(source, stage, name, entryPoint, defines, Optimize, DebugInfo);
 
     public void Dispose()
     {
         if (disposed) return;
         disposed = true;
-        api.CompilerRelease(compiler);
-        api.Dispose();
+        native.Dispose();
     }
 }

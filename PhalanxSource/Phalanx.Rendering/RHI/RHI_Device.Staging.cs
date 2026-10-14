@@ -1,4 +1,4 @@
-// Port of SpartanEngine RHI_Device::StagingBufferAcquire/Release + Vulkan_Texture.cpp staging_budget @ 4c07baa (step 3).
+// Port of SpartanEngine RHI_Device::StagingBufferAcquire/Release + Vulkan_Texture.cpp staging_budget @ 4c07baa
 // Spartan creates and destroys a host-visible buffer per acquire (its "pool" is a no-op on top of VMA's pools); ours
 // does the same on top of RHI_Allocator, whose Upload blocks are the pool (sub-allocated, one spare block kept).
 using Silk.NET.Vulkan;
