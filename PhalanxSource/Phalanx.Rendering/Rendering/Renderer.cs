@@ -27,7 +27,7 @@ public struct PersistentLine
     public Color color_to;
     public double expire_time;
 }
-public static class Renderer
+public static partial class Renderer
 {
     // phalanx: the state lives in Phalanx.Core (RenderView) so World components can read it without referencing Rendering
     public static RHI_Viewport GetViewport() { return RenderView.GetViewport(); }

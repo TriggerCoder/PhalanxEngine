@@ -212,4 +212,47 @@ public class RhiShaderReflectionTests
         };
         Assert.Equal($"0x{expected:X16}", $"0x{hash:X16}");
     }
+
+    [Fact]
+    public void Common_resources_declare_the_bindless_tables_in_their_spartan_sets()
+    {
+        const string src = """
+            #version 460
+            #extension GL_GOOGLE_include_directive : require
+            #include "common_resources.glsl"
+            layout(local_size_x = 1) in;
+            void main()
+            {
+                vec4 v = material_parameters[0].color + vec4(float(light_parameters[0].flags))
+                       + texelFetch(material_textures[nonuniformEXT(buffer_pass.material_index)], ivec2(0), 0)
+                       + vec4(geometry_vertices[0].position_x, float(geometry_indices[0]), geometry_instances[0].pos_x, aabbs[0].min.x)
+                       + draw_data[0].transform[0];
+                imageStore(tex_uav, ivec2(0), v);
+            }
+            """;
+        var d = RHI_SpirvReflection.Reflect(compiler.CompileSource(src, ShaderStage.Compute, "bindless_tables.comp"), RHI_Shader_Type.Compute);
+        void Expect(uint space, uint slot, RHI_Descriptor_Type type)
+        {
+            RHI_Descriptor x = Assert.Single(d, x => x.space == space && x.slot == slot);
+            Assert.Equal(type, x.type);
+            Assert.True(x.used);
+            Assert.True(x.IsBindless());
+        }
+        // (space, binding) = (RHI_Device_Bindless_Resource + 1, register + shift), the layout RHI_Device creates
+        foreach (var (resource, type) in new[]
+        {
+            (RHI_Device_Bindless_Resource.MaterialTextures,   RHI_Descriptor_Type.Image),
+            (RHI_Device_Bindless_Resource.MaterialParameters, RHI_Descriptor_Type.StructuredBuffer),
+            (RHI_Device_Bindless_Resource.LightParameters,    RHI_Descriptor_Type.StructuredBuffer),
+            (RHI_Device_Bindless_Resource.Aabbs,              RHI_Descriptor_Type.StructuredBuffer),
+            (RHI_Device_Bindless_Resource.DrawData,           RHI_Descriptor_Type.StructuredBuffer),
+            (RHI_Device_Bindless_Resource.GeometryVertices,   RHI_Descriptor_Type.StructuredBuffer),
+            (RHI_Device_Bindless_Resource.GeometryIndices,    RHI_Descriptor_Type.StructuredBuffer),
+            (RHI_Device_Bindless_Resource.Instances,          RHI_Descriptor_Type.StructuredBuffer),
+        })
+            Expect((uint)resource + 1, RHI_Device.BindlessConfigs[(int)resource].Binding, type);
+
+        // not accessed here: declared (bindings are preserved) but unused, so they don't widen the pipeline layout
+        Assert.All(d.Where(x => x.space is 6 or 7), x => Assert.False(x.used));
+    }
 }

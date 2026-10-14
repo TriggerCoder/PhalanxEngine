@@ -48,7 +48,8 @@ public class RHI_Texture
 }
 
 // TODO(port): source/rendering/Renderer_Definitions.h (only the targets referenced so far)
-public enum Renderer_RenderTarget { shadow_atlas, max }
+// the render targets ported so far, in the relative order of spartan's Renderer_RenderTarget (Renderer_Definitions.h:505)
+public enum Renderer_RenderTarget { frame_render, frame_output, shadow_atlas, max }
 
 // TODO(port): source/rhi/RHI_Definitions.h (RHI_CullMode)
 public enum RHI_CullMode { Back, Front, None, Max }

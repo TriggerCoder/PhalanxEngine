@@ -12,9 +12,9 @@
 //   RHI_DescriptorSetLayout's own hash includes them).
 // - Bindless stage flags are the stages the device can run (SupportedStageFlags) instead of every stage incl. mesh,
 //   task and ray tracing bits whose extensions may not be enabled.
-// - Unset bindless material textures get a null descriptor instead of the checkerboard (no standard textures yet).
+// - Unset bindless material textures get a null descriptor while the renderer has no checkerboard (RHI used alone).
 // - maxBoundDescriptorSets: spartan always binds set 0 + the 10 bindless sets (11). The spec minimum is 4, llvmpipe
-//   reports 8. GetPipelineSetCount trims the trailing bindless sets a pipeline doesn't use when the device has < 11.
+//   reports 8. GetPipelineSetCount trims the trailing bindless sets a pipeline doesn't access when the device has < 11.
 using Silk.NET.Vulkan;
 using static Phalanx.Rendering.RHI.RHI_Definitions;
 using static Phalanx.Rendering.RHI.RHI_Implementation;
@@ -312,7 +312,8 @@ internal static unsafe partial class RHI_Device
     // bindless
 
     // how many sets a pipeline layout gets: set 0 + every bindless set (spartan), or up to the highest bindless set the
-    // shaders reference when the device can't bind 11 sets
+    // shaders access when the device can't bind 11 sets. Bindings are preserved, so common_resources.glsl declares every
+    // bindless set in every module; only the accessed ones (used) count, the others are never statically used
     public static uint GetPipelineSetCount(IEnumerable<RHI_Shader> shaders) =>
         GetPipelineSetCount(shaders.SelectMany(s => s.GetDescriptors().ToArray()), PropertyMaxBoundDescriptorSets);
 
@@ -323,7 +324,8 @@ internal static unsafe partial class RHI_Device
             return all;
         uint highest = 0;
         foreach (RHI_Descriptor d in descriptors)
-            highest = System.Math.Max(highest, d.space);
+            if (d.used)
+                highest = System.Math.Max(highest, d.space);
         if (highest >= max_bound_descriptor_sets)
             throw new NotSupportedException($"the shaders use descriptor set {highest}, the device binds at most {max_bound_descriptor_sets} sets");
         return highest + 1;
@@ -388,10 +390,12 @@ internal static unsafe partial class RHI_Device
         const int index = (int)RHI_Device_Bindless_Resource.MaterialTextures;
         BindlessConfig cfg = BindlessConfigs[index];
         var image_infos = new DescriptorImageInfo[cfg.Count]; // 16384 * 24 bytes, too large for the stack
+        // unset slots get the renderer's checkerboard (spartan :1482), a null descriptor before the renderer made it
+        ImageView fallback = Renderer.GetStandardTexture(Renderer_StandardTexture.Checkerboard)?.GetRhiSrv() ?? default;
         for (int i = 0; i < cfg.Count; i++)
         {
             RHI_Texture? tex = i < textures.Length ? textures[i] : null;
-            ImageView srv = tex != null ? tex.GetRhiSrv() : default; // deviation: null descriptor, spartan: checkerboard
+            ImageView srv = tex != null ? tex.GetRhiSrv() : fallback;
             image_infos[i] = new DescriptorImageInfo { ImageView = srv, ImageLayout = ImageLayout.General };
         }
         fixed (DescriptorImageInfo* p_infos = image_infos)

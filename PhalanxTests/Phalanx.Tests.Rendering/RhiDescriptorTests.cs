@@ -115,6 +115,11 @@ public class RhiDescriptorLogicTests
         Assert.Equal(1u, RHI_Device.GetPipelineSetCount(new[] { D("tex", RHI_Descriptor_Type.Image, 307) }, 8));
         var uses_instances = new[] { D("geometry_instances", RHI_Descriptor_Type.StructuredBuffer, 323, space: 10) };
         Assert.Throws<NotSupportedException>(() => RHI_Device.GetPipelineSetCount(uses_instances, 8));
+
+        // declared but never accessed (common_resources.glsl declares every bindless set): not counted
+        var unused_instances = D("geometry_instances", RHI_Descriptor_Type.StructuredBuffer, 323, space: 10);
+        unused_instances.used = false;
+        Assert.Equal(8u, RHI_Device.GetPipelineSetCount(new[] { uses_samplers[0], uses_samplers[1], unused_instances }, 8));
     }
 
     [Fact]

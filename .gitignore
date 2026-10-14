@@ -3,3 +3,9 @@ obj/
 *.user
 .vs/
 Shaders/bin/
+
+# Log output (log.txt, log_previous.txt, headless variants)
+log.txt
+log_previous.txt
+log_headless.txt
+log_headless_previous.txt

@@ -14,7 +14,9 @@ public static class RenderView
     private static RHI_Viewport s_viewport = new RHI_Viewport(0, 0, 1280, 720);
     public static RHI_Viewport GetViewport() { return s_viewport; }
     public static void SetViewport(float width, float height) { s_viewport = new RHI_Viewport(0, 0, width, height); }
-    // TODO(port): real render targets are created in Renderer_Resources.cpp
-    private static readonly RHI_Texture[] s_render_targets = { new RHI_Texture(8192, 8192) };
+    // the sizes of the render targets; Phalanx.Rendering's renderer publishes the ones it creates (CreateRenderTargets),
+    // the defaults are spartan's render resolution and the shadow atlas size
+    private static readonly RHI_Texture[] s_render_targets = { new RHI_Texture(1920, 1080), new RHI_Texture(1280, 720), new RHI_Texture(8192, 8192) };
     public static RHI_Texture GetRenderTarget(Renderer_RenderTarget rt) { return s_render_targets[(int)rt]; }
+    public static void SetRenderTargetSize(Renderer_RenderTarget rt, uint width, uint height) { s_render_targets[(int)rt] = new RHI_Texture(width, height); }
 }

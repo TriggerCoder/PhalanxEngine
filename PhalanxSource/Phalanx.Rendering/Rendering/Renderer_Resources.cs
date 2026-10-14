@@ -1,0 +1,158 @@
+// Port of the resource half of SpartanEngine source/rendering/Renderer_Resources.cpp @ 4c07baa, the slice the first
+// pass needs: CreateBuffers (:79, the frame constant buffer and the bindless material, light and geometry info
+// tables), CreateSamplers (:406), CreateRenderTargets (:631, frame_render and frame_output), CreateShaders (:1114, the
+// shaders ported so far), CreateStandardTextures (:1422, the noise, checkerboard, black and white textures),
+// DestroyResources (:1616) and the getters (:1775).
+// Deviations:
+// - The standard textures are generated (StandardTextures.cs) instead of loaded from data/textures.
+//   The gizmo icons and the night sky textures are not created yet (no editor, no sky pass); GetStandardTexture
+//   returns null for them.
+// - CreateSamplers keeps spartan's static "created once" guard as a field reset by DestroyResources, so a renderer
+//   initialized again after Shutdown gets its samplers back (spartan's function-local statics never reset).
+// - frame_output has one mip (spartan: a full chain with per-mip views, for the bloom and auto exposure
+//   downsamples); RHI_Texture_ConcurrentSharing is dropped, there is no async compute yet.
+using Phalanx.Rendering.RHI;
+using static Phalanx.Rendering.Renderer_Definitions;
+using RenderTarget = Phalanx.World.Renderer_RenderTarget;
+using RenderView   = Phalanx.World.RenderView;
+using Texture      = Phalanx.Rendering.RHI.RHI_Texture;
+
+namespace Phalanx.Rendering;
+
+internal enum Renderer_Shader { test_pattern_v, test_pattern_p, blit_c, max }
+
+public static partial class Renderer
+{
+    private static readonly Texture?[] s_render_targets     = new Texture?[(int)RenderTarget.max];
+    private static readonly Texture?[] s_standard_textures  = new Texture?[(int)Renderer_StandardTexture.Max];
+    private static readonly RHI_Sampler?[] s_samplers       = new RHI_Sampler?[(int)Renderer_Sampler.Max];
+    private static readonly RHI_Buffer?[] s_buffers         = new RHI_Buffer?[(int)Renderer_Buffer.Max];
+    private static readonly RHI_Shader?[] s_shaders         = new RHI_Shader?[(int)Renderer_Shader.max];
+    private static bool s_samplers_created;
+    private static float s_mip_bias = float.MaxValue;
+    private static bool s_bindless_samplers_dirty;
+
+    internal static Texture? GetRenderTargetTexture(RenderTarget type) => s_render_targets[(int)type];
+    internal static Texture? GetStandardTexture(Renderer_StandardTexture type) => s_standard_textures[(int)type];
+    internal static RHI_Sampler? GetSampler(Renderer_Sampler type) => s_samplers[(int)type];
+    internal static RHI_Buffer? GetBuffer(Renderer_Buffer type) => s_buffers[(int)type];
+    internal static RHI_Shader? GetShader(Renderer_Shader type) => s_shaders[(int)type];
+
+    private static void CreateBuffers()
+    {
+        uint element_count = renderer_draw_data_buffer_count;
+        static RHI_Buffer Storage<T>(uint count, string name) where T : unmanaged =>
+            new(RHI_Buffer_Type.Storage, (ulong)System.Runtime.CompilerServices.Unsafe.SizeOf<T>(), count, ReadOnlySpan<byte>.Empty, mappable: true, name);
+
+        s_buffers[(int)Renderer_Buffer.ConstantFrame] = new RHI_Buffer(RHI_Buffer_Type.Constant, (ulong)System.Runtime.CompilerServices.Unsafe.SizeOf<FrameBufferData>(),
+                                                                      element_count, ReadOnlySpan<byte>.Empty, mappable: true, "frame");
+        s_buffers[(int)Renderer_Buffer.MaterialParameters] = Storage<MaterialParameters>(RHI_Definitions.rhi_max_array_size, "materials");
+        s_buffers[(int)Renderer_Buffer.LightParameters]    = Storage<LightParameters>(RHI_Definitions.rhi_max_array_size, "lights");
+        // one record per tlas instance, scattered foliage enters per instance so this outgrows the entity count
+        s_buffers[(int)Renderer_Buffer.GeometryInfo]       = Storage<GeometryInfo>(RHI_Definitions.rhi_max_array_size * 4, "geometry_info");
+    }
+
+    private static void CreateSamplers()
+    {
+        void Create(Renderer_Sampler type, RHI_Filter filter_min, RHI_Filter filter_mag, RHI_Filter filter_mip, RHI_Sampler_Address_Mode address_mode,
+                    RHI_Comparison_Function comparison_func, float anisotropy, bool comparison_enabled, float mip_bias)
+        {
+            s_samplers[(int)type]?.Dispose();
+            s_samplers[(int)type] = new RHI_Sampler(filter_min, filter_mag, filter_mip, address_mode, comparison_func, anisotropy, comparison_enabled, mip_bias, type.ToString().ToLowerInvariant());
+        }
+
+        // non anisotropic
+        if (!s_samplers_created)
+        {
+            Create(Renderer_Sampler.Compare_depth,         RHI_Filter.Linear,  RHI_Filter.Linear,  RHI_Filter.Nearest, RHI_Sampler_Address_Mode.ClampToZero, RHI_Comparison_Function.Greater, 0.0f, true,  0.0f); // reverse-z
+            Create(Renderer_Sampler.Point_clamp_edge,      RHI_Filter.Nearest, RHI_Filter.Nearest, RHI_Filter.Nearest, RHI_Sampler_Address_Mode.Clamp,       RHI_Comparison_Function.Never,   0.0f, false, 0.0f);
+            Create(Renderer_Sampler.Point_clamp_border,    RHI_Filter.Nearest, RHI_Filter.Nearest, RHI_Filter.Nearest, RHI_Sampler_Address_Mode.ClampToZero, RHI_Comparison_Function.Never,   0.0f, false, 0.0f);
+            Create(Renderer_Sampler.Point_wrap,            RHI_Filter.Nearest, RHI_Filter.Nearest, RHI_Filter.Nearest, RHI_Sampler_Address_Mode.Wrap,        RHI_Comparison_Function.Never,   0.0f, false, 0.0f);
+            Create(Renderer_Sampler.Bilinear_clamp_edge,   RHI_Filter.Linear,  RHI_Filter.Linear,  RHI_Filter.Nearest, RHI_Sampler_Address_Mode.Clamp,       RHI_Comparison_Function.Never,   0.0f, false, 0.0f);
+            Create(Renderer_Sampler.Bilinear_clamp_border, RHI_Filter.Linear,  RHI_Filter.Linear,  RHI_Filter.Nearest, RHI_Sampler_Address_Mode.ClampToZero, RHI_Comparison_Function.Never,   0.0f, false, 0.0f);
+            Create(Renderer_Sampler.Bilinear_wrap,         RHI_Filter.Linear,  RHI_Filter.Linear,  RHI_Filter.Nearest, RHI_Sampler_Address_Mode.Wrap,        RHI_Comparison_Function.Never,   0.0f, false, 0.0f);
+            Create(Renderer_Sampler.Trilinear_clamp,       RHI_Filter.Linear,  RHI_Filter.Linear,  RHI_Filter.Linear,  RHI_Sampler_Address_Mode.Clamp,       RHI_Comparison_Function.Never,   0.0f, false, 0.0f);
+            s_samplers_created = true;
+        }
+
+        // anisotropic (negative mip bias when upscaling to keep textures sharp)
+        float mip_bias_new = 0.0f;
+        if (s_resolution_output_width > s_resolution_render_width)
+            mip_bias_new = MathF.Log2((float)s_resolution_render_width / s_resolution_output_width) - 1.0f;
+        if (mip_bias_new != s_mip_bias)
+        {
+            s_mip_bias = mip_bias_new;
+            Create(Renderer_Sampler.Anisotropic_wrap, RHI_Filter.Linear, RHI_Filter.Linear, RHI_Filter.Linear, RHI_Sampler_Address_Mode.Wrap, RHI_Comparison_Function.Always, 16.0f, false, s_mip_bias);
+        }
+
+        s_bindless_samplers_dirty = true;
+    }
+
+    private static void CreateRenderTargets(bool create_render, bool create_output)
+    {
+        const RHI_Texture_Flags flags = RHI_Texture_Flags.RHI_Texture_Uav | RHI_Texture_Flags.RHI_Texture_Srv | RHI_Texture_Flags.RHI_Texture_Rtv | RHI_Texture_Flags.RHI_Texture_ClearBlit;
+        void Replace(RenderTarget type, uint width, uint height)
+        {
+            s_render_targets[(int)type]?.Dispose(); // the deletion queue keeps it alive for frames in flight
+            s_render_targets[(int)type] = new Texture(RHI_Texture_Type.Type2D, width, height, 1, 1, RHI_Format.R16G16B16A16_Float, flags, type.ToString());
+            RenderView.SetRenderTargetSize(type, width, height);
+        }
+
+        if (create_render)
+            Replace(RenderTarget.frame_render, s_resolution_render_width, s_resolution_render_height);
+        if (create_output)
+            Replace(RenderTarget.frame_output, s_resolution_output_width, s_resolution_output_height);
+    }
+
+    private static void CreateShaders()
+    {
+        void Compile(Renderer_Shader type, RHI_Shader_Type stage, string file)
+        {
+            var shader = new RHI_Shader();
+            shader.Compile(stage, file, async: false);
+            if (!shader.IsCompiled())
+                throw new InvalidOperationException($"{file} failed to compile: {shader.LastError}");
+            s_shaders[(int)type] = shader;
+        }
+
+        Compile(Renderer_Shader.test_pattern_v, RHI_Shader_Type.Vertex,  "test_pattern.vert");
+        Compile(Renderer_Shader.test_pattern_p, RHI_Shader_Type.Pixel,   "test_pattern.frag");
+        Compile(Renderer_Shader.blit_c,         RHI_Shader_Type.Compute, "blit.comp");
+    }
+
+    private static void CreateStandardTextures()
+    {
+        static Texture Create(string name, uint width, uint height, byte[] pixels)
+        {
+            var slice = new RHI_Texture_Slice();
+            slice.mips.Add(new RHI_Texture_Mip { bytes = pixels });
+            return new Texture(RHI_Texture_Type.Type2D, width, height, 1, 1, RHI_Format.R8G8B8A8_Unorm, RHI_Texture_Flags.RHI_Texture_Srv, name,
+                               new List<RHI_Texture_Slice> { slice });
+        }
+
+        s_standard_textures[(int)Renderer_StandardTexture.Noise_perlin] = Create("noise_perlin", StandardTextures.PerlinSize, StandardTextures.PerlinSize, StandardTextures.Perlin());
+        s_standard_textures[(int)Renderer_StandardTexture.Noise_blue]   = Create("noise_blue", StandardTextures.BlueNoiseSize, StandardTextures.BlueNoiseSize, StandardTextures.BlueNoise());
+        s_standard_textures[(int)Renderer_StandardTexture.Checkerboard] = Create("no_texture", StandardTextures.CheckerboardSize, StandardTextures.CheckerboardSize, StandardTextures.Checkerboard());
+
+        // solid 1x1 textures (spartan adds the uav flag, nothing writes them)
+        s_standard_textures[(int)Renderer_StandardTexture.Black] = Create("black_texture", 1, 1, StandardTextures.Solid(0, 0, 0, 255));
+        s_standard_textures[(int)Renderer_StandardTexture.White] = Create("white_texture", 1, 1, StandardTextures.Solid(255, 255, 255, 255));
+    }
+
+    private static void DestroyResources()
+    {
+        static void DisposeAll<T>(T?[] items) where T : class, IDisposable
+        {
+            foreach (T? item in items)
+                item?.Dispose();
+            Array.Clear(items);
+        }
+        DisposeAll(s_render_targets);
+        DisposeAll(s_standard_textures);
+        DisposeAll(s_samplers);
+        DisposeAll(s_buffers);
+        DisposeAll(s_shaders);
+        s_samplers_created = false;
+        s_mip_bias         = float.MaxValue;
+    }
+}

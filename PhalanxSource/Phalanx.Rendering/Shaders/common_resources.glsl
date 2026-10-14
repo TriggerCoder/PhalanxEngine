@@ -24,9 +24,39 @@ layout(set = 0, binding = 307) uniform texture2D tex;
 // (needs shaderStorageImageReadWithoutFormat / WriteWithoutFormat)
 layout(set = 0, binding = 100) uniform image2D tex_uav;
 
+// bindless arrays (common_resources_bindless.hlsl), one descriptor set per RHI_Device_Bindless_Resource.
+// The compiler strips what a shader doesn't use, so a pipeline only binds the sets it touches (llvmpipe binds 8).
+// Texture2D material_textures[] : register(t15, space1)
+layout(set = 1, binding = 315) uniform texture2D material_textures[];
+// StructuredBuffer<MaterialParameters> material_parameters : register(t16, space2)
+layout(std430, set = 2, binding = 316) readonly buffer MaterialParametersBuffer { MaterialParameters material_parameters[]; };
+// StructuredBuffer<LightParameters> light_parameters : register(t17, space3)
+layout(std430, set = 3, binding = 317) readonly buffer LightParametersBuffer { LightParameters light_parameters[]; };
+// StructuredBuffer<aabb> aabbs : register(t18, space4)
+layout(std430, set = 4, binding = 318) readonly buffer AabbBuffer { Aabb aabbs[]; };
+// StructuredBuffer<DrawData> draw_data : register(t19, space5)
+layout(std430, set = 5, binding = 319) readonly buffer DrawDataBuffer { DrawData draw_data[]; };
+// SamplerComparisonState samplers_comparison[] : register(s0, space6)
+layout(set = 6, binding = 400) uniform sampler samplers_comparison[];
 // SamplerState samplers[] : register(s1, space7)  -> separate sampler objects, combined at the call site
 layout(set = 7, binding = 401) uniform sampler samplers[];
-const uint sampler_bilinear_clamp = 3;
+// StructuredBuffer<PulledVertex> geometry_vertices : register(t20, space8)
+layout(std430, set = 8, binding = 320) readonly buffer GeometryVertexBuffer { PulledVertex geometry_vertices[]; };
+// StructuredBuffer<uint> geometry_indices : register(t22, space9)
+layout(std430, set = 9, binding = 322) readonly buffer GeometryIndexBuffer { uint geometry_indices[]; };
+// StructuredBuffer<PackedInstance> geometry_instances : register(t23, space10)
+layout(std430, set = 10, binding = 323) readonly buffer GeometryInstanceBuffer { PackedInstance geometry_instances[]; };
+
+// sampler indices (common_resources_buffers.hlsl:94-102), samplers_comparison[0] is compare_depth
+const uint sampler_compare_depth         = 0;
+const uint sampler_point_clamp           = 0;
+const uint sampler_point_clamp_border    = 1;
+const uint sampler_point_wrap            = 2;
+const uint sampler_bilinear_clamp        = 3;
+const uint sampler_bilinear_clamp_border = 4;
+const uint sampler_bilinear_wrap         = 5;
+const uint sampler_trilinear_clamp       = 6;
+const uint sampler_anisotropic_wrap      = 7;
 #define GET_SAMPLER(index_sampler) samplers[index_sampler]
 
 // vertex pulling decode (common_resources_bindless.hlsl), PulledVertex is Spartan's 24-byte main vertex

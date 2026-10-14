@@ -1,0 +1,59 @@
+// Port of the renderer definitions SpartanEngine source/rendering/Renderer_Definitions.h @ 4c07baa needs so far: the
+// constants of the frame loop (:82), Renderer_BindingsCb (:199), Renderer_Sampler (:643), Renderer_Buffer (:657) and
+// Renderer_StandardTexture (:723), complete so the indices match spartan's. Renderer_RenderTarget lives in Phalanx.Core
+// (World components read the target sizes) and holds the targets created so far, in spartan's relative order.
+namespace Phalanx.Rendering;
+
+internal static class Renderer_Definitions
+{
+    // matches command list pool size, avoids cpu-gpu memcpy races (Renderer_Definitions.h:82)
+    public const uint renderer_draw_data_buffer_count = 4;
+    // Renderer.cpp:83
+    public const byte swap_chain_buffer_count = 2;
+    // Renderer::Initialize, lower than output so taau works well (Renderer.cpp:607)
+    public const uint renderer_resolution_render_width  = 1920;
+    public const uint renderer_resolution_render_height = 1080;
+    // Renderer::Tick, nothing renders below this (Renderer.cpp:746)
+    public const uint renderer_min_render_dimension = 64;
+}
+
+internal enum Renderer_BindingsCb : uint { frame }
+
+internal enum Renderer_Sampler
+{
+    Compare_depth, Point_clamp_edge, Point_clamp_border,
+    Point_wrap, Bilinear_clamp_edge, Bilinear_clamp_border,
+    Bilinear_wrap, Trilinear_clamp, Anisotropic_wrap,
+    Max
+}
+
+internal enum Renderer_Buffer
+{
+    ConstantFrame, SpdCounter, SpdCounterCompute, MaterialParameters,
+    LightParameters, DummyInstance, AABBs, GeometryInfo,
+    IndirectDrawArgs, CpuIndirectDrawArgs, IndirectDrawData, MeshletInstances,
+    VisibleTriangles, TriangleDispatchArgs, CullTasks, TreeWindCache,
+    SurvivingInstances, InstanceDispatchArgs, Decals, RainOcclusion,
+    CarRainDrops, CarRainTexels, DrawData, ClusterLightGrid,
+    ClusterLightIndices, ClusterStats, VolumetricLightIndices, OceanHeights,
+    OceanWaveBounds, OceanHeightsReadback0, OceanHeightsReadback1, OceanHeightsReadback2,
+    OceanHeightsReadback3, EmissiveTriangles, RestirPairing, RadianceCache,
+    ParticleBufferA, ParticleCounter, ParticleEmitter, ParticleVolumeDensity,
+    ParticleVolumeColor, GrassInstances, GrassLodParameters, GrassCount,
+    GrassIndirectArgs, ShadowCasters, ShadowTasks, ShadowSlices,
+    ShadowCounts, ShadowArgs, ShadowVisible, DrawLods,
+    CullPhase, InstanceVisibility, TessellatedDraws, TessellatedLods,
+    TessellatedArgs, Max
+}
+
+internal enum Renderer_StandardTexture
+{
+    Noise_perlin, Noise_blue, Checkerboard, Gizmo_light_directional,
+    Gizmo_light_point, Gizmo_light_spot, Gizmo_audio_source, Gizmo_camera,
+    Gizmo_particle, Gizmo_physics, Gizmo_volume, Gizmo_script,
+    Gizmo_spline, Gizmo_spline_follower, Gizmo_terrain, Gizmo_skid_marks,
+    Gizmo_water, Gizmo_traffic, Gizmo_pedestrians, Gizmo_spawn_point,
+    Gizmo_car_reset, Gizmo_text_3d, Gizmo_animator, Gizmo_ragdoll,
+    Sky_stars, Sky_star_grid, Black, White,
+    Max
+}

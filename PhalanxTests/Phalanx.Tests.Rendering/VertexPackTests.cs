@@ -249,8 +249,7 @@ public class VertexPackTests
 #extension GL_GOOGLE_include_directive : require
 #include ""common_resources.glsl""
 layout(local_size_x = 64) in;
-layout(std430, set = 1, binding = 0) readonly buffer Vertices { PulledVertex geometry_vertices[]; };
-layout(std430, set = 1, binding = 1) buffer Out { vec4 outs[]; };
+layout(std430, set = 0, binding = 101) buffer Out { vec4 outs[]; }; // geometry_vertices comes from common_resources.glsl
 void main()
 {
     PulledVertex v = geometry_vertices[gl_GlobalInvocationID.x];

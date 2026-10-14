@@ -254,8 +254,12 @@ internal static unsafe partial class RHI_Device
     {
         s_physical_device_index = index;
         RHI_PhysicalDevice d = GetPrimaryPhysicalDevice();
-        Log.LogInfo($"{d.Name} ({d.GetMemoryMb()} MB)");
+        Log.LogInfo(DescribePhysicalDevice(d));
     }
+
+    // spartan logs "name (memory MB)", the vendor, driver and api versions are added
+    public static string DescribePhysicalDevice(RHI_PhysicalDevice d) =>
+        $"{d.Name} ({d.GetMemoryMb()} MB), vendor {d.GetVendorName()}, driver {d.GetDriverVersion()}, Vulkan {d.GetApiVersion()}";
 
     // spartan: queues::detect_queue_family_indices. pure so it can be tested without a gpu.
     // graphics: any family with graphics. compute: dedicated (no graphics) first, then any other family, then graphics'.
@@ -426,7 +430,17 @@ internal static unsafe partial class RHI_Device
             }
 
             string name = SilkMarshal.PtrToString((nint)props.DeviceName) ?? "unknown";
-            PhysicalDeviceRegister(new RHI_PhysicalDevice(props.ApiVersion, props.DriverVersion, props.VendorID, FromVulkan(props.DeviceType), name, vram, device));
+
+            // driver info (spartan Vulkan_Device.cpp:1959), part of the 1.2 properties
+            string driver_info = string.Empty;
+            if (props.ApiVersion >= Vk.Version12)
+            {
+                PhysicalDeviceVulkan12Properties props_1_2 = new() { SType = StructureType.PhysicalDeviceVulkan12Properties };
+                PhysicalDeviceProperties2 props2 = new() { SType = StructureType.PhysicalDeviceProperties2, PNext = &props_1_2 };
+                vk.GetPhysicalDeviceProperties2(device, &props2);
+                driver_info = SilkMarshal.PtrToString((nint)props_1_2.DriverInfo) ?? string.Empty;
+            }
+            PhysicalDeviceRegister(new RHI_PhysicalDevice(props.ApiVersion, props.DriverVersion, props.VendorID, FromVulkan(props.DeviceType), name, vram, device, driver_info));
         }
     }
 

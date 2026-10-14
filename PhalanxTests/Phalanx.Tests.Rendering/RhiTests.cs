@@ -103,6 +103,26 @@ public class RhiTableTests
     }
 
     [Fact]
+    public void Driver_and_api_versions_decode_per_vendor()
+    {
+        RHI_PhysicalDevice Make(uint vendor, uint driver, string info = "", uint api = (1u << 22) | (3u << 12) | 275) =>
+            new(api, driver, vendor, RHI_PhysicalDevice_Type.Discrete, "gpu", 8UL << 30, default, info);
+
+        Assert.Equal("1.3.275", Make(0x10DE, 0).GetApiVersion());
+        Assert.Equal("1.4.0", RHI_PhysicalDevice.DecodeApiVersion((1u << 29) | (1u << 22) | (4u << 12))); // the variant bits are masked off
+        Assert.Equal("535.104.5.0", Make(0x10DE, (535u << 22) | (104u << 14) | (5u << 6)).GetDriverVersion());
+        Assert.Equal("24.1.1", Make(0x1002, 0x800000, "24.1.1 (LLPC)").GetDriverVersion());
+        Assert.Equal("Unknown AMD driver", Make(0x1002, 0x800000).GetDriverVersion());
+        Assert.Equal("101.4502", Make(0x8086, (101u << 14) | 4502).GetDriverVersion());
+        Assert.Equal("24.0.5 (Mesa 24.0.5)", Make(0x10005, (24u << 22) | (0u << 12) | 5, "Mesa 24.0.5").GetDriverVersion());
+        Assert.Equal("24.0.5", Make(0x10005, (24u << 22) | 5).GetDriverVersion());
+        Assert.Equal(8192UL, Make(0x10DE, 0).GetMemoryMb());
+
+        string description = RHI_Device.DescribePhysicalDevice(Make(0x10DE, (535u << 22) | (104u << 14) | (5u << 6)));
+        Assert.Equal("gpu (8192 MB), vendor Nvidia, driver 535.104.5.0, Vulkan 1.3.275", description);
+    }
+
+    [Fact]
     public void Swapchain_format_present_mode_and_alpha_selection()
     {
         var bgra_only = new[] { (Format.B8G8R8A8Unorm, ColorSpaceKHR.SpaceSrgbNonlinearKhr) };
