@@ -16,7 +16,7 @@ namespace Phalanx.Editor;
 //   Phalanx.Editor --rhi-triangle-offscreen / --rhi-cube-offscreen   no window: renders one frame and prints the center pixel
 //   Phalanx.Editor --renderer-cube [frames]  spartan's standard cube through the renderer (g-buffer, resolve) with a camera
 //   Phalanx.Editor --renderer-cube-offscreen  no window: renders that frame and prints frame_output's center pixel
-//   add --texture <image file> to either to texture the cube with an imported image
+//   add --texture <image file> to either to texture the cube; --point-light adds a bright point light
 //   add --validation to enable VK_LAYER_KHRONOS_validation (Debug builds enable it by default)
 public static class Program
 {
@@ -64,7 +64,7 @@ public static class Program
             string? texture_path = texture_arg >= 0 && texture_arg + 1 < args.Length ? args[texture_arg + 1] : null;
             if (renderer_cube_offscreen)
             {
-                System.Numerics.Vector4 c = RendererCubeDemo.RunOffscreen(128, validation, texture_path);
+                System.Numerics.Vector4 c = RendererCubeDemo.RunOffscreen(128, validation, texture_path, Array.IndexOf(args, "--point-light") >= 0);
                 Console.WriteLine(FormattableString.Invariant($"renderer-cube-offscreen: center pixel = {c.X:0.###}, {c.Y:0.###}, {c.Z:0.###}, {c.W:0.###}"));
                 return 0;
             }
@@ -72,7 +72,7 @@ public static class Program
             if (renderer_cube + 1 < args.Length)
                 int.TryParse(args[renderer_cube + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out frames);
             Window.Initialize();
-            int presented = RendererCubeDemo.Run(Window.GetWindow()!, frames, validation, texture_path);
+            int presented = RendererCubeDemo.Run(Window.GetWindow()!, frames, validation, texture_path, Array.IndexOf(args, "--point-light") >= 0);
             Console.WriteLine($"renderer-cube: presented {presented} frames");
             return 0;
         }

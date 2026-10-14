@@ -7,22 +7,27 @@ using Silk.NET.Windowing;
 
 namespace Phalanx.Editor;
 
-// --renderer-cube: spartan's standard cube through the renderer (geometry buffer, g-buffer, resolve), seen by a
-// camera 3 m away and lit by a directional light; the cube turns so every face shows. --texture <file> loads an image
-// (ResourceCache / ImageImporter) as the cube's albedo.
+// --renderer-cube: spartan's standard cube through the renderer (geometry buffer, g-buffer, light, composition,
+// tonemap), seen by a camera 3 m away and lit by a directional light; the cube turns so every face shows.
+// --texture <file> loads an image (ResourceCache / ImageImporter) as the cube's albedo; --point-light adds a bright
+// point light at the camera.
 internal static class RendererCubeDemo
 {
     private sealed record Scene(Entity Cube);
 
     // the scene is World entities: a camera, a directional light and the standard cube with a Render component
-    private static Scene CreateScene(string? texture_path)
+    private static Scene CreateScene(string? texture_path, bool point_light = false)
     {
         World.World.SetMainThread();
         World.World.ClearScene();
 
         Entity camera_entity = World.World.CreateEntity();
         camera_entity.SetObjectName("camera");
-        camera_entity.AddComponent<Camera>(); // the camera constructor places its entity at (0, 3, -5)
+        Camera camera = camera_entity.AddComponent<Camera>()!; // the camera constructor places its entity at (0, 3, -5)
+        // sunny 16 (f/16, 1/125 s, iso 100) for the 120000 lux sun
+        camera.SetAperture(16.0f);
+        camera.SetShutterSpeed(1.0f / 125.0f);
+        camera.SetIso(100.0f);
         camera_entity.SetPosition(new Vector3(0, 0, -3));
 
         Entity light_entity = World.World.CreateEntity();
@@ -31,6 +36,17 @@ internal static class RendererCubeDemo
         Light light = light_entity.AddComponent<Light>()!;
         light.SetLightType(LightType.Directional);
         light.SetColor(new Phalanx.Math.Color(1.0f, 1.0f, 1.0f, 1.0f));
+
+        if (point_light)
+        {
+            Entity point_entity = World.World.CreateEntity();
+            point_entity.SetObjectName("light_point");
+            point_entity.SetPosition(new Vector3(0.8f, 0.6f, -1.5f));
+            Light point = point_entity.AddComponent<Light>()!;
+            point.SetLightType(LightType.Point);
+            point.SetColor(new Phalanx.Math.Color(1.0f, 0.85f, 0.6f, 1.0f));
+            point.SetIntensity(2000000.0f); // lm, bright enough to show under sunny 16
+        }
 
         var material = new Material();
         material.SetProperty(MaterialProperty.ColorR, 0.9f);
@@ -56,7 +72,8 @@ internal static class RendererCubeDemo
         render.SetMesh(MeshType.Cube);
         render.SetMaterial(material);
 
-        Renderer.ResolveBackgroundColor = new Vector4(0.08f, 0.09f, 0.12f, 1.0f);
+        Renderer.SkyFallbackNits     = new Vector3(4000.0f, 6000.0f, 10000.0f);
+        Renderer.AmbientFallbackNits = new Vector3(2000.0f, 3000.0f, 5000.0f);
         World.World.Tick(); // publish the entities (spartan: the world load commits them before the first frame)
         return new Scene(cube);
     }
@@ -68,12 +85,12 @@ internal static class RendererCubeDemo
         World.World.Tick();
     }
 
-    public static int Run(IWindow window, int frames, bool validation, string? texture_path = null)
+    public static int Run(IWindow window, int frames, bool validation, string? texture_path = null, bool point_light = false)
     {
         Renderer.Initialize(window, validation);
         try
         {
-            Scene scene = CreateScene(texture_path);
+            Scene scene = CreateScene(texture_path, point_light);
             var clock = System.Diagnostics.Stopwatch.StartNew();
             int presented = 0;
             while (!window.IsClosing && (frames <= 0 || presented < frames))
@@ -93,12 +110,12 @@ internal static class RendererCubeDemo
     }
 
     // no window: one frame at size x size, returns frame_output's centre pixel (rgba16f)
-    public static Vector4 RunOffscreen(uint size, bool validation, string? texture_path = null)
+    public static Vector4 RunOffscreen(uint size, bool validation, string? texture_path = null, bool point_light = false)
     {
         Renderer.Initialize(size, size, validation);
         try
         {
-            Scene scene = CreateScene(texture_path);
+            Scene scene = CreateScene(texture_path, point_light);
             Animate(scene, 0.0f);
             Renderer.Tick();
             return Renderer.ReadOutputPixel(size / 2, size / 2);

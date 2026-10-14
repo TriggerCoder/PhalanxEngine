@@ -22,13 +22,26 @@ internal static class Renderer_Definitions
 
 internal enum Renderer_BindingsCb : uint { frame }
 
-internal enum Renderer_BindingsUav : uint { tex = 0 }
+internal enum Renderer_BindingsUav : uint { tex = 0, tex2 = 1 }
 
 internal enum Renderer_BindingsSrv : uint
 {
     // g-buffer
     gbuffer_color = 0, gbuffer_normal = 1, gbuffer_material = 2, gbuffer_velocity = 3, gbuffer_depth = 4,
-    tex = 7,
+    tex = 7, tex2 = 8, tex3 = 9, tex4 = 10,
+    // spartan binds it by name ("tex_emissive", register t33)
+    gbuffer_emissive = 33,
+}
+
+// Renderer_Definitions.h:170, r.tonemapping
+public enum Renderer_Tonemapping : uint
+{
+    Aces,
+    AgX,
+    Reinhard,
+    AcesNautilus,
+    GranTurismo7,
+    Max,
 }
 
 public enum Renderer_AntiAliasing_Upsampling : uint

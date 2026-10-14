@@ -29,7 +29,8 @@ public class RendererGpuTests
         }
         finally
         {
-            Renderer.ResolveBackgroundColor = new Vector4(0, 0, 0, 1);
+            Renderer.SkyFallbackNits = new Vector3(1500.0f, 2200.0f, 3500.0f);
+            Renderer.Tonemapping     = Renderer_Tonemapping.GranTurismo7;
             Renderer.Shutdown();
         }
     }
@@ -54,11 +55,15 @@ public class RendererGpuTests
     private static Vector4 Unorm(byte[] rgba) => new(rgba[0] / 255f, rgba[1] / 255f, rgba[2] / 255f, rgba[3] / 255f);
 
     [SkippableFact]
-    public void Headless_frames_without_a_scene_resolve_to_the_background()
+    public void Headless_frames_without_a_scene_show_the_fallback_sky_tonemapped_and_srgb_encoded()
     {
         RunHeadless(() =>
         {
-            Renderer.ResolveBackgroundColor = new Vector4(0.25f, 0.5f, 0.75f, 1.0f);
+            // no camera: exposure 1, so the clamp tonemapper outputs srgb(nits)
+            Renderer.SkyFallbackNits = new Vector3(0.25f, 0.5f, 0.75f);
+            Renderer.Tonemapping     = Renderer_Tonemapping.Max;
+            static float srgb(float c) => c < 0.0031306684f ? c * 12.92f : 1.055f * MathF.Pow(c, 1.0f / 2.4f) - 0.055f;
+            Vector4 expected = new(srgb(0.25f), srgb(0.5f), srgb(0.75f), 1.0f);
             for (int i = 0; i < 3; i++)
                 Assert.True(Renderer.Tick());
             Assert.Equal(3ul, Renderer.GetFrameNumber());
@@ -66,7 +71,7 @@ public class RendererGpuTests
 
             Vector4[] p = ReadOutput();
             foreach (Vector4 px in new[] { p[0], p[p.Length - 1], p[(Height / 2) * Width + Width / 2] })
-                AssertNear(Renderer.ResolveBackgroundColor, px, "background");
+                AssertNear(expected, px, "background");
         });
     }
 

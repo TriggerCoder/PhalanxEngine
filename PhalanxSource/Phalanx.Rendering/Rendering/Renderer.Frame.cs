@@ -323,7 +323,9 @@ public static partial class Renderer
         s_cb_frame.resolution_scale    = (float)s_resolution_render_width / System.Math.Max(s_resolution_output_width, 1u);
         s_cb_frame.hdr_enabled         = RHI_Device.GetSwapChain() is { } swapchain && swapchain.IsHdr() ? 1.0f : 0.0f;
         s_cb_frame.gamma               = Gamma;
-        s_cb_frame.camera_exposure     = 1.0f; // no auto exposure yet: spartan's fallback
+        // Renderer.cpp:1963-1974: the camera's exposure, 1 without one; auto exposure isn't ported, so the mode stays manual
+        s_cb_frame.camera_exposure      = GetViewCamera() is { } camera ? camera.GetExposure() : 1.0f;
+        s_cb_frame.camera_exposure_mode = 0.0f;
         s_time_last = time;
     }
 

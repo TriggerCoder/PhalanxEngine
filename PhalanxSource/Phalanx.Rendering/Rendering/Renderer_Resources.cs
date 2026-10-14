@@ -26,7 +26,7 @@ using MaterialTextureType = Phalanx.World.MaterialTextureType;
 namespace Phalanx.Rendering;
 
 // spartan's shader names; resolve_c is Phalanx's stand-in for light, composition and tonemapping
-internal enum Renderer_Shader { gbuffer_v, gbuffer_p, depth_prepass_alpha_p, resolve_c, blit_c, max }
+internal enum Renderer_Shader { gbuffer_v, gbuffer_p, depth_prepass_alpha_p, light_c, light_composition_c, output_c, blit_c, max }
 
 public static partial class Renderer
 {
@@ -104,10 +104,10 @@ public static partial class Renderer
     private static void CreateRenderTargets(bool create_render, bool create_output)
     {
         const RHI_Texture_Flags flags = RHI_Texture_Flags.RHI_Texture_Uav | RHI_Texture_Flags.RHI_Texture_Srv | RHI_Texture_Flags.RHI_Texture_Rtv | RHI_Texture_Flags.RHI_Texture_ClearBlit;
-        void Replace(RenderTarget type, uint width, uint height)
+        void Replace(RenderTarget type, uint width, uint height, RHI_Format format = RHI_Format.R16G16B16A16_Float)
         {
             s_render_targets[(int)type]?.Dispose(); // the deletion queue keeps it alive for frames in flight
-            s_render_targets[(int)type] = new Texture(RHI_Texture_Type.Type2D, width, height, 1, 1, RHI_Format.R16G16B16A16_Float, flags, type.ToString());
+            s_render_targets[(int)type] = new Texture(RHI_Texture_Type.Type2D, width, height, 1, 1, format, flags, type.ToString());
             RenderView.SetRenderTargetSize(type, width, height);
         }
 
@@ -129,9 +129,16 @@ public static partial class Renderer
             GBuffer(RenderTarget.gbuffer_velocity, RHI_Format.R16G16B16A16_Float);
             GBuffer(RenderTarget.gbuffer_depth,    RHI_Format.D32_Float);
             Replace(RenderTarget.frame_render, s_resolution_render_width, s_resolution_render_height);
+            // light (Renderer_Resources.cpp:809-810)
+            Replace(RenderTarget.light_diffuse,  s_resolution_render_width, s_resolution_render_height, RHI_Format.R11G11B10_Float);
+            Replace(RenderTarget.light_specular, s_resolution_render_width, s_resolution_render_height, RHI_Format.R11G11B10_Float);
         }
         if (create_output)
-            Replace(RenderTarget.frame_output, s_resolution_output_width, s_resolution_output_height);
+        {
+            // Renderer_Resources.cpp:848-849, frame_output_2 is the post process ping-pong target
+            Replace(RenderTarget.frame_output,   s_resolution_output_width, s_resolution_output_height);
+            Replace(RenderTarget.frame_output_2, s_resolution_output_width, s_resolution_output_height);
+        }
     }
 
     private static void CreateShaders()
@@ -148,7 +155,9 @@ public static partial class Renderer
         Compile(Renderer_Shader.gbuffer_v, RHI_Shader_Type.Vertex,  "g_buffer.vert", RHI_Vertex_Type.PosUvNorTan);
         Compile(Renderer_Shader.gbuffer_p, RHI_Shader_Type.Pixel,   "g_buffer.frag");
         Compile(Renderer_Shader.depth_prepass_alpha_p, RHI_Shader_Type.Pixel, "depth_prepass_alpha.frag");
-        Compile(Renderer_Shader.resolve_c, RHI_Shader_Type.Compute, "resolve.comp");
+        Compile(Renderer_Shader.light_c,             RHI_Shader_Type.Compute, "light.comp");
+        Compile(Renderer_Shader.light_composition_c, RHI_Shader_Type.Compute, "light_composition.comp");
+        Compile(Renderer_Shader.output_c,            RHI_Shader_Type.Compute, "output.comp");
         Compile(Renderer_Shader.blit_c,         RHI_Shader_Type.Compute, "blit.comp");
     }
 

@@ -96,6 +96,21 @@ public struct Color : IEquatable<Color>
         R = MathEx.Clamp(R / 255.0f, 0.0f, 1.0f);
         G = MathEx.Clamp(G / 255.0f, 0.0f, 1.0f);
         B = MathEx.Clamp(B / 255.0f, 0.0f, 1.0f);
+
+        // the helland fit outputs srgb encoded values, convert to linear light (Color.cpp:68-76)
+        static float SrgbToLinear(float c) => c <= 0.04045f ? c / 12.92f : MathF.Pow((c + 0.055f) / 1.055f, 2.4f);
+        R = SrgbToLinear(R);
+        G = SrgbToLinear(G);
+        B = SrgbToLinear(B);
+
+        // normalize to unit luminance so the authored lux/lumens are delivered exactly (Color.cpp:78-85)
+        float lum = 0.2126f * R + 0.7152f * G + 0.0722f * B;
+        if (lum > 0.0f)
+        {
+            R /= lum;
+            G /= lum;
+            B /= lum;
+        }
     }
 
     // standard

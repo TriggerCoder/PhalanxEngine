@@ -342,7 +342,11 @@ public class Camera : Component
     {
         // computed ev (using squared aperture for photometric accuracy)
         // note: this calculates the exposure scale factor (1/l_avg)
-        float ev100 = MathEx.Log2((m_aperture * m_aperture) / m_shutter_speed * 100.0f / m_iso);
+        // spartan clamps the controls (Camera.h:200-202)
+        float aperture = MathF.Max(m_aperture, 0.01f);
+        float shutter  = MathF.Max(m_shutter_speed, 0.0001f);
+        float iso      = MathF.Max(m_iso, 1.0f);
+        float ev100 = MathEx.Log2((aperture * aperture) / shutter * (100.0f / iso));
 
         // standard standard output sensitivity (sos) calculation
         // 1.2 is a common calibration constant (matches ue5/frostbite)

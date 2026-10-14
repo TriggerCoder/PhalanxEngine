@@ -27,6 +27,11 @@ public enum LightIntensity
     black_hole,      // no light emitted
     custom           // custom intensity
 }
+public enum LightIntensityUnit
+{
+    Lux,
+    Lumens
+}
 public enum LightPreset
 {
     dawn,        // sunrise - early morning with warm orange glow
@@ -104,7 +109,7 @@ public class Light : Component
 
         SetColor(GetSensibleColor(m_light_type));
         SetIntensity(LightIntensity.bulb_500_watt);
-        SetRange(GetSensibleRange(m_light_type));
+        SetRange(GetSensibleRange(m_light_type, m_intensity_lumens_lux, m_angle_rad));
         SetFlag(LightFlags.Shadows);
         SetFlag(LightFlags.ShadowsScreenSpace);
     }
@@ -144,24 +149,49 @@ public class Light : Component
 
         m_light_type = type;
         SetColor(GetSensibleColor(type));
-        SetRange(GetSensibleRange(type));   // TODO: port this helper the same way as GetSensibleColor
+        SetRange(GetSensibleRange(m_light_type, m_intensity_lumens_lux, m_angle_rad));
+
+        if (m_light_type == LightType.Directional)
+            SetIntensity(SunIlluminanceLux);
+        else
+            m_flags &= ~LightFlags.ShadowsScreenSpace;
+
         UpdateMatrices();
     }
-    float GetSensibleRange(LightType type)
+    // Light.cpp:35, the directional default
+    public const float SunIlluminanceLux = 120000.0f;
+
+    // Light.cpp:46-74: the range at which the light has faded to a quarter lux
+    static float GetSensibleRange(LightType type, float photometric_intensity, float angle_rad)
     {
+        const float illuminance_cutoff_lux = 0.25f;
+        const float min_range              = 0.5f;
+        photometric_intensity = MathF.Max(photometric_intensity, 0.0f);
         switch (type)
         {
             case LightType.Directional:
                 return float.MaxValue;
             case LightType.Point:
+                return MathF.Max(min_range, MathF.Sqrt(photometric_intensity / (4.0f * MathF.PI * illuminance_cutoff_lux)));
             case LightType.Spot:
-                return 15.0f;
+                return MathF.Max(min_range, MathF.Sqrt(photometric_intensity / Lighting.SpotSolidAngle(angle_rad) / illuminance_cutoff_lux));
             case LightType.Area:
-                return 20.0f;
+                // on axis illuminance of a lambertian emitter falls off as flux / (pi * d^2)
+                return MathF.Max(min_range, MathF.Sqrt(photometric_intensity / (MathF.PI * illuminance_cutoff_lux)));
             default:
                 return 0.0f;
         }
     }
+    // Light.cpp:76-86: whether the range still follows the intensity (it wasn't edited)
+    static bool IsSensibleRange(float range, LightType type, float photometric_intensity, float angle_rad)
+    {
+        if (type == LightType.Directional)
+            return false;
+        float sensible  = GetSensibleRange(type, photometric_intensity, angle_rad);
+        float tolerance = MathF.Max(0.01f, sensible * 0.001f);
+        return MathF.Abs(range - sensible) <= tolerance;
+    }
+    public float GetRangeSensible() => GetSensibleRange(m_light_type, m_intensity_lumens_lux, m_angle_rad);
     Color GetSensibleColor(LightType type)
     {
         switch (type)
@@ -410,69 +440,124 @@ public class Light : Component
     }
     public Color GetColor() { return m_color_rgb; }
 
-    // intensity
-    public void SetIntensity(float lumens_lux)
+    // intensity: lux for directional lights, lumens (flux) for the rest (Light.cpp:566-660)
+    public void SetIntensity(float photometric_intensity)
     {
-        m_intensity_lumens_lux = lumens_lux;
+        bool update_range = IsSensibleRange(m_range, m_light_type, m_intensity_lumens_lux, m_angle_rad);
+        m_intensity_lumens_lux = photometric_intensity;
         m_intensity = LightIntensity.custom;
+        if (update_range)
+            SetRange(GetSensibleRange(m_light_type, m_intensity_lumens_lux, m_angle_rad));
     }
     public void SetIntensity(LightIntensity intensity)
     {
+        if (intensity == LightIntensity.custom)
+        {
+            m_intensity = intensity;
+            return;
+        }
+        bool update_range = IsSensibleRange(m_range, m_light_type, m_intensity_lumens_lux, m_angle_rad);
         m_intensity = intensity;
-
-        switch (m_intensity)
+        m_intensity_lumens_lux = intensity switch
         {
-            case LightIntensity.bulb_stadium:
-                m_intensity_lumens_lux = 200000.0f;
-            break;
-            case LightIntensity.bulb_500_watt:
-                m_intensity_lumens_lux = 8500.0f;
-            break;
-            case LightIntensity.bulb_150_watt:
-                m_intensity_lumens_lux = 2600.0f;
-            break;
-            case LightIntensity.bulb_100_watt:
-                m_intensity_lumens_lux = 1600.0f;
-            break;
-            case LightIntensity.bulb_60_watt:
-                m_intensity_lumens_lux = 800.0f;
-            break;
-            case LightIntensity.bulb_25_watt:
-                m_intensity_lumens_lux = 200.0f;
-            break;
-            case LightIntensity.bulb_flashlight:
-                m_intensity_lumens_lux = 100.0f;
-            break;
-            default: // black hole
-                m_intensity_lumens_lux = 0.0f;
-            break;
-        }
+            LightIntensity.bulb_stadium    => 200000.0f,
+            LightIntensity.bulb_500_watt   => 8500.0f,
+            LightIntensity.bulb_150_watt   => 2600.0f,
+            LightIntensity.bulb_100_watt   => 1600.0f,
+            LightIntensity.bulb_60_watt    => 800.0f,
+            LightIntensity.bulb_25_watt    => 200.0f,
+            LightIntensity.bulb_flashlight => 100.0f,
+            _                              => 0.0f, // black hole
+        };
+        if (update_range)
+            SetRange(GetSensibleRange(m_light_type, m_intensity_lumens_lux, m_angle_rad));
     }
-    public float GetIntensityLumens() { return m_intensity_lumens_lux; }
+    public float GetIntensityPhotometric() { return m_intensity_lumens_lux; }
+    public float GetIntensityLumens() { return m_intensity_lumens_lux; } // legacy alias
     public LightIntensity GetIntensity() { return m_intensity; }
-    public float GetIntensityWatt()
+    public LightIntensityUnit GetIntensityUnit() => m_light_type == LightType.Directional ? LightIntensityUnit.Lux : LightIntensityUnit.Lumens;
+
+    // on axis illuminance in lux at a distance in meters, what a surface facing the light receives (Light.cpp:632)
+    public float GetIlluminanceAt(float distance)
     {
-        // ideal luminous efficacy of monochromatic radiation at 555 nm (lm/w).
-        // note: for broad spectrum white light, ~250-400 is more accurate,
-        // but 683 is the standard "ideal" definition used in engines like ue5/frostbite
-        const float luminous_efficacy = 683.0f;
-
-        // 1. convert photometric (lumens/lux) to radiometric (watts)
-        float radiant_flux = m_intensity_lumens_lux / luminous_efficacy;
-
-        if (m_light_type == LightType.Directional)
+        float flux        = MathF.Max(m_intensity_lumens_lux, 0.0f);
+        float distance_sq = MathF.Max(distance * distance, 0.0001f);
+        return m_light_type switch
         {
-            // directional: input is lux (lm/m^2), output is irradiance (w/m^2)
-            // no solid angle conversion needed
-            return radiant_flux;
-        }
-        else
+            LightType.Point => flux / (4.0f * MathF.PI * distance_sq),
+            LightType.Spot  => flux / Lighting.SpotSolidAngle(m_angle_rad) / distance_sq,
+            LightType.Area  => flux / (MathF.PI * distance_sq),
+            _               => m_intensity_lumens_lux,
+        };
+    }
+
+    // the gpu scale (Light.cpp:701): lux/683 for directional, candela/683 for point/spot, nits/683 for area
+    public float GetIntensityRadiometric()
+    {
+        float photometric = MathF.Max(m_intensity_lumens_lux, 0.0f);
+        float radiant     = photometric / Lighting.LuminousEfficacy;
+        return m_light_type switch
         {
-            // point/spot: input is lumens (lm) -> flux (watts)
-            // we need radiant intensity (watts/sr)
-            // divide by 4pi to distribute flux over the sphere
-            return radiant_flux / (4.0f * 3.14159265359f);
+            LightType.Directional => radiant,                                    // illuminance in lux
+            LightType.Point       => radiant / (4.0f * MathF.PI),                // isotropic over the sphere
+            LightType.Spot        => radiant / Lighting.SpotSolidAngle(m_angle_rad), // the whole beam with its falloff
+            LightType.Area        => radiant / (MathF.PI * MathF.Max(m_area_width * m_area_height, 0.0001f)),
+            _                     => radiant / (4.0f * MathF.PI),
+        };
+    }
+    public float GetIntensityWatt() { return GetIntensityRadiometric(); } // legacy alias, not watts
+
+    // Light.cpp:503: local lights use the colour's chromaticity at unit luminance (intensity owns the lumens); the
+    // sun's colour is the atmosphere's transmittance towards it from the camera's altitude
+    public Color GetColorEffective()
+    {
+        if (m_light_type != LightType.Directional)
+        {
+            float r = MathF.Max(m_color_rgb.R, 0.0f), g = MathF.Max(m_color_rgb.G, 0.0f), b = MathF.Max(m_color_rgb.B, 0.0f);
+            float luminance = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+            return luminance > 0.0f ? new Color(r / luminance, g / luminance, b / luminance, 1.0f) : Color.StandardBlack;
         }
+
+        // atmosphere constants mirrored from skysphere.hlsl, the atmosphere is the single ground truth for sun colour
+        const float earth_radius       = 6360e3f;
+        const float atmosphere_radius  = 6460e3f;
+        var rayleigh_scatter           = new Vector3(5.802e-6f, 13.558e-6f, 33.1e-6f);
+        const float rayleigh_height    = 8000.0f;
+        const float mie_extinction     = 4.4e-6f;
+        const float mie_height         = 1200.0f;
+        var ozone_absorption           = new Vector3(0.65e-6f, 1.881e-6f, 0.085e-6f);
+        const float ozone_center       = 25000.0f;
+        const float ozone_width        = 15000.0f;
+        const int sample_count         = 32;
+
+        float altitude = 1.0f;
+        if (World.GetCamera() is Camera camera && camera.GetEntity() is Entity camera_entity)
+            altitude = MathF.Max(camera_entity.GetPosition().Y, 1.0f);
+
+        Vector3 sun_direction = -GetEntity()!.GetForward();
+        var position          = new Vector3(0.0f, earth_radius + altitude, 0.0f);
+        float bb      = Vector3.Dot(position, sun_direction);
+        float c_earth = Vector3.Dot(position, position) - earth_radius * earth_radius;
+        float c_atmo  = Vector3.Dot(position, position) - atmosphere_radius * atmosphere_radius;
+
+        // the planet occludes the sun below the horizon
+        float disc_earth = bb * bb - c_earth;
+        if (disc_earth > 0.0f && -bb - MathF.Sqrt(disc_earth) > 0.0f)
+            return new Color(0.0f, 0.0f, 0.0f, 1.0f);
+
+        float t_max = -bb + MathF.Sqrt(MathF.Max(bb * bb - c_atmo, 0.0f));
+        float dt    = t_max / sample_count;
+        Vector3 optical_depth = Vector3.Zero;
+        for (int i = 0; i < sample_count; i++)
+        {
+            Vector3 sample_pos     = position + sun_direction * ((i + 0.5f) * dt);
+            float height           = sample_pos.Length() - earth_radius;
+            float rayleigh_density = MathF.Exp(-height / rayleigh_height);
+            float mie_density      = MathF.Exp(-height / mie_height);
+            float ozone_density    = MathF.Max(0.0f, 1.0f - MathF.Abs(height - ozone_center) / ozone_width);
+            optical_depth += (rayleigh_scatter * rayleigh_density + new Vector3(mie_extinction * mie_density) + ozone_absorption * ozone_density) * dt;
+        }
+        return new Color(MathF.Exp(-optical_depth.X), MathF.Exp(-optical_depth.Y), MathF.Exp(-optical_depth.Z), 1.0f);
     }
 
     // preset
@@ -564,11 +649,14 @@ public class Light : Component
     // angle
     public void SetAngle(float angle)
     {
-        angle = MathEx.Clamp(angle, 0.0f, MathEx.Pi2);
+        angle = Lighting.SpotHalfAngle(angle);
         if (angle == m_angle_rad)
             return;
 
+        bool update_range = IsSensibleRange(m_range, m_light_type, m_intensity_lumens_lux, m_angle_rad);
         m_angle_rad = angle;
+        if (update_range)
+            m_range = GetSensibleRange(m_light_type, m_intensity_lumens_lux, m_angle_rad);
         UpdateMatrices();
     }
     public float GetAngle() { return m_angle_rad; }

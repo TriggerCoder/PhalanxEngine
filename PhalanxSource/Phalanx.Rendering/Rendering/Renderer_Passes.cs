@@ -2,8 +2,10 @@
 // (Renderer.cpp:5504 @ 4c07baa): the g-buffer fills from the scene, the result lands in frame_render and then
 // frame_output, which Tick blits to the back buffer. Pass_GBuffer ports the cpu-driven draw loop of
 // Renderer_Passes_Geometry.cpp (Pass_GBuffer), Pass_Blit is a port of Renderer_Passes_Post.cpp:590-619.
-// Pass_Resolve is not in spartan: it shades the g-buffer into frame_render, standing in for the light, composition
-// and post process passes until they are ported.
+// Pass_Light and Pass_Light_Composition port Renderer_Passes_Lighting.cpp:1580-1652 (light.hlsl,
+// light_composition.hlsl), Pass_Tonemap ports Renderer_Passes_Post.cpp:385-398 (output.hlsl).
+// After composition frame_render goes to frame_output_2 through Pass_Blit (spartan: the upscaler, then the post
+// process chain ping-pongs frame_output/frame_output_2), the tonemapper writes frame_output, display ready.
 // Pass_Depth_Prepass ports both halves of Renderer_Passes_Geometry.cpp:1463: opaque draws without a pixel shader,
 // then alpha tested draws with depth_prepass_alpha (discard below the alpha threshold), depth loaded, cull None
 // (:1553-1570). The g-buffer shades only the prepass survivors with an equal depth test (ReadEqual, the state
@@ -24,10 +26,19 @@ namespace Phalanx.Rendering;
 
 public static partial class Renderer
 {
-    /// <summary>What Pass_Resolve writes where no geometry is (the clear colour of frame_render).</summary>
-    public static Vector4 ResolveBackgroundColor { get; set; } = new(0.0f, 0.0f, 0.0f, 1.0f);
+    /// <summary>The sky radiance (photometric, nits, linear rec.709) where no geometry is. Spartan composites its
+    /// atmospheric skysphere there; until that is ported this constant stands in (light_composition.comp).</summary>
+    public static Vector3 SkyFallbackNits { get; set; } = new(1500.0f, 2200.0f, 3500.0f);
 
-    /// <summary>Waits for the gpu and reads one pixel of frame_output (rgba16f), for headless runs and tools.</summary>
+    /// <summary>The fallback sky as diffuse ambient on surfaces (the stand-in for light_image_based), in nits;
+    /// zero turns it off.</summary>
+    public static Vector3 AmbientFallbackNits { get; set; } = new(150.0f, 220.0f, 350.0f);
+
+    /// <summary>spartan's r.tonemapping (default gran turismo 7, ConsoleVariables.cpp:188); gran turismo 7 and reinhard
+    /// are ported, the others clamp like Max.</summary>
+    public static Renderer_Tonemapping Tonemapping { get; set; } = Renderer_Tonemapping.GranTurismo7;
+
+    /// <summary>Waits for the gpu and reads one pixel of frame_output (rgba16f, tonemapped and srgb encoded), for headless runs and tools.</summary>
     public static Vector4 ReadOutputPixel(uint x, uint y)
     {
         RHI_Device.QueueWaitAll();
@@ -40,14 +51,17 @@ public static partial class Renderer
 
     private static void ProduceFrame(RHI_CommandList cmd)
     {
-        RHI_Texture rt_render = GetRenderTargetTexture(RenderTarget.frame_render)!;
-        RHI_Texture rt_output = GetRenderTargetTexture(RenderTarget.frame_output)!;
+        RHI_Texture rt_render   = GetRenderTargetTexture(RenderTarget.frame_render)!;
+        RHI_Texture rt_output   = GetRenderTargetTexture(RenderTarget.frame_output)!;
+        RHI_Texture rt_output_2 = GetRenderTargetTexture(RenderTarget.frame_output_2)!;
 
         Pass_Depth_Prepass(cmd);
         Pass_GBuffer(cmd);
         Entity.CommitTransformHistory(); // Renderer_Passes_Geometry.cpp:2022, after the opaque g-buffer
-        Pass_Resolve(cmd, rt_render);
-        Pass_Blit(cmd, rt_render, rt_output);
+        Pass_Light(cmd);
+        Pass_Light_Composition(cmd, rt_render);
+        Pass_Blit(cmd, rt_render, rt_output_2);
+        Pass_Tonemap(cmd, rt_output_2, rt_output);
     }
 
     // Renderer_Passes_Geometry.cpp:1463: the opaque half has no pixel shader, ReadWrite depth and clears the depth
@@ -152,21 +166,73 @@ public static partial class Renderer
         cmd.EndMarker();
     }
 
-    private static void Pass_Resolve(RHI_CommandList cmd, RHI_Texture tex_out)
+    // the g-buffer textures the lighting passes read (spartan: SetCommonTextures, Renderer.cpp:2870-2885)
+    private static void SetCommonTextures(RHI_CommandList cmd)
     {
-        cmd.BeginMarker("resolve");
+        cmd.SetTexture((uint)Renderer_BindingsSrv.gbuffer_color,    GetRenderTargetTexture(RenderTarget.gbuffer_color)!);
+        cmd.SetTexture((uint)Renderer_BindingsSrv.gbuffer_normal,   GetRenderTargetTexture(RenderTarget.gbuffer_normal)!);
+        cmd.SetTexture((uint)Renderer_BindingsSrv.gbuffer_material, GetRenderTargetTexture(RenderTarget.gbuffer_material)!);
+        cmd.SetTexture((uint)Renderer_BindingsSrv.gbuffer_depth,    GetRenderTargetTexture(RenderTarget.gbuffer_depth)!);
+        cmd.SetTexture((uint)Renderer_BindingsSrv.gbuffer_emissive, GetRenderTargetTexture(RenderTarget.gbuffer_emissive)!);
+    }
+
+    // Renderer_Passes_Lighting.cpp:1580, the opaque pass: direct diffuse and specular of every light
+    private static void Pass_Light(RHI_CommandList cmd)
+    {
+        RHI_Texture light_diffuse  = GetRenderTargetTexture(RenderTarget.light_diffuse)!;
+        RHI_Texture light_specular = GetRenderTargetTexture(RenderTarget.light_specular)!;
+        cmd.BeginMarker("light");
         {
-            var pso = new RHI_PipelineState { name = "resolve" };
-            pso.SetShader(RHI_Shader_Type.Compute, GetShader(Renderer_Shader.resolve_c)!);
+            var pso = new RHI_PipelineState { name = "light" };
+            pso.SetShader(RHI_Shader_Type.Compute, GetShader(Renderer_Shader.light_c)!);
+            cmd.SetPipelineState(pso);
+            SetStandardResources(cmd);
+            SetCommonTextures(cmd);
+            cmd.SetTexture((uint)Renderer_BindingsUav.tex,  light_diffuse,  storage: true);
+            cmd.SetTexture((uint)Renderer_BindingsUav.tex2, light_specular, storage: true);
+            var pass = new PassBufferData();
+            pass.Set(0, (float)GetLightCount()); // values[0].x (spartan: buffer_frame.cluster_light_count)
+            cmd.PushConstants(pass);
+            cmd.Dispatch((light_diffuse.GetWidth() + 7) / 8, (light_diffuse.GetHeight() + 7) / 8);
+        }
+        cmd.EndMarker();
+    }
+
+    // Renderer_Passes_Lighting.cpp:1622, the opaque pass
+    private static void Pass_Light_Composition(RHI_CommandList cmd, RHI_Texture tex_out)
+    {
+        cmd.BeginMarker("light_composition");
+        {
+            var pso = new RHI_PipelineState { name = "light_composition" };
+            pso.SetShader(RHI_Shader_Type.Compute, GetShader(Renderer_Shader.light_composition_c)!);
+            cmd.SetPipelineState(pso);
+            SetStandardResources(cmd);
+            SetCommonTextures(cmd);
+            cmd.SetTexture((uint)Renderer_BindingsUav.tex, tex_out, storage: true);
+            cmd.SetTexture((uint)Renderer_BindingsSrv.tex3, GetRenderTargetTexture(RenderTarget.light_diffuse)!);
+            cmd.SetTexture((uint)Renderer_BindingsSrv.tex4, GetRenderTargetTexture(RenderTarget.light_specular)!);
+            var pass = new PassBufferData();
+            pass.Set(0, new Vector4(SkyFallbackNits, 0.0f));
+            pass.Set(4, new Vector4(AmbientFallbackNits, 0.0f));
+            cmd.PushConstants(pass);
+            cmd.Dispatch((tex_out.GetWidth() + 7) / 8, (tex_out.GetHeight() + 7) / 8);
+        }
+        cmd.EndMarker();
+    }
+
+    // Renderer_Passes_Post.cpp:385, exposure, tonemapping and the display encode
+    private static void Pass_Tonemap(RHI_CommandList cmd, RHI_Texture tex_in, RHI_Texture tex_out)
+    {
+        cmd.BeginMarker("tonemap");
+        {
+            var pso = new RHI_PipelineState { name = "tonemap" };
+            pso.SetShader(RHI_Shader_Type.Compute, GetShader(Renderer_Shader.output_c)!);
             cmd.SetPipelineState(pso);
             SetStandardResources(cmd);
             cmd.SetTexture((uint)Renderer_BindingsUav.tex, tex_out, storage: true);
-            cmd.SetTexture((uint)Renderer_BindingsSrv.gbuffer_color, GetRenderTargetTexture(RenderTarget.gbuffer_color)!);
-            cmd.SetTexture((uint)Renderer_BindingsSrv.gbuffer_normal, GetRenderTargetTexture(RenderTarget.gbuffer_normal)!);
-            cmd.SetTexture((uint)Renderer_BindingsSrv.gbuffer_depth, GetRenderTargetTexture(RenderTarget.gbuffer_depth)!);
+            cmd.SetTexture((uint)Renderer_BindingsSrv.tex, tex_in);
             var pass = new PassBufferData();
-            pass.Set(0, ResolveBackgroundColor);
-            pass.Set(4, (float)GetLightCount()); // values[1].x
+            pass.Set(0, (float)(uint)Tonemapping); // values[0].x
             cmd.PushConstants(pass);
             cmd.Dispatch((tex_out.GetWidth() + 7) / 8, (tex_out.GetHeight() + 7) / 8);
         }

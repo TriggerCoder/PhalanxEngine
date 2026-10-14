@@ -1,0 +1,47 @@
+// GLSL port of SpartanEngine data/shaders/light_composition.hlsl @ 4c07baa (main_cs :59-107): frame_render =
+// light_diffuse * albedo + light_specular + emissive, sky pixels get the sky.
+// Deviations: there is no skysphere yet, sky pixels get a constant fallback radiance (values[0].rgb, photometric
+// nits, spartan: the atmospheric panorama through sample_sky_catmull_rom); light_image_based isn't ported, so
+// values[1].rgb, the same sky's diffuse ambient (albedo * occlusion * sky, what a uniform environment of that
+// radiance gives a lambertian surface) stands in for it; no transparent pass, water or glass.
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "common_resources.glsl"
+#include "common_light.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+void main()
+{
+    uvec2 thread_id     = gl_GlobalInvocationID.xy;
+    vec2 resolution_out = vec2(imageSize(tex_uav));
+    if (any(greaterThanEqual(vec2(thread_id), resolution_out)))
+        return;
+
+    Surface surface = surface_build(thread_id, resolution_out, true, false);
+
+    vec3 light_diffuse  = vec3(0.0);
+    vec3 light_specular = vec3(0.0);
+    vec3 light_emissive = vec3(0.0);
+    float alpha         = 0.0;
+
+    if (surface_is_sky(surface))
+    {
+        light_emissive = photometric_to_radiometric(buffer_pass.values[0].rgb);
+        alpha          = 0.0;
+    }
+    else if (surface_is_opaque(surface))
+    {
+        light_diffuse  = texelFetch(tex3, ivec2(thread_id), 0).rgb;
+        light_specular = texelFetch(tex4, ivec2(thread_id), 0).rgb;
+        // the g-buffer already stores emitted scene radiance, emission is not reflectance
+        light_emissive = surface.emissive;
+        alpha          = surface.alpha;
+
+        // stand-in for light_image_based: the fallback sky as a uniform environment
+        light_diffuse += photometric_to_radiometric(buffer_pass.values[1].rgb) * surface.occlusion;
+    }
+
+    imageStore(tex_uav, ivec2(thread_id), validate_output(vec4(light_diffuse * surface.albedo + light_specular + light_emissive, alpha)));
+}

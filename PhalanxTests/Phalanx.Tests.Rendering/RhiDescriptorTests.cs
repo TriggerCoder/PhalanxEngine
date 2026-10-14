@@ -349,7 +349,7 @@ public class RhiDescriptorGpuTests
                 #include "common_resources.glsl"
                 layout(local_size_x = 1) in;
                 layout(set = 1, binding = 315) uniform texture2D material_textures[];
-                layout(std430, set = 0, binding = 101) buffer Output { uint data[]; } output_buffer;
+                layout(std430, set = 0, binding = 120) buffer Output { uint data[]; } output_buffer; // 101 is tex_uav2 in common_resources.glsl
                 void main()
                 {
                     // index 5: the uploaded texture, index 6: never set (null descriptor -> 0)
@@ -381,7 +381,7 @@ public class RhiDescriptorGpuTests
             RHI_Device.UpdateBindlessSamplers(samplers);
 
             using var output = new RHI_Buffer(RHI_Buffer_Type.Storage, 4, 4, default, mappable: false, "bindless_out");
-            Dispatch(pipeline, cmd => cmd.SetBuffer(1, output), 1);
+            Dispatch(pipeline, cmd => cmd.SetBuffer(20, output), 1);
 
             uint[] data = MemoryMarshal.Cast<byte, uint>(RHI_Device.ReadbackBuffer(output)).ToArray();
             Assert.Equal(0xFF00FF00u, data[0]); // green, packUnorm4x8 puts r in the low byte

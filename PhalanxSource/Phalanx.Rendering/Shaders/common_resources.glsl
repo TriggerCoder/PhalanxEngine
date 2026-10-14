@@ -17,8 +17,11 @@
 layout(std140, set = 0, binding = 200) uniform BufferFrame { FrameBufferData buffer_frame; };
 layout(push_constant, std430) uniform BufferPass { PassBufferData buffer_pass; };
 
-// Texture2D tex : register(t7)
+// Texture2D tex .. tex4 : register(t7 .. t10) (common_resources_pass.hlsl:12-15)
 layout(set = 0, binding = 307) uniform texture2D tex;
+layout(set = 0, binding = 308) uniform texture2D tex2;
+layout(set = 0, binding = 309) uniform texture2D tex3;
+layout(set = 0, binding = 310) uniform texture2D tex4;
 
 // g-buffer (common_resources_gbuffer.hlsl:12-16), Renderer_BindingsSrv gbuffer_color .. gbuffer_depth
 layout(set = 0, binding = 300) uniform texture2D tex_albedo;
@@ -26,10 +29,14 @@ layout(set = 0, binding = 301) uniform texture2D tex_normal;
 layout(set = 0, binding = 302) uniform texture2D tex_material;
 layout(set = 0, binding = 303) uniform texture2D tex_velocity;
 layout(set = 0, binding = 304) uniform texture2D tex_depth;
+// Texture2D tex_emissive : register(t33) (common_resources_gbuffer.hlsl:17)
+layout(set = 0, binding = 333) uniform texture2D tex_emissive;
 
 // RWTexture2D<float4> tex_uav : register(u0), [[vk::image_format("unknown")]] -> no format qualifier
 // (needs shaderStorageImageReadWithoutFormat / WriteWithoutFormat)
 layout(set = 0, binding = 100) uniform image2D tex_uav;
+// RWTexture2D<float4> tex_uav2 : register(u1)
+layout(set = 0, binding = 101) uniform image2D tex_uav2;
 
 // bindless arrays (common_resources_bindless.hlsl), one descriptor set per RHI_Device_Bindless_Resource.
 // The compiler strips what a shader doesn't use, so a pipeline only binds the sets it touches (llvmpipe binds 8).

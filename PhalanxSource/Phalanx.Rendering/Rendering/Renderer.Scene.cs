@@ -297,10 +297,10 @@ public static partial class Renderer
             light.SetIndex(index);
             Entity entity = light.GetEntity()!;
             LightType type = light.GetLightType();
-            Phalanx.Math.Color color = light.GetColor();
+            Phalanx.Math.Color color = light.GetColorEffective(); // Renderer.cpp:3290-3293
             s_light_parameters[index] = new LightParameters
             {
-                intensity       = light.GetIntensityWatt(),
+                intensity       = light.GetIntensityRadiometric(),
                 range           = light.GetRange(),
                 angle           = light.GetAngle(),
                 color           = new Vector4(color.R, color.G, color.B, color.A),

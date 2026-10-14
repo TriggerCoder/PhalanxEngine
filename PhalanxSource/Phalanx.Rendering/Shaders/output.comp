@@ -1,0 +1,169 @@
+// GLSL port of SpartanEngine data/shaders/output.hlsl @ 4c07baa, the sdr path of main_cs (:384-480): radiometric
+// to photometric, the camera exposure, the tonemapper (values[0].x: 2 reinhard, 4 gran turismo 7 (spartan's
+// default r.tonemapping, ConsoleVariables.cpp:188), anything else clamps) and the srgb encode, alpha 1.
+// Deviations: aces, agx and aces nautilus aren't ported (they clamp); no hdr10/scrgb encode, the output is always
+// sdr (hdr swapchains get sdr values); exposure is the camera's manual one (no auto exposure).
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "common_resources.glsl"
+#include "common_light.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// gran turismo 7 (output.hlsl:15-252); 1.0 in its framebuffer space = 100 nits, sdr paper white 250 nits
+const float gt7_sdr_paper_white = 250.0;
+const float gt7_ref_luminance   = 100.0;
+
+// rows as in the hlsl initializer, used as v * m so the product is the hlsl mul(m, v)
+const mat3 gt7_rec709_to_rec2020 = mat3(
+    0.6274040, 0.3292820, 0.0433136,
+    0.0690970, 0.9195400, 0.0113612,
+    0.0163916, 0.0880132, 0.8955950);
+const mat3 gt7_rec2020_to_rec709 = mat3(
+     1.6604910, -0.5876411, -0.0728499,
+    -0.1245505,  1.1328999, -0.0083494,
+    -0.0181508, -0.1005789,  1.1187297);
+
+float gt7_fb_to_nits(float fb_value) { return fb_value * gt7_ref_luminance; }
+float gt7_nits_to_fb(float physical) { return physical / gt7_ref_luminance; }
+vec3  gt7_to_rec2020(vec3 color)     { return color * gt7_rec709_to_rec2020; }
+vec3  gt7_to_rec709(vec3 color)      { return color * gt7_rec2020_to_rec709; }
+
+float gt7_smooth_step(float x, float edge0, float edge1)
+{
+    float t = clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+float gt7_inverse_eotf(float v)
+{
+    const float m1 = 0.1593017578125, m2 = 78.84375, c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875, pqc = 10000.0;
+    float y  = gt7_fb_to_nits(v) / pqc;
+    float ym = pow(max(y, 0.0), m1);
+    return exp2(m2 * (log2(c1 + c2 * ym) - log2(1.0 + c3 * ym)));
+}
+
+float gt7_eotf(float n)
+{
+    const float m1 = 0.1593017578125, m2 = 78.84375, c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875, pqc = 10000.0;
+    float np = pow(clamp(n, 0.0, 1.0), 1.0 / m2);
+    float l  = max(np - c1, 0.0);
+    l = l / (c2 - c3 * np);
+    l = pow(l, 1.0 / m1);
+    return gt7_nits_to_fb(l * pqc);
+}
+
+vec3 gt7_rgb_to_ictcp(vec3 rgb)
+{
+    float l = (rgb.r * 1688.0 + rgb.g * 2146.0 + rgb.b * 262.0) / 4096.0;
+    float m = (rgb.r * 683.0 + rgb.g * 2951.0 + rgb.b * 462.0) / 4096.0;
+    float s = (rgb.r * 99.0 + rgb.g * 309.0 + rgb.b * 3688.0) / 4096.0;
+    float lpq = gt7_inverse_eotf(l), mpq = gt7_inverse_eotf(m), spq = gt7_inverse_eotf(s);
+    return vec3((2048.0 * lpq + 2048.0 * mpq) / 4096.0,
+                (6610.0 * lpq - 13613.0 * mpq + 7003.0 * spq) / 4096.0,
+                (17933.0 * lpq - 17390.0 * mpq - 543.0 * spq) / 4096.0);
+}
+
+vec3 gt7_ictcp_to_rgb(vec3 ictcp)
+{
+    float l = ictcp.x + 0.00860904 * ictcp.y + 0.11103 * ictcp.z;
+    float m = ictcp.x - 0.00860904 * ictcp.y - 0.11103 * ictcp.z;
+    float s = ictcp.x + 0.560031 * ictcp.y - 0.320627 * ictcp.z;
+    float l_lin = gt7_eotf(l), m_lin = gt7_eotf(m), s_lin = gt7_eotf(s);
+    return vec3(max(3.43661 * l_lin - 2.50645 * m_lin + 0.0698454 * s_lin, 0.0),
+                max(-0.79133 * l_lin + 1.9836 * m_lin - 0.192271 * s_lin, 0.0),
+                max(-0.0259499 * l_lin - 0.0989137 * m_lin + 1.12486 * s_lin, 0.0));
+}
+
+struct gt7_curve { float peak_intensity, mid_point, toe_strength, ka, kb, kc, shoulder_threshold; };
+
+gt7_curve gt7_make_curve(float peak_intensity, float mid_point, float toe_strength)
+{
+    const float alpha          = 0.25;
+    const float linear_section = 0.444;
+    float k = (linear_section - 1.0) / (alpha - 1.0);
+    gt7_curve c;
+    c.peak_intensity     = peak_intensity;
+    c.mid_point          = mid_point;
+    c.toe_strength       = toe_strength;
+    c.ka                 = peak_intensity * linear_section + peak_intensity * k;
+    c.kb                 = -peak_intensity * k * exp(linear_section / k);
+    c.kc                 = -1.0 / (k * peak_intensity);
+    c.shoulder_threshold = linear_section * peak_intensity;
+    return c;
+}
+
+float gt7_evaluate_curve(float x, gt7_curve c)
+{
+    if (x < 0.0)
+        return 0.0;
+    if (x >= c.shoulder_threshold)
+        return c.ka + c.kb * exp(x * c.kc);
+    float weight_linear = gt7_smooth_step(x, 0.0, c.mid_point);
+    float weight_toe    = 1.0 - weight_linear;
+    float toe_mapped    = c.mid_point * pow(max(x / c.mid_point, 0.0), c.toe_strength);
+    return weight_toe * toe_mapped + weight_linear * x;
+}
+
+// sdr only (is_hdr false)
+vec3 gran_turismo_7(vec3 rgb)
+{
+    vec3 rgb_rec2020 = gt7_to_rec2020(rgb);
+    float fb_target  = gt7_nits_to_fb(gt7_sdr_paper_white);
+
+    gt7_curve curve         = gt7_make_curve(fb_target, 0.538, 1.280);
+    const float blend_ratio = 0.6;
+    const float fade_start  = 0.98;
+    const float fade_end    = 1.16;
+
+    float ucs_target_lum = gt7_rgb_to_ictcp(vec3(fb_target)).x;
+    vec3 ucs             = gt7_rgb_to_ictcp(rgb_rec2020);
+
+    vec3 skewed_rgb = vec3(gt7_evaluate_curve(rgb_rec2020.x, curve), gt7_evaluate_curve(rgb_rec2020.y, curve), gt7_evaluate_curve(rgb_rec2020.z, curve));
+    vec3 skewed_ucs = gt7_rgb_to_ictcp(skewed_rgb);
+
+    float chroma_scale = 1.0 - gt7_smooth_step(ucs.x / ucs_target_lum, fade_start, fade_end);
+    vec3 scaled_rgb    = gt7_ictcp_to_rgb(vec3(skewed_ucs.x, ucs.y * chroma_scale, ucs.z * chroma_scale));
+
+    vec3 out_rgb         = (1.0 - blend_ratio) * skewed_rgb + blend_ratio * scaled_rgb;
+    float sdr_correction = 1.0 / gt7_nits_to_fb(gt7_sdr_paper_white);
+    out_rgb              = sdr_correction * min(out_rgb, vec3(fb_target));
+    return max(gt7_to_rec709(out_rgb), 0.0);
+}
+
+vec3 reinhard(vec3 hdr) { return hdr / (hdr + 1.0); }
+
+// common_colorspace.hlsl:23, get_gamma() is 2.4
+vec3 linear_to_srgb(vec3 color)
+{
+    vec3 srgb_low  = color * 12.92;
+    vec3 srgb_high = 1.055 * pow(max(color, 0.0), vec3(1.0 / 2.4)) - 0.055;
+    vec3 is_high   = step(vec3(0.00313066844250063), color);
+    return mix(srgb_low, srgb_high, is_high);
+}
+
+void main()
+{
+    uvec2 thread_id = gl_GlobalInvocationID.xy;
+    if (any(greaterThanEqual(thread_id, uvec2(imageSize(tex_uav)))))
+        return;
+
+    uint tone_mapping = uint(buffer_pass.values[0].x);
+    vec4 color        = texelFetch(tex, ivec2(thread_id), 0);
+
+    // the scene buffer stays radiometric until the display path
+    color.rgb  = radiometric_to_photometric(color.rgb);
+    color.rgb *= get_effective_exposure();
+
+    if (tone_mapping == 4u)
+        color.rgb = gran_turismo_7(color.rgb * gt7_nits_to_fb(gt7_sdr_paper_white));
+    else if (tone_mapping == 2u)
+        color.rgb = reinhard(color.rgb);
+    else
+        color.rgb = clamp(color.rgb, 0.0, 1.0);
+
+    color.rgb = linear_to_srgb(color.rgb);
+    color.a   = 1.0;
+    imageStore(tex_uav, ivec2(thread_id), color);
+}

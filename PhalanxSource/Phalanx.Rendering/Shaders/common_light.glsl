@@ -1,0 +1,270 @@
+// GLSL port of the lighting core of SpartanEngine data/shaders @ 4c07baa: the constants and cone helpers of
+// shared_lighting.h, radiometric_to_photometric / get_effective_exposure / luminance / validate_output /
+// get_position / microw_shadowing_cod (common.hlsl:37-71, :504-518, :794, :905, :1124), Surface::Build
+// (common_structs.hlsl:73-176), Light and AngularInfo (common_structs.hlsl:210-517) and the isotropic brdf
+// (brdf.hlsl:1-156). Needs common_resources.glsl.
+// Deviations: the surface has no clearcoat, anisotropy, sheen, flakes, pearl/coat tint, subsurface scattering,
+// decals or ssao (bent normal = normal, occlusion = the g-buffer's); lights have no area shape, ies profiles or
+// shadows; auto exposure isn't ported, the exposure is the camera's manual one.
+#ifndef PHALANX_COMMON_LIGHT
+#define PHALANX_COMMON_LIGHT
+
+const float PI                         = 3.14159265;
+const float INV_PI                     = 0.31830988;
+const float FLT_MIN                    = 0.00000001;
+const float FLT_MAX_16U                = 65504.0;
+const float lighting_luminous_efficacy = 683.0;
+
+float radiometric_to_photometric(float value) { return value * lighting_luminous_efficacy; }
+vec3  radiometric_to_photometric(vec3 value)  { return value * lighting_luminous_efficacy; }
+float photometric_to_radiometric(float value) { return value / lighting_luminous_efficacy; }
+vec3  photometric_to_radiometric(vec3 value)  { return value / lighting_luminous_efficacy; }
+
+// the manual camera exposure (auto exposure isn't ported, camera_exposure_mode stays 0)
+float get_effective_exposure() { return buffer_frame.camera_exposure; }
+
+float luminance(vec3 color) { return max(dot(color, vec3(0.2126, 0.7152, 0.0722)), FLT_MIN); }
+
+vec4 validate_output(vec4 value)
+{
+    value = clamp(value, 0.0, FLT_MAX_16U);
+    return mix(value, vec4(1.0), isnan(value)); // nan reads as 1, like spartan
+}
+
+// screen uv (y down) and reverse-z depth to world space
+vec3 get_position(float z, vec2 uv)
+{
+    vec4 pos_clip  = vec4(uv.x * 2.0 - 1.0, (1.0 - uv.y) * 2.0 - 1.0, z, 1.0);
+    vec4 pos_world = buffer_frame.view_projection_inverted * pos_clip;
+    return pos_world.xyz / pos_world.w;
+}
+
+// chan 2018 microshadowing, ao driven terminator darkening, occlusion 1 means no effect
+float microw_shadowing_cod(float n_dot_l, float visibility)
+{
+    float aperture     = 2.0 * visibility;
+    float micro_shadow = clamp(n_dot_l + aperture - 1.0, 0.0, 1.0);
+    return micro_shadow * micro_shadow;
+}
+
+// shared_lighting.h
+float lighting_spot_half_angle(float angle) { return clamp(angle, 0.01, 1.57079632679 - 0.001); }
+
+struct Surface
+{
+    uint  flags;
+    vec3  albedo;
+    float alpha;
+    float roughness;
+    float roughness_alpha;
+    float metallic;
+    float occlusion;
+    vec3  emissive;
+    vec3  F0;
+    vec2  uv;
+    float depth;
+    vec3  position;
+    vec3  normal;
+    vec3  camera_to_pixel;
+    float camera_to_pixel_length;
+    vec3  diffuse_energy;
+};
+
+bool surface_is_sky(Surface s)         { return s.alpha == 0.0; }
+bool surface_is_opaque(Surface s)      { return s.alpha == 1.0; }
+bool surface_is_transparent(Surface s) { return s.alpha > 0.0 && s.alpha < 1.0; }
+
+// Surface::Build, point sampled through texelFetch (render resolution, same as sampler_point_clamp at texel centres)
+Surface surface_build(uvec2 position_screen, vec2 resolution_out, bool use_albedo, bool replace_color_with_one)
+{
+    Surface s;
+    ivec2 p = ivec2(position_screen);
+    s.uv    = (vec2(position_screen) + 0.5) / resolution_out;
+
+    vec4 sample_albedo   = use_albedo ? texelFetch(tex_albedo, p, 0) : vec4(0.0);
+    vec4 sample_normal   = texelFetch(tex_normal, p, 0);
+    vec4 sample_material = texelFetch(tex_material, p, 0);
+    float sample_depth   = texelFetch(tex_depth, p, 0).r;
+    MaterialParameters material = material_parameters[unpack_material_index(sample_normal.a)];
+
+    s.depth     = sample_depth;
+    s.normal    = sample_normal.xyz;
+    s.flags     = material.flags;
+    s.albedo    = replace_color_with_one ? vec3(1.0) : sample_albedo.rgb;
+    s.alpha     = sample_albedo.a;
+    s.roughness = sample_material.r;
+    s.metallic  = sample_material.g;
+    s.emissive  = texelFetch(tex_emissive, p, 0).rgb;
+    // glass is always dielectric, force metallic 0 so f0 stays at the 0.04 dielectric value
+    bool alpha_transparent = s.alpha > 0.0 && s.alpha < 1.0;
+    s.metallic       = alpha_transparent ? 0.0 : s.metallic;
+    s.F0             = mix(vec3(0.04), sample_albedo.rgb, s.metallic);
+    s.diffuse_energy = vec3(1.0);
+    s.roughness_alpha = s.roughness * s.roughness;
+    s.occlusion      = sample_albedo.a >= 0.999 ? sample_material.a : 1.0;
+
+    s.position               = get_position(s.depth, s.uv);
+    s.camera_to_pixel        = s.position - buffer_frame.camera_position;
+    s.camera_to_pixel_length = length(s.camera_to_pixel);
+    s.camera_to_pixel        = normalize(s.camera_to_pixel);
+    return s;
+}
+
+struct Light
+{
+    uint  flags;
+    vec3  color;
+    vec3  position;
+    float intensity;
+    vec3  to_pixel;
+    vec3  forward;
+    float distance_to_pixel;
+    float angle;
+    float far;
+    vec3  radiance;
+    float n_dot_l;
+    float attenuation;
+    float cos_outer;
+    float cos_inner;
+    float angle_scale;
+};
+
+bool light_is_directional(Light l) { return (l.flags & (1u << 0)) != 0u; }
+bool light_is_point(Light l)       { return (l.flags & (1u << 1)) != 0u; }
+bool light_is_spot(Light l)        { return (l.flags & (1u << 2)) != 0u; }
+bool light_is_area(Light l)        { return (l.flags & (1u << 6)) != 0u; }
+
+float light_attenuation_range(Light l, float distance_to_light)
+{
+    if (l.far <= 0.0)
+        return 0.0;
+    // smooth window so lights fade out instead of popping at the range boundary
+    float ratio  = distance_to_light / l.far;
+    float ratio2 = ratio * ratio;
+    float window = clamp(1.0 - ratio2 * ratio2, 0.0, 1.0);
+    return window * window;
+}
+
+float light_attenuation_inverse_square(float distance_to_light) { return 1.0 / (distance_to_light * distance_to_light + 0.0001); }
+
+float light_attenuation_distance(Light l, vec3 surface_position)
+{
+    float d = length(surface_position - l.position);
+    return light_attenuation_inverse_square(d) * light_attenuation_range(l, d);
+}
+
+float light_attenuation_angle(Light l)
+{
+    float cd          = dot(l.to_pixel, l.forward);
+    float attenuation = clamp((cd - l.cos_outer) * l.angle_scale, 0.0, 1.0);
+    return attenuation * attenuation;
+}
+
+float light_attenuation(Light l, vec3 surface_position)
+{
+    if (light_is_directional(l)) return 1.0;
+    if (light_is_point(l))       return light_attenuation_distance(l, surface_position);
+    if (light_is_spot(l))        return light_attenuation_distance(l, surface_position) * light_attenuation_angle(l);
+    return 0.0; // area lights aren't ported
+}
+
+Light light_build(uint light_index, Surface surface)
+{
+    LightParameters p = light_parameters[light_index];
+    Light l;
+    l.flags             = p.flags;
+    l.color             = p.color.rgb;
+    l.position          = p.position;
+    l.intensity         = p.intensity;
+    l.far               = p.range;
+    l.angle             = lighting_spot_half_angle(p.angle);
+    l.forward           = (light_is_point(l) && !light_is_area(l)) ? vec3(0.0, 0.0, 1.0) : p.direction;
+    l.distance_to_pixel = length(surface.position - l.position);
+
+    // spot cone trig once per pixel per light
+    l.cos_outer   = cos(l.angle);
+    l.cos_inner   = cos(l.angle * 0.9);
+    l.angle_scale = 1.0 / max(0.000001, l.cos_inner - l.cos_outer);
+
+    l.to_pixel    = light_is_directional(l) ? normalize(l.forward) : normalize(surface.position - l.position);
+    l.n_dot_l     = clamp(dot(surface.normal, -l.to_pixel), 0.0, 1.0);
+    l.attenuation = light_attenuation(l, surface.position);
+    l.radiance    = l.color * l.intensity * l.attenuation * l.n_dot_l;
+    return l;
+}
+
+struct AngularInfo
+{
+    vec3  n, l, v, h;
+    float l_dot_h, v_dot_h, n_dot_v, n_dot_h, n_dot_l;
+};
+
+AngularInfo angular_info_build(Light light, Surface surface)
+{
+    AngularInfo a;
+    a.n = surface.normal;
+    a.v = -surface.camera_to_pixel;
+    a.l = -light.to_pixel;
+    a.h = normalize(a.l + a.v);
+    a.n_dot_l = clamp(dot(a.n, a.l), 0.0, 1.0);
+    a.n_dot_v = clamp(dot(a.n, a.v), 0.0, 1.0);
+    a.n_dot_h = clamp(dot(a.n, a.h), 0.0, 1.0);
+    a.l_dot_h = clamp(dot(a.l, a.h), 0.0, 1.0);
+    a.v_dot_h = clamp(dot(a.v, a.h), 0.0, 1.0);
+    return a;
+}
+
+// brdf.hlsl
+vec3  compute_f90(vec3 f0) { return vec3(clamp(50.0 * dot(f0, vec3(0.33333)), 0.0, 1.0)); }
+float pow5(float x) { float x2 = x * x; return x2 * x2 * x; }
+vec3  F_Schlick(vec3 f0, vec3 f90, float v_dot_h) { return f0 + (f90 - f0) * pow5(1.0 - v_dot_h); }
+float F_Schlick(float f0, float f90, float v_dot_h) { return f0 + (f90 - f0) * pow5(1.0 - v_dot_h); }
+
+// burley 2012
+vec3 Diffuse_Burley(vec3 diffuse_color, float roughness, float n_dot_v, float n_dot_l, float v_dot_h)
+{
+    float f90           = 0.5 + 2.0 * v_dot_h * v_dot_h * roughness;
+    float light_scatter = F_Schlick(1.0, f90, n_dot_l);
+    float view_scatter  = F_Schlick(1.0, f90, n_dot_v);
+    return diffuse_color * (light_scatter * view_scatter * INV_PI);
+}
+vec3 BRDF_Diffuse(Surface surface, AngularInfo a) { return Diffuse_Burley(surface.albedo, surface.roughness, a.n_dot_v, a.n_dot_l, a.v_dot_h); }
+
+// call of duty: wwii roughness to alpha remap
+float D_GGX_Alpha(float roughness)
+{
+    float gloss = 1.0 - roughness;
+    return sqrt(2.0 / (1.0 + pow(2.0, 18.0 * gloss)));
+}
+float D_GGX(float n_dot_h, float a2)
+{
+    float d = n_dot_h * n_dot_h * (a2 - 1.0) + 1.0;
+    return a2 / (PI * d * d + FLT_MIN);
+}
+float V_SmithGGX(float n_dot_v, float n_dot_l, float a2)
+{
+    float ggxv = n_dot_l * sqrt(n_dot_v * n_dot_v * (1.0 - a2) + a2);
+    float ggxl = n_dot_v * sqrt(n_dot_l * n_dot_l * (1.0 - a2) + a2);
+    return 0.5 / max(ggxv + ggxl, FLT_MIN);
+}
+vec3 compute_diffuse_energy(vec3 F, float metallic) { return (1.0 - F) * (1.0 - metallic); }
+vec3 compute_multiscatter_energy(vec3 f0, float n_dot_v, float roughness)
+{
+    float dhr         = mix(1.0 - roughness * 0.7, 1.0, pow5(1.0 - n_dot_v));
+    vec3  energy_loss = (1.0 - dhr) * (1.0 - f0);
+    return 1.0 + f0 * energy_loss / (1.0 - energy_loss + FLT_MIN);
+}
+vec3 BRDF_Specular_Isotropic(inout Surface surface, AngularInfo a)
+{
+    float alpha = D_GGX_Alpha(surface.roughness);
+    float a2    = alpha * alpha;
+    float D     = D_GGX(a.n_dot_h, a2);
+    float V     = V_SmithGGX(a.n_dot_v, a.n_dot_l, a2);
+    vec3  F     = F_Schlick(surface.F0, compute_f90(surface.F0), a.v_dot_h);
+    vec3  Fr    = D * V * F;
+    Fr                    *= compute_multiscatter_energy(surface.F0, a.n_dot_v, surface.roughness);
+    surface.diffuse_energy *= compute_diffuse_energy(F, surface.metallic);
+    return Fr;
+}
+
+#endif

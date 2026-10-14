@@ -9,9 +9,9 @@ using Xunit;
 
 namespace Phalanx.Tests;
 
-// lavapipe, validation on: camera, geometry buffer, g-buffer and resolve end to end
+// lavapipe, validation on: camera, geometry buffer, g-buffer, light, composition and tonemap end to end
 [Collection("gpu")]
-public class RendererSceneTests
+public partial class RendererSceneTests
 {
     private const uint Width = 128, Height = 96;
 
@@ -68,7 +68,9 @@ public class RendererSceneTests
         finally
         {
             Renderer.AntiAliasingUpsampling = Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau;
-            Renderer.ResolveBackgroundColor = new Vector4(0, 0, 0, 1);
+            Renderer.SkyFallbackNits     = new Vector3(1500.0f, 2200.0f, 3500.0f);
+            Renderer.AmbientFallbackNits = new Vector3(150.0f, 220.0f, 350.0f);
+            Renderer.Tonemapping         = Renderer_Tonemapping.GranTurismo7;
             Renderer.Shutdown();
             World.World.ClearScene();
         }
@@ -222,44 +224,44 @@ public class RendererSceneTests
     }
 
     [SkippableFact]
-    public void The_resolve_shades_the_albedo_with_the_bindless_lights_into_frame_output()
+    public void The_composition_lights_the_albedo_and_the_sky_falls_back_to_a_constant()
     {
         Run(() =>
         {
             Scene scene = CreateScene(new Vector4(0.5f, 0.25f, 1.0f, 1.0f));
-            Renderer.ResolveBackgroundColor = new Vector4(0.1f, 0.2f, 0.3f, 1.0f);
+            Renderer.SkyFallbackNits     = new Vector3(100.0f, 200.0f, 300.0f);
+            Renderer.AmbientFallbackNits = new Vector3(683.0f, 683.0f, 683.0f);
 
-            Vector4 Output(uint x, uint y)
-            {
-                byte[] b = Read(Renderer_RenderTarget.frame_output);
-                int i = Index(x, y) * 8;
-                return new Vector4(Half(b, i), Half(b, i + 2), Half(b, i + 4), Half(b, i + 6));
-            }
-            void Near(Vector4 expected, Vector4 actual) => Assert.True(Vector4.Distance(expected, actual) < 4e-3f, $"expected {expected}, got {actual}");
-
-            // no lights: the albedo as is
+            // frame_render is radiometric: the sky is nits / 683 and the ambient stand-in albedo * nits / 683
             Frame(scene);
-            Vector4 albedo = new(128 / 255f, 64 / 255f, 1.0f, 1.0f);
-            Near(albedo, Output(Width / 2, Height / 2));
-            Near(Renderer.ResolveBackgroundColor, Output(0, 0));
+            Vector4 albedo = Rgba8(Read(Renderer_RenderTarget.gbuffer_color), Width / 2, Height / 2);
+            Vector4 center = Rgba16(Read(Renderer_RenderTarget.frame_render), Width / 2, Height / 2);
+            Vector4 corner = Rgba16(Read(Renderer_RenderTarget.frame_render), 0, 0);
+            NearRel(new Vector3(albedo.X, albedo.Y, albedo.Z), new Vector3(center.X, center.Y, center.Z), 0.01f);
+            NearRel(new Vector3(100, 200, 300) / 683.0f, new Vector3(corner.X, corner.Y, corner.Z), 0.01f);
+            Assert.Equal(0.0f, corner.W); // spartan's sky alpha
 
-            // a directional light shining down +z onto the front face: ambient 0.25 plus the light colour
+            // a sun adds its light: diffuse demodulated (times the albedo here) plus specular
+            Renderer.AmbientFallbackNits = Vector3.Zero;
             Entity light_entity = World.World.CreateEntity();
-            light_entity.SetPosition(new Vector3(0, 5, 0)); // computes the directions, forward is +z
+            light_entity.SetPosition(new Vector3(0, 5, 0)); // forward is +z, into the front face
             Light light = light_entity.AddComponent<Light>()!;
             light.SetLightType(LightType.Directional);
-            light.SetColor(new Phalanx.Math.Color(0.5f, 0.5f, 0.5f, 1.0f));
             Frame(scene);
             Assert.Equal(0u, light.GetIndex());
             Assert.Equal(1u, Renderer.GetLightCount());
-            Vector4 expected = new(albedo.X * 0.75f, albedo.Y * 0.75f, albedo.Z * 0.75f, 1.0f);
-            Near(expected, Output(Width / 2, Height / 2));
+            Vector3 diffuse  = LightTarget(Renderer_RenderTarget.light_diffuse,  Width / 2, Height / 2);
+            Vector3 specular = LightTarget(Renderer_RenderTarget.light_specular, Width / 2, Height / 2);
+            Assert.True(diffuse.X > 1.0f, diffuse.ToString()); // 120000 lux / 683 * brdf
+            center = Rgba16(Read(Renderer_RenderTarget.frame_render), Width / 2, Height / 2);
+            NearRel(diffuse * new Vector3(albedo.X, albedo.Y, albedo.Z) + specular, new Vector3(center.X, center.Y, center.Z), 0.02f);
 
-            // the light parameters table carries the light
+            // the light parameters table carries the light, radiometric with its effective colour
             byte[] table = RHI_Device.ReadbackBuffer(Renderer.GetBuffer(Renderer_Buffer.LightParameters)!, 0, (ulong)Marshal.SizeOf<LightParameters>());
             LightParameters uploaded = MemoryMarshal.Read<LightParameters>(table);
             Assert.Equal(1u, uploaded.flags & 1u);
             Assert.Equal(light_entity.GetForward(), uploaded.direction);
+            Assert.Equal(light.GetIntensityRadiometric(), uploaded.intensity);
 
             // and the material table the material
             byte[] materials = RHI_Device.ReadbackBuffer(Renderer.GetBuffer(Renderer_Buffer.MaterialParameters)!, 0, (ulong)Marshal.SizeOf<MaterialParameters>());

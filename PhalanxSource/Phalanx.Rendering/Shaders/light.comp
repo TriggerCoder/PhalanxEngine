@@ -1,0 +1,78 @@
+// GLSL port of SpartanEngine data/shaders/light.hlsl @ 4c07baa (evaluate_light :143-345, main_cs :347-421): the
+// direct diffuse (demodulated, albedo one) and specular of every light into light_diffuse (tex_uav) and
+// light_specular (tex_uav2).
+// Deviations: every light is evaluated for every pixel (spartan: slot 0 is the sun, the rest come from the light
+// cluster grid); no shadows (shadow maps, ray traced, contact, cloud), no water transmission, no subsurface
+// scattering, clearcoat, anisotropy, flakes or sheen, no area lights and no restir; the transparent pass isn't run.
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "common_resources.glsl"
+#include "common_light.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+void evaluate_light(uint light_index, Surface surface, bool is_transparent, vec3 diffuse_precomputed, vec3 specular_precomputed,
+                    inout vec3 out_diffuse, inout vec3 out_specular)
+{
+    Light light = light_build(light_index, surface);
+
+    // raw light energy without n_dot_l
+    vec3 light_radiance_raw = light.color * light.intensity * light.attenuation;
+
+    vec3  L_specular_sum = vec3(0.0);
+    vec3  L_diffuse_term = vec3(0.0);
+    float micro_shadow   = 1.0;
+
+    // cull the inverse square tail, skip when the exposed contribution is sub perceptual
+    const float k_contribution_cull = 1e-3;
+    float contribution_luminance = luminance(radiometric_to_photometric(light_radiance_raw)) * get_effective_exposure();
+    bool light_can_contribute    = contribution_luminance > k_contribution_cull;
+    bool has_brdf                = any(greaterThan(light.radiance, vec3(0.0)));
+
+    if (!surface_is_sky(surface) && light_can_contribute && has_brdf)
+    {
+        AngularInfo angular_info = angular_info_build(light, surface);
+        micro_shadow = microw_shadowing_cod(angular_info.n_dot_l, surface.occlusion);
+
+        L_specular_sum += BRDF_Specular_Isotropic(surface, angular_info);
+        if (!is_transparent)
+            L_diffuse_term += BRDF_Diffuse(surface, angular_info);
+    }
+
+    out_diffuse  += (L_diffuse_term * light.radiance * diffuse_precomputed * surface.diffuse_energy) * micro_shadow;
+    out_specular += (L_specular_sum * light.radiance * specular_precomputed) * micro_shadow;
+}
+
+void main()
+{
+    uvec2 thread_id   = gl_GlobalInvocationID.xy;
+    vec2 resolution_out = vec2(imageSize(tex_uav));
+    if (any(greaterThanEqual(vec2(thread_id), resolution_out)))
+        return;
+
+    Surface surface = surface_build(thread_id, resolution_out, true, true);
+
+    // the opaque pass skips transparent surfaces (the transparent pass isn't ported)
+    if (surface_is_transparent(surface) && !surface_is_sky(surface))
+        return;
+
+    if (surface_is_sky(surface))
+    {
+        imageStore(tex_uav, ivec2(thread_id), vec4(0.0));
+        imageStore(tex_uav2, ivec2(thread_id), vec4(0.0));
+        return;
+    }
+
+    vec3 out_diffuse  = vec3(0.0);
+    vec3 out_specular = vec3(0.0);
+    vec3 specular_precomputed = vec3(surface.alpha);
+    vec3 diffuse_precomputed  = vec3(surface.alpha);
+
+    uint total_lights = uint(buffer_pass.values[0].x);
+    for (uint i = 0u; i < total_lights; i++)
+        evaluate_light(i, surface, false, diffuse_precomputed, specular_precomputed, out_diffuse, out_specular);
+
+    imageStore(tex_uav,  ivec2(thread_id), validate_output(vec4(out_diffuse, 1.0)));
+    imageStore(tex_uav2, ivec2(thread_id), validate_output(vec4(out_specular, 1.0)));
+}
