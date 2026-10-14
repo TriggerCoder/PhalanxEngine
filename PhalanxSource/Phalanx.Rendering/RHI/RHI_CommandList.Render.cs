@@ -261,6 +261,7 @@ internal sealed unsafe partial class RHI_CommandList
 
         if (!m_render_pass_active)
             return;
+        RequireNoOcclusionQuery();
 
         RHI_Context.Vk.CmdEndRendering(m_rhi_resource);
         m_render_pass_active = false;
@@ -274,9 +275,17 @@ internal sealed unsafe partial class RHI_CommandList
     {
         if (!m_render_pass_active)
             return;
+        RequireNoOcclusionQuery();
         RHI_Context.Vk.CmdEndRendering(m_rhi_resource);
         m_render_pass_active  = false;
         m_render_pass_pending = true;
+    }
+
+    // a query begun inside a render pass has to end inside the same pass
+    private void RequireNoOcclusionQuery()
+    {
+        if (m_occlusion_query_active)
+            throw new InvalidOperationException($"{Name}: the render pass can't end while an occlusion query is active");
     }
 
     public void Draw(uint vertex_count, uint vertex_start_index = 0)

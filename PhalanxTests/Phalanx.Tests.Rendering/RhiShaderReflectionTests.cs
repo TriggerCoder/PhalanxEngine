@@ -191,4 +191,25 @@ public class RhiShaderReflectionTests
         Assert.NotEqual(RHI_Shader.ComputeHash("s", new Dictionary<string, string> { ["AB"] = "C" }),
                         RHI_Shader.ComputeHash("s", new Dictionary<string, string> { ["A"] = "BC" }));
     }
+
+    // golden values recorded from the hash as it shipped, so changes to how the bytes are fed in can't move them
+    // (a changed hash invalidates every cached pipeline and shader)
+    [Theory]
+    [InlineData(0, 0xFC3AA8DACB128F8DUL)]
+    [InlineData(1, 0xBDC6E6F84A44A59EUL)]
+    [InlineData(2, 0x6E34DF25CC33357FUL)]
+    [InlineData(3, 0xE49B755109E604CBUL)]
+    [InlineData(4, 0xB94735118188BE8FUL)]
+    public void Shader_hash_values_are_stable(int input, ulong expected)
+    {
+        ulong hash = input switch
+        {
+            0 => RHI_Shader.ComputeHash("", new Dictionary<string, string>()),
+            1 => RHI_Shader.ComputeHash("void main() {}", new Dictionary<string, string>()),
+            2 => RHI_Shader.ComputeHash("void main() {}", new Dictionary<string, string> { ["B"] = "2", ["A"] = "1" }),
+            3 => RHI_Shader.ComputeHash("void main() {}", new Dictionary<string, string> { ["DEBUG"] = "", ["ÜNICODE"] = "値" }, RHI_Shader_Type.Vertex, RHI_Vertex_Type.PosCol),
+            _ => RHI_Shader.ComputeHash("#version 450\nlayout(location = 0) out vec4 c;\nvoid main() { c = vec4(1); }", new Dictionary<string, string> { ["X"] = "1" }, RHI_Shader_Type.Pixel)
+        };
+        Assert.Equal($"0x{expected:X16}", $"0x{hash:X16}");
+    }
 }

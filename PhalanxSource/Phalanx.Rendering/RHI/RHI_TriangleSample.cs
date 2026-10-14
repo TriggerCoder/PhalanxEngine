@@ -34,6 +34,13 @@ internal sealed class RHI_TriangleSample : IRHI_Sample
 
     public void Render(RHI_CommandList cmd, RHI_SwapChain? swapchain, RHI_Texture? color, RHI_Texture depth, float time)
     {
+        SetPipelineState(cmd, swapchain, color);
+        DrawTriangle(cmd);
+    }
+
+    // the two halves of Render, so work can be recorded around the draw (queries, markers)
+    public void SetPipelineState(RHI_CommandList cmd, RHI_SwapChain? swapchain, RHI_Texture? color)
+    {
         var pso = new RHI_PipelineState { name = "triangle" };
         pso.SetShader(RHI_Shader_Type.Vertex, m_shader_v);
         pso.SetShader(RHI_Shader_Type.Pixel, m_shader_p);
@@ -42,6 +49,10 @@ internal sealed class RHI_TriangleSample : IRHI_Sample
         pso.clear_color[0] = ClearColor;
 
         cmd.SetPipelineState(pso);
+    }
+
+    public void DrawTriangle(RHI_CommandList cmd)
+    {
         cmd.SetBufferVertex(m_vertices);
         cmd.Draw(3);
     }

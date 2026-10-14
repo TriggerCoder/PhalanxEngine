@@ -27,6 +27,15 @@ internal enum RHI_Queue_Type
     Max
 }
 
+internal enum RHI_Query_Type
+{
+    Timestamp,
+    Timestamp_Disjoint
+}
+
+// cpu milliseconds use the same monotonic clock as GetCpuTimestampMs, gpu ticks are only comparable within a queue
+internal readonly record struct RHI_TimestampCalibration(ulong gpu_tick, double cpu_ms, double period_ns, double deviation_ms, uint valid_bits, bool calibrated);
+
 // order matters: it indexes RHI_Implementation.VulkanFormat
 internal enum RHI_Format
 {

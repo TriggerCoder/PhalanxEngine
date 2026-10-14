@@ -4,8 +4,9 @@
 // dynamic rendering + synchronization2 and 1.2 timeline semaphores, queues, object naming.
 // Frames + deletion queue: RHI_Device.Frame.cs, memory: RHI_Device.Memory.cs
 // descriptor features + robustness2 here, pools/sets/bindless in RHI_Device.Descriptors.cs.
-// TODO(port): pipeline cache, staging pool, compute frame lists,
-// vendor technologies (FSR/XeSS/DLSS), ray tracing, mesh shaders, VRS, calibrated timestamps.
+// Pipelines + pipeline cache: RHI_Device.Pipelines.cs, timestamps and calibration: RHI_Device.Timestamps.cs,
+// markers: RHI_Device.Markers.cs.
+// TODO(port): vendor technologies (FSR/XeSS/DLSS), ray tracing, mesh shaders, VRS.
 using System.Runtime.InteropServices;
 using Silk.NET.Core;
 using Silk.NET.Core.Native;
@@ -223,6 +224,7 @@ internal static unsafe partial class RHI_Device
         RHI_Context.HdrMetadata = null;
         RHI_Context.MemoryBudget = false;
         RHI_Context.DevicePhysical = default;
+        TimestampsDestroy();
         s_physical_devices.Clear();
         s_debug_callback = null;
     }
@@ -540,6 +542,10 @@ internal static unsafe partial class RHI_Device
         bool hdr_metadata = RHI_Context.Surface != null && available.Contains("VK_EXT_hdr_metadata");
         if (hdr_metadata)
             extensions.Add("VK_EXT_hdr_metadata");
+        // spartan Vulkan_Device.cpp:300 (calibrated timestamps), optional
+        bool calibrated_timestamps = available.Contains(CalibratedTimestampsExtensionName);
+        if (calibrated_timestamps)
+            extensions.Add(CalibratedTimestampsExtensionName);
         RHI_Context.ExtensionsDevice = extensions.ToArray();
 
         // one queue per unique family
@@ -575,7 +581,7 @@ internal static unsafe partial class RHI_Device
 
         // properties
         vk.GetPhysicalDeviceProperties(physical, out PhysicalDeviceProperties props);
-        PropertyTimestampPeriod                 = props.Limits.TimestampPeriod;
+        TimestampsInitialize(physical, props.Limits, calibrated_timestamps);
         PropertyMinUniformBufferOffsetAlignment = props.Limits.MinUniformBufferOffsetAlignment;
         PropertyMinStorageBufferOffsetAlignment = props.Limits.MinStorageBufferOffsetAlignment;
         PropertyMaxPushConstantSize             = props.Limits.MaxPushConstantsSize;

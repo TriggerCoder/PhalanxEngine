@@ -1,6 +1,7 @@
 // Port of SpartanEngine source/rhi/RHI_CommandList.h + vulkan/Vulkan_CommandList.cpp @ 4c07baa (first slice:
 // begin/end, image barriers with synchronization2, clear via dynamic rendering or vkCmdClearColorImage, copy to buffer).
-// TODO(port): timestamps, markers, resource hazard tracking.
+// Queries: RHI_CommandList.Queries.cs, markers: RHI_CommandList.Markers.cs.
+// TODO(port): resource hazard tracking.
 using Silk.NET.Vulkan;
 using static Phalanx.Rendering.RHI.RHI_Implementation;
 
@@ -79,6 +80,7 @@ internal sealed unsafe partial class RHI_CommandList : IDisposable
         Check(RHI_Context.Vk.AllocateCommandBuffers(RHI_Context.Device, in info, out m_rhi_resource), "vkAllocateCommandBuffers");
         RHI_Device.SetResourceName((ulong)m_rhi_resource.Handle, RHI_Resource_Type.CommandList, name);
         m_rendering_complete_semaphore_timeline = new RHI_SyncPrimitive(RHI_SyncPrimitive_Type.SemaphoreTimeline, name + "_timeline");
+        QueriesInitialize();
         lock (s_lists) s_lists.Add(this);
     }
 
@@ -96,6 +98,8 @@ internal sealed unsafe partial class RHI_CommandList : IDisposable
         WaitForExecution();
         if (m_state != RHI_CommandListState.Idle)
             throw new InvalidOperationException($"{Name}: Begin while {m_state}");
+        QueriesBeforeBegin();
+        m_markers.Clear();
 
         Check(RHI_Context.Vk.ResetCommandBuffer(m_rhi_resource, 0), "vkResetCommandBuffer");
         m_pipeline = null; // bound state does not survive a reset
@@ -107,12 +111,14 @@ internal sealed unsafe partial class RHI_CommandList : IDisposable
         CommandBufferBeginInfo info = new() { SType = StructureType.CommandBufferBeginInfo, Flags = CommandBufferUsageFlags.OneTimeSubmitBit };
         Check(RHI_Context.Vk.BeginCommandBuffer(m_rhi_resource, in info), "vkBeginCommandBuffer");
         m_state = RHI_CommandListState.Recording;
+        QueriesBegin();
     }
 
     public void End()
     {
         if (m_state != RHI_CommandListState.Recording)
             throw new InvalidOperationException($"{Name}: End while {m_state}");
+        RequireMarkersClosed();
         RenderPassEnd();
         Check(RHI_Context.Vk.EndCommandBuffer(m_rhi_resource), "vkEndCommandBuffer");
     }
@@ -327,6 +333,7 @@ internal sealed unsafe partial class RHI_CommandList : IDisposable
     public void Dispose()
     {
         lock (s_lists) s_lists.Remove(this);
+        QueriesDestroy();
         m_rendering_complete_semaphore_timeline.Dispose();
         // the command buffer is freed with its pool (RHI_Queue)
     }

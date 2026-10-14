@@ -242,14 +242,18 @@ internal sealed unsafe class RHI_Shader : IDisposable
     public static ulong ComputeHash(string preprocessed_source, IReadOnlyDictionary<string, string> defines,
                                     RHI_Shader_Type shader_type = RHI_Shader_Type.Max, RHI_Vertex_Type vertex_type = RHI_Vertex_Type.Max)
     {
+        // the key/value delimiters live in the assembly's data, a stackalloc per define would grow the frame with each one
+        ReadOnlySpan<byte> key_delimiter   = new byte[] { 0 };
+        ReadOnlySpan<byte> value_delimiter = new byte[] { 1 };
+
         var h = new XxHash64();
         h.Append(stackalloc byte[] { (byte)shader_type, (byte)vertex_type });
         h.Append(Encoding.UTF8.GetBytes(preprocessed_source));
         foreach (var kv in defines.OrderBy(d => d.Key, StringComparer.Ordinal))
         {
-            h.Append(stackalloc byte[] { 0 });
+            h.Append(key_delimiter);
             h.Append(Encoding.UTF8.GetBytes(kv.Key));
-            h.Append(stackalloc byte[] { 1 });
+            h.Append(value_delimiter);
             h.Append(Encoding.UTF8.GetBytes(kv.Value));
         }
         return h.GetCurrentHashAsUInt64();
