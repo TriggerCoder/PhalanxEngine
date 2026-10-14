@@ -1,8 +1,9 @@
 // Port of the descriptor binding half of SpartanEngine vulkan/Vulkan_CommandList.cpp @ 4c07baa: set_dynamic
 // (:1102-1132) and set_bindless (:1134-1155), SetConstantBuffer / SetBuffer / SetTexture routing to the current
-// descriptor set layout, PushConstants (:2770-2800) and Dispatch, for the compute preview pipeline (RHI_Pipeline).
+// descriptor set layout, PushConstants (:2770-2800) and Dispatch.
 // Deviations: vkCmdPushConstants instead of vkCmdPushConstants2 (1.4 entry point), the bindless sets are bound when the
 // pipeline is set (spartan binds them in its pipeline-set path too), the state reset lives in BindPipeline.
+// SetPipeline(RHI_Pipeline) binds a prebuilt compute pipeline without going through the pipeline cache.
 using System.Runtime.InteropServices;
 using Silk.NET.Vulkan;
 
@@ -22,14 +23,12 @@ internal sealed unsafe partial class RHI_CommandList
     public void SetPipeline(RHI_Pipeline pipeline)
     {
         RequireRecording();
-        m_pipeline = pipeline;
-        m_descriptor_layout_current = pipeline.DescriptorSetLayout;
-        m_dynamic_descriptor_set  = default;
-        m_dynamic_pipeline_layout = default;
-        m_dynamic_offset_count    = 0;
-
-        RHI_Context.Vk.CmdBindPipeline(m_rhi_resource, PipelineBindPoint.Compute, pipeline.GetRhiResource());
-        SetBindless(pipeline);
+        if (!pipeline.IsCompute)
+            throw new ArgumentException("Graphics pipelines are set through SetPipelineState", nameof(pipeline));
+        RenderPassEnd();
+        m_pso = pipeline.GetState();
+        m_render_pass_pending = false;
+        BindPipeline(pipeline);
     }
 
     public void SetConstantBuffer(uint slot, RHI_Buffer constant_buffer) => RequireLayout().SetConstantBuffer(slot, constant_buffer);
@@ -58,8 +57,8 @@ internal sealed unsafe partial class RHI_CommandList
     public void Dispatch(uint x, uint y = 1, uint z = 1)
     {
         RequireRecording();
-        if (m_pipeline == null)
-            throw new InvalidOperationException($"{Name}: Dispatch without a pipeline");
+        if (m_pipeline == null || !m_pipeline.IsCompute)
+            throw new InvalidOperationException($"{Name}: Dispatch without a compute pipeline");
         SetDynamic(m_pipeline);
         RHI_Context.Vk.CmdDispatch(m_rhi_resource, x, y, z);
     }
@@ -71,7 +70,7 @@ internal sealed unsafe partial class RHI_CommandList
         int count;
         lock (RHI_Device.GetDescriptorSetMutex())
         {
-            RHI_DescriptorSetLayout layout = pipeline.DescriptorSetLayout;
+            RHI_DescriptorSetLayout layout = m_descriptor_layout_current!;
             descriptor_set = layout.GetOrCreateDescriptorSet();
             count = layout.GetDynamicOffsets(offsets);
         }
@@ -82,7 +81,7 @@ internal sealed unsafe partial class RHI_CommandList
             return;
 
         fixed (uint* p_offsets = offsets)
-            RHI_Context.Vk.CmdBindDescriptorSets(m_rhi_resource, PipelineBindPoint.Compute, pipeline_layout, 0, 1, &descriptor_set, (uint)count, p_offsets);
+            RHI_Context.Vk.CmdBindDescriptorSets(m_rhi_resource, pipeline.GetBindPoint(), pipeline_layout, 0, 1, &descriptor_set, (uint)count, p_offsets);
 
         m_dynamic_descriptor_set  = descriptor_set;
         m_dynamic_pipeline_layout = pipeline_layout;
@@ -99,7 +98,7 @@ internal sealed unsafe partial class RHI_CommandList
         lock (RHI_Device.GetDescriptorSetMutex())
             for (int i = 0; i < bindless_count; i++)
                 sets[i] = RHI_Device.GetDescriptorSet((RHI_Device_Bindless_Resource)i);
-        RHI_Context.Vk.CmdBindDescriptorSets(m_rhi_resource, PipelineBindPoint.Compute, pipeline.GetRhiResourceLayout(), 1, bindless_count, sets, 0, null);
+        RHI_Context.Vk.CmdBindDescriptorSets(m_rhi_resource, pipeline.GetBindPoint(), pipeline.GetRhiResourceLayout(), 1, bindless_count, sets, 0, null);
     }
 
     private RHI_DescriptorSetLayout RequireLayout()

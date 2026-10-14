@@ -1,5 +1,4 @@
-// Port of SpartanEngine source/rhi/RHI_Vertex.h @ 4c07baa (vertex_pack + RHI_Vertex_PosTexNorTan).
-// TODO(port): RHI_Vertex_Pos, RHI_Vertex_PosTex, RHI_Vertex_PosCol, RHI_Vertex_Pos2dTexCol8 (not referenced yet)
+// Port of SpartanEngine source/rhi/RHI_Vertex.h @ 4c07baa (vertex_pack + the vertex structs).
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -9,6 +8,42 @@ using Phalanx.Platform;
 using Phalanx.Caching;
 
 namespace Phalanx.Geometry;
+
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+public struct RHI_Vertex_Pos
+{
+    public Vector3 pos;
+    public RHI_Vertex_Pos(Vector3 position) { pos = position; }
+    public const int Size = 12;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+public struct RHI_Vertex_PosTex
+{
+    public Vector3 pos;
+    public Vector2 tex;
+    public RHI_Vertex_PosTex(float pos_x, float pos_y, float pos_z, float tex_x, float tex_y) { pos = new Vector3(pos_x, pos_y, pos_z); tex = new Vector2(tex_x, tex_y); }
+    public RHI_Vertex_PosTex(Vector3 pos, Vector2 tex) { this.pos = pos; this.tex = tex; }
+    public const int Size = 20;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+public struct RHI_Vertex_PosCol
+{
+    public Vector3 pos;
+    public Vector4 col;
+    public RHI_Vertex_PosCol(Vector3 pos, Color col) { this.pos = pos; this.col = new Vector4(col.R, col.G, col.B, col.A); }
+    public const int Size = 28;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+public struct RHI_Vertex_Pos2dTexCol8
+{
+    public Vector2 pos;
+    public Vector2 tex;
+    public uint    col;
+    public const int Size = 20;
+}
 
 // main mesh vertex, 24 bytes
 // pos kept as float3 for meshopt and bbox/picking precision

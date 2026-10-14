@@ -194,7 +194,7 @@ public class RhiDescriptorLogicTests
             DescriptorBindingStorageBufferUpdateAfterBind = true, DescriptorBindingPartiallyBound = true, RuntimeDescriptorArray = true,
             ShaderSampledImageArrayNonUniformIndexing = true, ShaderStorageBufferArrayNonUniformIndexing = true
         };
-        var core = new PhysicalDeviceFeatures { SamplerAnisotropy = true, ShaderFloat64 = true };
+        var core = new PhysicalDeviceFeatures { SamplerAnisotropy = true, ShaderFloat64 = true, DepthClamp = true, FillModeNonSolid = true, WideLines = true };
         Assert.Null(RHI_Device.MissingRequiredFeature(all, core));
         var no_partial = all; no_partial.DescriptorBindingPartiallyBound = false;
         Assert.Equal("descriptorBindingPartiallyBound", RHI_Device.MissingRequiredFeature(no_partial, core));

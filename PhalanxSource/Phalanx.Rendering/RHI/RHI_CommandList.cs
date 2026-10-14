@@ -1,6 +1,6 @@
 // Port of SpartanEngine source/rhi/RHI_CommandList.h + vulkan/Vulkan_CommandList.cpp @ 4c07baa (first slice:
 // begin/end, image barriers with synchronization2, clear via dynamic rendering or vkCmdClearColorImage, copy to buffer).
-// TODO(port): pipelines, descriptors, draw/dispatch, timestamps, markers, render passes with attachments.
+// TODO(port): timestamps, markers, resource hazard tracking.
 using Silk.NET.Vulkan;
 using static Phalanx.Rendering.RHI.RHI_Implementation;
 
@@ -103,6 +103,7 @@ internal sealed unsafe partial class RHI_CommandList : IDisposable
         m_dynamic_descriptor_set  = default;
         m_dynamic_pipeline_layout = default;
         m_dynamic_offset_count    = 0;
+        ResetRenderState();
         CommandBufferBeginInfo info = new() { SType = StructureType.CommandBufferBeginInfo, Flags = CommandBufferUsageFlags.OneTimeSubmitBit };
         Check(RHI_Context.Vk.BeginCommandBuffer(m_rhi_resource, in info), "vkBeginCommandBuffer");
         m_state = RHI_CommandListState.Recording;
@@ -112,6 +113,7 @@ internal sealed unsafe partial class RHI_CommandList : IDisposable
     {
         if (m_state != RHI_CommandListState.Recording)
             throw new InvalidOperationException($"{Name}: End while {m_state}");
+        RenderPassEnd();
         Check(RHI_Context.Vk.EndCommandBuffer(m_rhi_resource), "vkEndCommandBuffer");
     }
 
@@ -127,6 +129,7 @@ internal sealed unsafe partial class RHI_CommandList : IDisposable
     // spartan keeps engine images in GENERAL after the first transition, present source is the only other layout
     public void InsertBarrierImage(Image image, ImageAspectFlags aspect, ImageLayout layout_old, ImageLayout layout_new)
     {
+        SuspendRenderPass();
         ImageMemoryBarrier2 barrier = new()
         {
             SType               = StructureType.ImageMemoryBarrier2,
@@ -148,6 +151,7 @@ internal sealed unsafe partial class RHI_CommandList : IDisposable
     // clear through dynamic rendering (load op clear), the way the renderer will clear render targets
     public void ClearRenderTarget(ImageView view, ImageLayout layout, uint width, uint height, float r, float g, float b, float a)
     {
+        SuspendRenderPass();
         RenderingAttachmentInfo color = new()
         {
             SType       = StructureType.RenderingAttachmentInfo,
@@ -172,6 +176,7 @@ internal sealed unsafe partial class RHI_CommandList : IDisposable
     // clear without a view (image must be in GENERAL or TRANSFER_DST)
     public void ClearColorImage(Image image, ImageLayout layout, float r, float g, float b, float a)
     {
+        SuspendRenderPass();
         ClearColorValue color = new(r, g, b, a);
         ImageSubresourceRange range = new(ImageAspectFlags.ColorBit, 0, Vk.RemainingMipLevels, 0, Vk.RemainingArrayLayers);
         RHI_Context.Vk.CmdClearColorImage(m_rhi_resource, image, layout, in color, 1, in range);
@@ -179,6 +184,7 @@ internal sealed unsafe partial class RHI_CommandList : IDisposable
 
     public void CopyImageToBuffer(Image image, ImageLayout layout, Silk.NET.Vulkan.Buffer buffer, uint width, uint height)
     {
+        SuspendRenderPass();
         BufferImageCopy region = new()
         {
             ImageSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, 0, 0, 1),
@@ -256,6 +262,7 @@ internal sealed unsafe partial class RHI_CommandList : IDisposable
         if (all_match_target)
             return;
 
+        SuspendRenderPass();
         ImageAspectFlags aspect = texture.GetAspectMask();
         Span<ImageMemoryBarrier2> barriers = stackalloc ImageMemoryBarrier2[(int)RHI_Definitions.rhi_max_mip_count];
         int count = 0;
@@ -297,6 +304,7 @@ internal sealed unsafe partial class RHI_CommandList : IDisposable
     // a full memory barrier, used around transfers until RHI_Barrier scopes are ported
     public void InsertBarrierMemory(bool host_read = false)
     {
+        SuspendRenderPass();
         MemoryBarrier2 barrier = new()
         {
             SType         = StructureType.MemoryBarrier2,
@@ -311,6 +319,7 @@ internal sealed unsafe partial class RHI_CommandList : IDisposable
 
     public void CopyBuffer(Silk.NET.Vulkan.Buffer source, ulong source_offset, Silk.NET.Vulkan.Buffer destination, ulong destination_offset, ulong size)
     {
+        SuspendRenderPass();
         BufferCopy region = new(source_offset, destination_offset, size);
         RHI_Context.Vk.CmdCopyBuffer(m_rhi_resource, source, destination, 1, in region);
     }

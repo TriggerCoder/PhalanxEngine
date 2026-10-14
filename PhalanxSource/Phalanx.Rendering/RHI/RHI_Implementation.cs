@@ -110,6 +110,53 @@ internal static class RHI_Implementation
         CompareOp.Always
     };
 
+    // indexed by RHI_PolygonMode
+    public static readonly PolygonMode[] VulkanPolygonMode = { PolygonMode.Fill, PolygonMode.Line, (PolygonMode)0x7FFFFFFF };
+
+    // indexed by RHI_CullMode
+    public static readonly CullModeFlags[] VulkanCullMode = { CullModeFlags.BackBit, CullModeFlags.FrontBit, CullModeFlags.None };
+
+    // indexed by RHI_PrimitiveTopology
+    public static readonly PrimitiveTopology[] VulkanPrimitiveTopology = { PrimitiveTopology.TriangleList, PrimitiveTopology.LineList, PrimitiveTopology.PointList };
+
+    // indexed by RHI_Stencil_Operation
+    public static readonly StencilOp[] VulkanStencilOperation =
+    {
+        StencilOp.Keep,
+        StencilOp.Zero,
+        StencilOp.Replace,
+        StencilOp.IncrementAndClamp,
+        StencilOp.DecrementAndClamp,
+        StencilOp.Invert,
+        StencilOp.IncrementAndWrap,
+        StencilOp.DecrementAndWrap
+    };
+
+    // indexed by RHI_Blend
+    public static readonly BlendFactor[] VulkanBlendFactor =
+    {
+        BlendFactor.Zero,
+        BlendFactor.One,
+        BlendFactor.SrcColor,
+        BlendFactor.OneMinusSrcColor,
+        BlendFactor.SrcAlpha,
+        BlendFactor.OneMinusSrcAlpha,
+        BlendFactor.DstAlpha,
+        BlendFactor.OneMinusDstAlpha,
+        BlendFactor.DstColor,
+        BlendFactor.OneMinusDstColor,
+        BlendFactor.SrcAlphaSaturate,
+        BlendFactor.ConstantColor,
+        BlendFactor.OneMinusConstantColor,
+        BlendFactor.Src1Color,
+        BlendFactor.OneMinusSrc1Color,
+        BlendFactor.Src1Alpha,
+        BlendFactor.OneMinusSrc1Alpha
+    };
+
+    // indexed by RHI_Blend_Operation (Undefined has no entry, like spartan)
+    public static readonly BlendOp[] VulkanBlendOperation = { BlendOp.Add, BlendOp.Subtract, BlendOp.ReverseSubtract, BlendOp.Min, BlendOp.Max };
+
     // spartan: the stage mask -> vk loop in Vulkan_DescriptorSetLayout.cpp:85-121 / Vulkan_Pipeline.cpp
     public static ShaderStageFlags ToVulkanStageFlags(uint stage_mask)
     {

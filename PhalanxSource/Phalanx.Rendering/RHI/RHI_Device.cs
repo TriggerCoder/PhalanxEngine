@@ -38,6 +38,8 @@ internal static unsafe partial class RHI_Device
     public static uint   PropertyMaxPushConstantSize { get; private set; }
     public static float  PropertyMaxSamplerAnisotropy { get; private set; }
     public static uint   PropertyMaxBoundDescriptorSets { get; private set; }
+    public static float  PropertyLineWidthMin { get; private set; } = 1.0f;
+    public static float  PropertyLineWidthMax { get; private set; } = 1.0f;
     public static uint   PropertyMaxTexture2dDimension { get; private set; }
     public static ulong  PropertyOptimalBufferCopyOffsetAlignment { get; private set; }
 
@@ -140,6 +142,9 @@ internal static unsafe partial class RHI_Device
 
         // descriptor pools + bindless sets
         DescriptorsInitialize();
+
+        // pipeline cache
+        PipelinesInitialize();
     }
 
     // true when a loader exists and some device reports vulkan 1.3; creates and destroys a bare instance
@@ -187,6 +192,7 @@ internal static unsafe partial class RHI_Device
             vk.DeviceWaitIdle(RHI_Context.Device);
             DestroySwapChain();
             DeletionQueueFlush();
+            PipelinesDestroy();
             DescriptorsDestroy();
             FrameReset();
             s_allocator?.Dispose();
@@ -463,6 +469,9 @@ internal static unsafe partial class RHI_Device
         if (!f.ShaderStorageBufferArrayNonUniformIndexing)    return "shaderStorageBufferArrayNonUniformIndexing";
         if (!core.SamplerAnisotropy)                          return "samplerAnisotropy";
         if (!core.ShaderFloat64)                              return "shaderFloat64";
+        if (!core.DepthClamp)                                 return "depthClamp";
+        if (!core.FillModeNonSolid)                           return "fillModeNonSolid";
+        if (!core.WideLines)                                  return "wideLines";
         return null;
     }
 
@@ -479,7 +488,8 @@ internal static unsafe partial class RHI_Device
         if (!support_1_3.DynamicRendering || !support_1_3.Synchronization2 || !support_1_2.TimelineSemaphore)
             throw new NotSupportedException("The device lacks dynamic rendering, synchronization2 or timeline semaphores");
 
-        // spartan Vulkan_Device.cpp:1758-1787 (descriptors), :1699 (anisotropy), :1754 (float64), all asserted there
+        // spartan Vulkan_Device.cpp:1758-1787 (descriptors), :1699 (anisotropy), :1754 (float64), :1691 (depth clamp),
+        // :1703 (wireframe), :1707 (wide lines), all asserted there
         string? missing = MissingRequiredFeature(support_1_2, support.Features);
         if (missing != null)
             throw new NotSupportedException($"The device lacks {missing}");
@@ -500,6 +510,9 @@ internal static unsafe partial class RHI_Device
         PhysicalDeviceFeatures2 features = new() { SType = StructureType.PhysicalDeviceFeatures2, PNext = &features_1_2 };
         features.Features.SamplerAnisotropy = true;
         features.Features.ShaderFloat64     = true; // shared_buffers.glsl (FrameBufferData) declares doubles
+        features.Features.DepthClamp        = true; // rasterizer states without depth clip
+        features.Features.FillModeNonSolid  = true; // wireframe
+        features.Features.WideLines         = true; // the default rasterizer state draws 3 pixel lines
 
         // extensions
         HashSet<string> available = GetDeviceExtensions(physical);
@@ -568,6 +581,8 @@ internal static unsafe partial class RHI_Device
         PropertyMaxPushConstantSize             = props.Limits.MaxPushConstantsSize;
         PropertyMaxSamplerAnisotropy            = props.Limits.MaxSamplerAnisotropy;
         PropertyMaxBoundDescriptorSets          = props.Limits.MaxBoundDescriptorSets;
+        PropertyLineWidthMin                    = props.Limits.LineWidthRange[0];
+        PropertyLineWidthMax                    = props.Limits.LineWidthRange[1];
         // the stages the device runs with the features phalanx enables (no tessellation/mesh/ray tracing yet)
         SupportedStageFlags = ShaderStageFlags.VertexBit | ShaderStageFlags.FragmentBit | ShaderStageFlags.ComputeBit;
         PropertyMaxTexture2dDimension           = props.Limits.MaxImageDimension2D;

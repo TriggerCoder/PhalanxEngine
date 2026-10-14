@@ -1,5 +1,5 @@
 // Port of SpartanEngine source/rhi/RHI_Definitions.h @ 4c07baa (the enums the first RHI slice needs).
-// TODO(port): the remaining enums (blend, depth-stencil, rasterizer, barrier types).
+// TODO(port): the remaining enums (barrier types).
 namespace Phalanx.Rendering.RHI;
 
 internal enum RHI_PhysicalDevice_Type
@@ -130,6 +130,89 @@ internal enum RHI_Comparison_Function
     Always
 }
 
+// order matters: it indexes RHI_Implementation.VulkanPrimitiveTopology
+internal enum RHI_PrimitiveTopology
+{
+    TriangleList,
+    LineList,
+    PointList,
+    Max
+}
+
+// order matters: it indexes RHI_Implementation.VulkanCullMode
+internal enum RHI_CullMode
+{
+    Back,
+    Front,
+    None,
+    Max
+}
+
+// order matters: it indexes RHI_Implementation.VulkanPolygonMode
+internal enum RHI_PolygonMode
+{
+    Solid,
+    Wireframe,
+    Max
+}
+
+// order matters: it indexes RHI_Implementation.VulkanStencilOperation
+internal enum RHI_Stencil_Operation
+{
+    Keep,
+    Zero,
+    Replace,
+    Incr_Sat,
+    Decr_Sat,
+    Invert,
+    Incr,
+    Decr
+}
+
+// the vertex layouts of RHI_Vertex.cs (Phalanx.Core), Max means no vertex buffer (the shader makes its own vertices)
+internal enum RHI_Vertex_Type
+{
+    Pos,
+    PosCol,
+    PosUv,
+    PosUvNorTan,
+    Pos2dUvCol8,
+    Max
+}
+
+// order matters: it indexes RHI_Implementation.VulkanBlendFactor
+internal enum RHI_Blend
+{
+    Zero,
+    One,
+    Src_Color,
+    Inv_Src_Color,
+    Src_Alpha,
+    Inv_Src_Alpha,
+    Dest_Alpha,
+    Inv_Dest_Alpha,
+    Dest_Color,
+    Inv_Dest_Color,
+    Src_Alpha_Sat,
+    Blend_Factor,
+    Inv_Blend_Factor,
+    Src1_Color,
+    Inv_Src1_Color,
+    Src1_Alpha,
+    Inv_Src1_Alpha
+}
+
+// order matters: it indexes RHI_Implementation.VulkanBlendOperation
+internal enum RHI_Blend_Operation
+{
+    Add,
+    Subtract,
+    Rev_Subtract,
+    Min,
+    Max,
+    Undefined
+}
+
 internal enum RHI_Descriptor_Type
 {
     Image,
@@ -211,6 +294,16 @@ internal static class RHI_Definitions
     public const uint rhi_max_sampler_count         = 9;
     public const uint rhi_max_descriptor_set_count  = 512;
     public const uint rhi_dynamic_offset_empty      = uint.MaxValue;
+
+    // load/clear sentinels of the pipeline state, anything else is a clear value
+    public static readonly Phalanx.Math.Color rhi_color_dont_care = new(float.MaxValue, 0.0f, 0.0f, 0.0f);
+    public static readonly Phalanx.Math.Color rhi_color_load      = new(float.PositiveInfinity, 0.0f, 0.0f, 0.0f);
+    public const float rhi_depth_dont_care   = float.MaxValue;
+    public const float rhi_depth_load        = float.PositiveInfinity;
+    public const uint  rhi_stencil_dont_care = uint.MaxValue;
+    // spartan: numeric_limits<uint32_t>::infinity(), which is 0 for an integer type (RHI_Definitions.h:650), so a
+    // stencil clear to 0 reads as "load". Here it is a value no stencil buffer can hold.
+    public const uint  rhi_stencil_load      = uint.MaxValue - 1;
 
     public static ulong rhi_hash_combine(ulong a, ulong b) => unchecked(a * 31 + b);
 

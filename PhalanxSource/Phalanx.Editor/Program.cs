@@ -11,6 +11,9 @@ namespace Phalanx.Editor;
 //                                         (frames: stop after this many presented frames, 0 or omitted = until closed)
 //   Phalanx.Editor --rhi-clear-resize [frames]   same, resizing the window every 30 frames (swapchain resize demo)
 //   Phalanx.Editor --rhi-offscreen        no window: clears an offscreen image on the first Vulkan device and prints the pixel
+//   Phalanx.Editor --rhi-triangle [frames]   draws a triangle every frame (vertex buffer, graphics pipeline)
+//   Phalanx.Editor --rhi-cube [frames]       draws a rotating textured cube every frame (depth, index buffer, texture)
+//   Phalanx.Editor --rhi-triangle-offscreen / --rhi-cube-offscreen   no window: renders one frame and prints the center pixel
 //   add --validation to enable VK_LAYER_KHRONOS_validation (Debug builds enable it by default)
 public static class Program
 {
@@ -45,6 +48,45 @@ public static class Program
             return 0;
         }
 
+        int sample = Array.IndexOf(args, "--rhi-triangle");
+        bool cube = false;
+        if (sample < 0 && (sample = Array.IndexOf(args, "--rhi-cube")) >= 0)
+            cube = true;
+        if (sample >= 0)
+        {
+            int frames = 0;
+            if (sample + 1 < args.Length)
+                int.TryParse(args[sample + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out frames);
+            if (!RenderDevice.IsVulkanAvailable(out string reason))
+            {
+                Console.Error.WriteLine($"Vulkan is not available: {reason}");
+                return 1;
+            }
+            Window.Initialize();
+            int presented = cube
+                ? RenderDevice.RunTexturedCubeLoop(Window.GetWindow()!, frames, validation)
+                : RenderDevice.RunTriangleLoop(Window.GetWindow()!, frames, validation);
+            Console.WriteLine($"{(cube ? "rhi-cube" : "rhi-triangle")}: presented {presented} frames");
+            return 0;
+        }
+
+        bool triangle_offscreen = args.Contains("--rhi-triangle-offscreen");
+        if (triangle_offscreen || args.Contains("--rhi-cube-offscreen"))
+        {
+            if (!RenderDevice.IsVulkanAvailable(out string reason))
+            {
+                Console.Error.WriteLine($"Vulkan is not available: {reason}");
+                return 1;
+            }
+            const uint size = 64;
+            byte[] pixels = triangle_offscreen
+                ? RenderDevice.RenderTriangleOffscreen(size, size, validation)
+                : RenderDevice.RenderTexturedCubeOffscreen(size, size, 0.0f, validation);
+            int center = (int)((size / 2 * size + size / 2) * 4);
+            Console.WriteLine($"{(triangle_offscreen ? "rhi-triangle-offscreen" : "rhi-cube-offscreen")}: center pixel = {pixels[center]}, {pixels[center + 1]}, {pixels[center + 2]}, {pixels[center + 3]}");
+            return 0;
+        }
+
         if (args.Contains("--rhi-offscreen"))
         {
             if (!RenderDevice.IsVulkanAvailable(out string reason))
@@ -57,7 +99,7 @@ public static class Program
             return 0;
         }
 
-        Console.WriteLine("Phalanx editor: nothing to show yet. Try --rhi-clear or --rhi-offscreen.");
+        Console.WriteLine("Phalanx editor: nothing to show yet. Try --rhi-clear, --rhi-triangle, --rhi-cube or --rhi-offscreen.");
         return 0;
     }
 }

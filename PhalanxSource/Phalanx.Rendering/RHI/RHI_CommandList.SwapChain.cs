@@ -20,7 +20,11 @@ internal sealed unsafe partial class RHI_CommandList
     }
 
     // spartan: RHI_Device::EndFrame -> prepare_for_present
-    public void PrepareForPresent(RHI_SwapChain swapchain) => InsertBarrier(swapchain, ImageLayout.PresentSrcKhr);
+    public void PrepareForPresent(RHI_SwapChain swapchain)
+    {
+        RenderPassEnd(); // a pending clear must run before the image leaves general
+        InsertBarrier(swapchain, ImageLayout.PresentSrcKhr);
+    }
 
     // spartan: blit(RHI_Texture* source, RHI_SwapChain* destination). nearest when the sizes match, linear otherwise.
     public void Blit(RHI_Texture source, RHI_SwapChain destination)

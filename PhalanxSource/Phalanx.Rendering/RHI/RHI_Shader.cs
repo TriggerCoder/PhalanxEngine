@@ -9,7 +9,9 @@
 // - Include processing comes from ShaderCompiler.Preprocess (pragma-once + #line markers); the names/paths/sources
 //   lists are rebuilt from its #line markers. Spartan reverses them so the main file comes first, same here.
 // - The hash is XxHash64 over the expanded source and the sorted defines (spartan: std::hash + rhi_hash_combine, the
-//   defines in unordered_map order).
+//   defines in unordered_map order), plus the stage and the vertex type. Spartan leaves both out (RHI_Shader.cpp:292-297)
+//   and so does its pipeline state hash (RHI_PipelineState.cpp:93-102), so one vertex shader compiled for two vertex
+//   types maps both to the first cached pipeline and its vertex input state.
 // - Async compilation runs on the .NET thread pool (spartan: ThreadPool::AddTask).
 // - CompileFromSpirv clears the previous reflection and retires the previous module (spartan @ 4c07baa appends to
 //   m_descriptors and overwrites m_rhi_resource without queueing it for deletion, Vulkan_Shader.cpp:245-272).
@@ -45,6 +47,8 @@ internal sealed unsafe class RHI_Shader : IDisposable
     private List<RHI_Descriptor> m_descriptors = new();
     private volatile RHI_ShaderCompilationState m_compilation_state = RHI_ShaderCompilationState.Idle;
     private RHI_Shader_Type m_shader_type = RHI_Shader_Type.Max;
+    private RHI_Vertex_Type m_vertex_type = RHI_Vertex_Type.Max;
+    private RHI_InputLayout? m_input_layout;
     private ulong m_hash;
     private uint[] m_spirv = Array.Empty<uint>();
     private ShaderModule m_rhi_resource;
@@ -74,7 +78,7 @@ internal sealed unsafe class RHI_Shader : IDisposable
     };
 
     // compilation
-    public void Compile(RHI_Shader_Type shader_type, string file_path, bool async)
+    public void Compile(RHI_Shader_Type shader_type, string file_path, bool async, RHI_Vertex_Type vertex_type = RHI_Vertex_Type.Max)
     {
         string full = Path.IsPathRooted(file_path) ? file_path : Path.Combine(Compiler.ShaderRoot, file_path);
         if (!File.Exists(full))
@@ -94,7 +98,7 @@ internal sealed unsafe class RHI_Shader : IDisposable
             m_reloading = true;
             void reload()
             {
-                staged.Compile(shader_type, full, false);
+                staged.Compile(shader_type, full, false, vertex_type);
                 m_reload       = staged;
                 m_reload_ready = true;
             }
@@ -103,8 +107,13 @@ internal sealed unsafe class RHI_Shader : IDisposable
         }
 
         // clear
-        m_descriptors = new List<RHI_Descriptor>();
+        m_input_layout = null;
+        m_descriptors  = new List<RHI_Descriptor>();
+
         m_shader_type = shader_type;
+        m_vertex_type = vertex_type;
+        if (m_shader_type == RHI_Shader_Type.Vertex)
+            m_input_layout = new RHI_InputLayout();
 
         // load
         LoadFromDrive(full);
@@ -194,6 +203,7 @@ internal sealed unsafe class RHI_Shader : IDisposable
             m_preprocessed_source   = staged.m_preprocessed_source;
             m_spirv                 = staged.m_spirv;
             m_hash                  = staged.m_hash;
+            m_input_layout          = staged.m_input_layout;
         }
 
         m_reloading = false;
@@ -226,12 +236,14 @@ internal sealed unsafe class RHI_Shader : IDisposable
             m_sources.Add(File.ReadAllText(path));
         }
 
-        m_hash = ComputeHash(m_preprocessed_source, m_defines);
+        m_hash = ComputeHash(m_preprocessed_source, m_defines, m_shader_type, m_vertex_type);
     }
 
-    public static ulong ComputeHash(string preprocessed_source, IReadOnlyDictionary<string, string> defines)
+    public static ulong ComputeHash(string preprocessed_source, IReadOnlyDictionary<string, string> defines,
+                                    RHI_Shader_Type shader_type = RHI_Shader_Type.Max, RHI_Vertex_Type vertex_type = RHI_Vertex_Type.Max)
     {
         var h = new XxHash64();
+        h.Append(stackalloc byte[] { (byte)shader_type, (byte)vertex_type });
         h.Append(Encoding.UTF8.GetBytes(preprocessed_source));
         foreach (var kv in defines.OrderBy(d => d.Key, StringComparer.Ordinal))
         {
@@ -266,6 +278,9 @@ internal sealed unsafe class RHI_Shader : IDisposable
     public RHI_Shader_Type GetShaderStage() => m_shader_type;
     public ulong GetHash() => m_hash;
     public string GetEntryPoint() => "main";
+    public RHI_Vertex_Type GetVertexType() => m_vertex_type;
+    public RHI_InputLayout? GetInputLayout() => m_input_layout; // only valid for a vertex shader
+    public uint GetVertexSize() => m_input_layout?.GetVertexSize() ?? 0;
     public ReadOnlySpan<uint> GetSpirv() => m_spirv;
     public ShaderModule GetRhiResource() => m_rhi_resource;
 
@@ -296,6 +311,9 @@ internal sealed unsafe class RHI_Shader : IDisposable
         // reflect shader resources (so that descriptor sets can be created later)
         m_descriptors = RHI_SpirvReflection.Reflect(spirv, m_shader_type, GetEntryPoint());
         m_spirv       = spirv;
+
+        // create input layout
+        m_input_layout?.Create(m_vertex_type);
         return module;
     }
 

@@ -6,7 +6,7 @@
 // - STORAGE_IMAGE pool size is 32 * rhi_max_descriptor_set_count like the other per-pass types; spartan sizes it
 //   rhi_max_array_size * rhi_max_descriptor_set_count (8.4M descriptors, Vulkan_Device.cpp:1098), nothing bindless is a
 //   storage image, so it reads as a typo for the "+" of the sampled-image line above it.
-// - No acceleration-structure pool size (ray tracing step), no pipeline cache.
+// - No acceleration-structure pool size (no ray tracing yet). The pipeline cache lives in RHI_Device.Pipelines.cs.
 // - The layout cache key also hashes as_array / array_length / struct_size (spartan hashes slot, stage and type only,
 //   :1344-1349, so two pipelines whose bindings differ only in array length or block size share one layout, while
 //   RHI_DescriptorSetLayout's own hash includes them).
