@@ -1,0 +1,38 @@
+// Not a spartan shader: a stand-in for light, composition and tonemapping until those passes are ported. Shades
+// the g-buffer albedo with the bindless lights (lambert towards each directional light's -direction, colour only,
+// plus a constant ambient) into frame_render. Pixels without geometry (reverse-z depth 0) get values[0].
+// values[1].x is the light count.
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "common_resources.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+void main()
+{
+    uvec2 thread_id = gl_GlobalInvocationID.xy;
+    if (any(greaterThanEqual(thread_id, uvec2(imageSize(tex_uav)))))
+        return;
+
+    float depth = texelFetch(tex_depth, ivec2(thread_id), 0).r;
+    if (depth <= 0.0)
+    {
+        imageStore(tex_uav, ivec2(thread_id), buffer_pass.values[0]);
+        return;
+    }
+
+    vec4 albedo = texelFetch(tex_albedo, ivec2(thread_id), 0);
+    vec3 normal = normalize(texelFetch(tex_normal, ivec2(thread_id), 0).xyz);
+
+    uint light_count = uint(buffer_pass.values[1].x);
+    vec3 lit         = light_count == 0u ? vec3(1.0) : vec3(0.25);
+    for (uint i = 0u; i < light_count; i++)
+    {
+        LightParameters light = light_parameters[i];
+        if ((light.flags & 1u) != 0u) // directional
+            lit += light.color.rgb * max(dot(normal, -normalize(light.direction)), 0.0);
+    }
+
+    imageStore(tex_uav, ivec2(thread_id), vec4(albedo.rgb * lit, 1.0));
+}

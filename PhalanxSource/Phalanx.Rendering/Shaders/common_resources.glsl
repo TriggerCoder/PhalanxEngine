@@ -20,6 +20,13 @@ layout(push_constant, std430) uniform BufferPass { PassBufferData buffer_pass; }
 // Texture2D tex : register(t7)
 layout(set = 0, binding = 307) uniform texture2D tex;
 
+// g-buffer (common_resources_gbuffer.hlsl:12-16), Renderer_BindingsSrv gbuffer_color .. gbuffer_depth
+layout(set = 0, binding = 300) uniform texture2D tex_albedo;
+layout(set = 0, binding = 301) uniform texture2D tex_normal;
+layout(set = 0, binding = 302) uniform texture2D tex_material;
+layout(set = 0, binding = 303) uniform texture2D tex_velocity;
+layout(set = 0, binding = 304) uniform texture2D tex_depth;
+
 // RWTexture2D<float4> tex_uav : register(u0), [[vk::image_format("unknown")]] -> no format qualifier
 // (needs shaderStorageImageReadWithoutFormat / WriteWithoutFormat)
 layout(set = 0, binding = 100) uniform image2D tex_uav;
@@ -58,6 +65,10 @@ const uint sampler_bilinear_wrap         = 5;
 const uint sampler_trilinear_clamp       = 6;
 const uint sampler_anisotropic_wrap      = 7;
 #define GET_SAMPLER(index_sampler) samplers[index_sampler]
+
+// common_resources_buffers.hlsl:106-107, the material index rides in a float16 channel
+float pack_material_index(uint index) { return unpackHalf2x16(index + 0x0400u).x; }
+uint unpack_material_index(float value) { return max(packHalf2x16(vec2(value, 0.0)) & 0xFFFFu, 0x0400u) - 0x0400u; }
 
 // vertex pulling decode (common_resources_bindless.hlsl), PulledVertex is Spartan's 24-byte main vertex
 vec3 unpack_vertex_position(PulledVertex v)

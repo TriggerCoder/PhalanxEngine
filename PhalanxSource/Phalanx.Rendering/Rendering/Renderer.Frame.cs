@@ -9,8 +9,11 @@
 // - The rhi has no pipeline-bound callback (spartan: SetPipelineBoundCallback -> SetStandardResources, :584), so the
 //   passes call SetStandardResources right after SetPipelineState. Default push constants are a PassBufferData the
 //   passes fill and push themselves (spartan: SetDefaultPushConstants).
-// - Only the scalar fields of the frame constant buffer are filled (resolutions, time, delta time, frame, gamma,
-//   hdr). Camera, jitter, lighting, weather and xr come with the passes that read them; the matrices are identity.
+// - The frame constant buffer gets the camera and projection history (:1789), the projection jitter (:1817, the
+//   taau halton path; XeSS/DLSS and xr are not ported) and the view projection and camera fields (:1885) besides
+//   the scalars. Cluster lighting, feature bits, stereo, radial blur hubs, the emissive pool and the orthographic
+//   projection come with the passes that read them. Without a camera the matrices stay identity.
+// - The halton phase is a field reset by Initialize (spartan: a function-local static that never resets).
 // - The output resolution follows the swapchain when the window is resized (spartan: OnResize from the window event).
 // - Frames in flight are throttled by RHI_Device.BeginFrame (FramesInFlight timeline values), which is what
 //   RotateFrameBuffers' slot wait does in spartan; the per-slot gpu-driven buffers it rotates don't exist yet.
@@ -35,6 +38,11 @@ public static partial class Renderer
     private static uint s_temporal_frame;
     private static readonly System.Diagnostics.Stopwatch s_clock = new();
     private static double s_time_last;
+    private static uint s_jitter_phase_index;
+    private static Vector2 s_jitter_offset;
+
+    /// <summary>spartan's r.antialiasing_upsampling (default taau, ConsoleVariables.cpp:189); only taau jitters so far.</summary>
+    public static Renderer_AntiAliasing_Upsampling AntiAliasingUpsampling { get; set; } = Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau;
 
     /// <summary>Whether <see cref="Initialize(IWindow, bool)"/> (or the headless overload) ran and <see cref="Shutdown"/> did not.</summary>
     public static bool IsInitialized => s_initialized;
@@ -87,6 +95,7 @@ public static partial class Renderer
             CreateShaders();
 
             CreateBuffers();
+            CreateStandardMeshes();
             CreateRenderTargets(true, true);
             CreateSamplers();
             UpdateBindlessResources();
@@ -102,6 +111,9 @@ public static partial class Renderer
         s_frame_cb_ring_slot = 0;
         s_temporal_frame     = 0;
         s_cb_frame           = default;
+        s_cb_frame.view = s_cb_frame.projection = s_cb_frame.view_projection = s_cb_frame.view_projection_unjittered = Matrix4x4.Identity;
+        s_jitter_phase_index = 0;
+        s_jitter_offset      = Vector2.Zero;
         s_clock.Restart();
         s_time_last   = 0.0;
         s_initialized = true;
@@ -115,6 +127,8 @@ public static partial class Renderer
         s_initialized = false;
         RHI_Device.QueueWaitAll();
         DestroyResources();
+        GeometryBuffer.Shutdown();
+        ResetSceneGpuState();
         RHI_Device.DestroySwapChain();
         RHI_Device.Destroy();
     }
@@ -147,6 +161,7 @@ public static partial class Renderer
             UpdateBindlessResources();
 
         TickAdvanceFrameConstantBufferRing();
+        TickUploadBindlessDependencies(cmd);
         UpdateFrameConstantBuffer(cmd);
         ProduceFrame(cmd);
 
@@ -202,27 +217,111 @@ public static partial class Renderer
 
     private static void UpdateFrameConstantBuffer(RHI_CommandList cmd)
     {
-        // UpdateFrameCb_ScalarFields
-        double time = s_clock.Elapsed.TotalSeconds;
-        s_cb_frame.resolution_output = new Vector2(s_resolution_output_width, s_resolution_output_height);
-        s_cb_frame.resolution_render = new Vector2(s_resolution_render_width, s_resolution_render_height);
-        s_cb_frame.time              = time;
-        s_cb_frame.delta_time        = (float)(time - s_time_last);
-        s_cb_frame.frame             = ++s_temporal_frame;
-        s_cb_frame.resolution_scale  = (float)s_resolution_render_width / System.Math.Max(s_resolution_output_width, 1u);
-        s_cb_frame.hdr_enabled       = RHI_Device.GetSwapChain() is { } swapchain && swapchain.IsHdr() ? 1.0f : 0.0f;
-        s_cb_frame.gamma             = Gamma;
-        s_cb_frame.camera_exposure   = 1.0f; // no camera: spartan's fallback
-        s_time_last = time;
-
-        // no camera yet: identity view and projection
-        s_cb_frame.view = s_cb_frame.view_inverted = s_cb_frame.view_previous = Matrix4x4.Identity;
-        s_cb_frame.projection = s_cb_frame.projection_inverted = s_cb_frame.projection_previous = Matrix4x4.Identity;
-        s_cb_frame.view_projection = s_cb_frame.view_projection_inverted = s_cb_frame.view_projection_unjittered = Matrix4x4.Identity;
-        s_cb_frame.view_projection_previous = s_cb_frame.view_projection_previous_unjittered = Matrix4x4.Identity;
+        UpdateFrameCb_CameraAndProjectionHistory();
+        UpdateFrameCb_ProjectionJitter();
+        UpdateFrameCb_ViewProjectionAndCameraFields();
+        UpdateFrameCb_ScalarFields();
 
         GetBuffer(Renderer_Buffer.ConstantFrame)!.Update(cmd, MemoryMarshal.AsBytes(new ReadOnlySpan<FrameBufferData>(in s_cb_frame)));
     }
+
+    private static void UpdateFrameCb_CameraAndProjectionHistory()
+    {
+        if (GetViewCamera() is { } camera)
+        {
+            s_cb_frame.view_previous       = s_cb_frame.view;
+            s_cb_frame.view                = camera.GetViewMatrix();
+            s_cb_frame.view_inverted       = Invert(s_cb_frame.view);
+            s_cb_frame.projection_previous = s_cb_frame.projection;
+            s_cb_frame.projection          = camera.GetProjectionMatrix();
+            s_cb_frame.projection_inverted = Invert(s_cb_frame.projection);
+        }
+    }
+
+    private static void UpdateFrameCb_ProjectionJitter()
+    {
+        if (AntiAliasingUpsampling == Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau)
+        {
+            // halton-2,3 jitter, taau pass uses it to reconstruct sub-pixel detail
+            static float halton(uint index, uint @base)
+            {
+                float result = 0.0f;
+                float bk     = 1.0f;
+                while (index > 0)
+                {
+                    bk     /= @base;
+                    result += (index % @base) * bk;
+                    index  /= @base;
+                }
+                return result;
+            }
+
+            const uint phase_count = 16;
+            s_jitter_phase_index   = (s_jitter_phase_index + 1) % phase_count;
+
+            float jx = halton(s_jitter_phase_index + 1, 2) - 0.5f;
+            float jy = halton(s_jitter_phase_index + 1, 3) - 0.5f;
+
+            // the render resolution has no dynamic scale yet (spartan: m_resolution_render * GetResolutionScale())
+            s_jitter_offset = new Vector2(2.0f * jx / s_resolution_render_width, -2.0f * jy / s_resolution_render_height);
+            s_cb_frame.projection *= Matrix4x4.CreateTranslation(s_jitter_offset.X, s_jitter_offset.Y, 0.0f);
+        }
+        else
+        {
+            s_jitter_offset = Vector2.Zero;
+        }
+    }
+
+    private static void UpdateFrameCb_ViewProjectionAndCameraFields()
+    {
+        s_cb_frame.view_projection_previous = s_cb_frame.view_projection;
+        s_cb_frame.view_projection          = s_cb_frame.view * s_cb_frame.projection;
+        s_cb_frame.view_projection_inverted = Invert(s_cb_frame.view_projection);
+
+        // the camera view translates by -camera_position, so relative to it only the rotation is left
+        Matrix4x4 view_rotation = s_cb_frame.view;
+        view_rotation.M41 = 0.0f;
+        view_rotation.M42 = 0.0f;
+        view_rotation.M43 = 0.0f;
+        s_cb_frame.view_projection_previous_relative = s_cb_frame.view_projection_relative;
+        s_cb_frame.view_projection_relative          = view_rotation * s_cb_frame.projection;
+
+        if (GetViewCamera() is { } camera)
+        {
+            s_cb_frame.view_projection_previous_unjittered = s_cb_frame.view_projection_unjittered;
+            s_cb_frame.view_projection_unjittered          = s_cb_frame.view * camera.GetProjectionMatrix();
+            s_cb_frame.camera_near                         = camera.GetNearPlane();
+            s_cb_frame.camera_far                          = camera.GetFarPlane();
+            s_cb_frame.camera_position_previous            = s_cb_frame.camera_position;
+            s_cb_frame.camera_position                     = camera.GetEntity()!.GetPosition();
+            s_cb_frame.camera_forward                      = camera.GetEntity()!.GetForward();
+            s_cb_frame.camera_right                        = camera.GetEntity()!.GetRight();
+            s_cb_frame.camera_fov                          = camera.GetFovHorizontalRad();
+            s_cb_frame.camera_aperture                     = camera.GetAperture();
+            s_cb_frame.camera_last_movement_time           = (s_cb_frame.camera_position - s_cb_frame.camera_position_previous).LengthSquared() != 0.0f
+                ? (float)s_clock.Elapsed.TotalSeconds : s_cb_frame.camera_last_movement_time;
+        }
+    }
+
+    private static void UpdateFrameCb_ScalarFields()
+    {
+        double time = s_clock.Elapsed.TotalSeconds;
+        s_cb_frame.resolution_output   = new Vector2(s_resolution_output_width, s_resolution_output_height);
+        s_cb_frame.resolution_render   = new Vector2(s_resolution_render_width, s_resolution_render_height);
+        s_cb_frame.taa_jitter_previous = s_cb_frame.taa_jitter_current;
+        s_cb_frame.taa_jitter_current  = s_jitter_offset;
+        s_cb_frame.time                = time;
+        s_cb_frame.delta_time          = (float)(time - s_time_last);
+        s_cb_frame.frame               = ++s_temporal_frame;
+        s_cb_frame.resolution_scale    = (float)s_resolution_render_width / System.Math.Max(s_resolution_output_width, 1u);
+        s_cb_frame.hdr_enabled         = RHI_Device.GetSwapChain() is { } swapchain && swapchain.IsHdr() ? 1.0f : 0.0f;
+        s_cb_frame.gamma               = Gamma;
+        s_cb_frame.camera_exposure     = 1.0f; // no auto exposure yet: spartan's fallback
+        s_time_last = time;
+    }
+
+    // spartan's Matrix::Invert of a singular matrix yields garbage, System.Numerics reports it: keep identity then
+    private static Matrix4x4 Invert(Matrix4x4 m) => Matrix4x4.Invert(m, out Matrix4x4 inverted) ? inverted : Matrix4x4.Identity;
 
     // the frame constant buffer, the bindless sets are bound with the pipeline (spartan: SetStandardResources)
     private static void SetStandardResources(RHI_CommandList cmd)
@@ -231,11 +330,12 @@ public static partial class Renderer
     }
 
     // the bindless tables: material textures (unset slots fall back to the checkerboard), material and light
-    // parameters and the samplers (spartan: TickUploadBindlessDependencies / UpdateBindless*)
+    // parameters, the draw data and the samplers (spartan: TickUploadBindlessDependencies / UpdateBindless*)
     private static void UpdateBindlessResources()
     {
         RHI_Device.UpdateBindlessMaterials(new RHI_Texture?[RHI_Definitions.rhi_max_array_size], GetBuffer(Renderer_Buffer.MaterialParameters));
         RHI_Device.UpdateBindlessLights(GetBuffer(Renderer_Buffer.LightParameters));
+        RHI_Device.UpdateBindlessDrawData(GetBuffer(Renderer_Buffer.DrawData));
         RHI_Device.UpdateBindlessSamplers(Array.ConvertAll(s_samplers, s => s!));
         s_bindless_samplers_dirty = false;
     }

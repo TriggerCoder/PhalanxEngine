@@ -29,8 +29,7 @@ public class RendererGpuTests
         }
         finally
         {
-            Renderer.TestPatternTint = Vector4.One;
-            Renderer.TestPatternMaterialIndex = 0;
+            Renderer.ResolveBackgroundColor = new Vector4(0, 0, 0, 1);
             Renderer.Shutdown();
         }
     }
@@ -55,56 +54,19 @@ public class RendererGpuTests
     private static Vector4 Unorm(byte[] rgba) => new(rgba[0] / 255f, rgba[1] / 255f, rgba[2] / 255f, rgba[3] / 255f);
 
     [SkippableFact]
-    public void Headless_frames_clear_and_draw_the_checkerboard_through_the_bindless_tables()
+    public void Headless_frames_without_a_scene_resolve_to_the_background()
     {
         RunHeadless(() =>
         {
+            Renderer.ResolveBackgroundColor = new Vector4(0.25f, 0.5f, 0.75f, 1.0f);
             for (int i = 0; i < 3; i++)
                 Assert.True(Renderer.Tick());
             Assert.Equal(3ul, Renderer.GetFrameNumber());
             RHI_Device.QueueWaitAll();
 
             Vector4[] p = ReadOutput();
-            Vector4 Px(uint x, uint y) => p[y * Width + x];
-
-            // the quad covers the middle half, the rest is the clear colour
-            var clear = new Vector4(Renderer.TestPatternClearColor.R, Renderer.TestPatternClearColor.G, Renderer.TestPatternClearColor.B, Renderer.TestPatternClearColor.A);
-            AssertNear(clear, Px(0, 0), "corner");
-            AssertNear(clear, Px(Width - 1, Height - 1), "corner");
-            AssertNear(clear, Px(Width / 4 - 1, Height / 2), "left of the quad");
-
-            // inside: one checkerboard texel per pixel (unset material slots are the checkerboard)
-            for (uint y = Height / 4; y < Height * 3 / 4; y += 5)
-                for (uint x = Width / 4; x < Width * 3 / 4; x += 5)
-                {
-                    byte[] expected = ((x / StandardTextures.CheckerboardCell + y / StandardTextures.CheckerboardCell) % 2 == 0)
-                        ? StandardTextures.CheckerboardDark : StandardTextures.CheckerboardLight;
-                    AssertNear(Unorm(expected), Px(x, y), $"({x}, {y})");
-                }
-        });
-    }
-
-    [SkippableFact]
-    public void Pass_constants_and_bindless_material_slots_reach_the_pass()
-    {
-        RunHeadless(() =>
-        {
-            // the tint comes through the push constants
-            Renderer.TestPatternTint = new Vector4(1, 0, 0, 1);
-            Assert.True(Renderer.Tick());
-            RHI_Device.QueueWaitAll();
-            Vector4 c = ReadOutput()[(Height / 2) * Width + Width / 2];
-            Assert.True(c.X > 0.2f && c.Y == 0 && c.Z == 0, c.ToString());
-
-            // a material slot set to the white standard texture
-            var textures = new RHI_Texture?[RHI_Definitions.rhi_max_array_size];
-            textures[5] = Renderer.GetStandardTexture(Renderer_StandardTexture.White);
-            RHI_Device.UpdateBindlessMaterials(textures, null);
-            Renderer.TestPatternTint = Vector4.One;
-            Renderer.TestPatternMaterialIndex = 5;
-            Assert.True(Renderer.Tick());
-            RHI_Device.QueueWaitAll();
-            AssertNear(Vector4.One, ReadOutput()[(Height / 2) * Width + Width / 2], "white material");
+            foreach (Vector4 px in new[] { p[0], p[p.Length - 1], p[(Height / 2) * Width + Width / 2] })
+                AssertNear(Renderer.ResolveBackgroundColor, px, "background");
         });
     }
 
@@ -132,7 +94,8 @@ public class RendererGpuTests
             Assert.Equal(new Vector2(Width, Height), frame.resolution_output);
             Assert.Equal(2.2f, frame.gamma);
             Assert.True(frame.time > 0 && frame.delta_time >= 0);
-            Assert.Equal(Matrix4x4.Identity, frame.view_projection);
+            Assert.Equal(Matrix4x4.Identity, frame.view); // no camera: identity matrices
+            Assert.Equal(Matrix4x4.Identity, frame.view_projection_unjittered);
         });
     }
 
@@ -148,9 +111,20 @@ public class RendererGpuTests
                 Assert.NotNull(Renderer.GetStandardTexture(t));
             Assert.Equal(1u, Renderer.GetStandardTexture(Renderer_StandardTexture.White)!.GetWidth());
             Assert.Null(Renderer.GetStandardTexture(Renderer_StandardTexture.Gizmo_camera));
-            foreach (var b in new[] { Renderer_Buffer.ConstantFrame, Renderer_Buffer.MaterialParameters, Renderer_Buffer.LightParameters, Renderer_Buffer.GeometryInfo })
+            foreach (var b in new[] { Renderer_Buffer.ConstantFrame, Renderer_Buffer.MaterialParameters, Renderer_Buffer.LightParameters, Renderer_Buffer.GeometryInfo,
+                                      Renderer_Buffer.DummyInstance, Renderer_Buffer.DrawData })
                 Assert.NotNull(Renderer.GetBuffer(b));
             Assert.Equal((uint)System.Runtime.CompilerServices.Unsafe.SizeOf<MaterialParameters>(), Renderer.GetBuffer(Renderer_Buffer.MaterialParameters)!.GetStrideUnaligned());
+
+            // the g-buffer in spartan's formats, at the render resolution
+            foreach (var (rt, format) in new[] { (Renderer_RenderTarget.gbuffer_color, RHI_Format.R8G8B8A8_Unorm), (Renderer_RenderTarget.gbuffer_normal, RHI_Format.R16G16B16A16_Float),
+                                                 (Renderer_RenderTarget.gbuffer_material, RHI_Format.R8G8B8A8_Unorm), (Renderer_RenderTarget.gbuffer_emissive, RHI_Format.R11G11B10_Float),
+                                                 (Renderer_RenderTarget.gbuffer_velocity, RHI_Format.R16G16B16A16_Float), (Renderer_RenderTarget.gbuffer_depth, RHI_Format.D32_Float) })
+            {
+                Assert.Equal(format, Renderer.GetRenderTargetTexture(rt)!.GetFormat());
+                Assert.Equal(Width, Renderer.GetRenderTargetTexture(rt)!.GetWidth());
+            }
+            Assert.NotNull(Renderer.GetStandardMesh(Phalanx.Geometry.MeshType.Cube));
 
             // the render targets publish their sizes to the world side
             Assert.Equal(Width, RenderView.GetRenderTarget(Renderer_RenderTarget.frame_output).GetWidth());
@@ -160,6 +134,7 @@ public class RendererGpuTests
             Renderer.SetResolutionRender(64, 64);
             Assert.Equal(64u, Renderer.GetRenderTargetTexture(Renderer_RenderTarget.frame_render)!.GetWidth());
             Assert.Equal(64u, RenderView.GetRenderTarget(Renderer_RenderTarget.frame_render).GetWidth());
+            Assert.Equal(64u, Renderer.GetRenderTargetTexture(Renderer_RenderTarget.gbuffer_depth)!.GetWidth());
             Assert.True(Renderer.Tick());
 
             // below 64 pixels nothing renders

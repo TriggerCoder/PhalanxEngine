@@ -442,6 +442,26 @@ public class Mesh : IResource, IDisposable
     // calls MeshImpostor.WriteDrawData for the extra gpu lod (index lods.Count) of instanced foliage, gated by
     // cvar_foliage_impostors and mesh_lod_count < 7 (the lod count has to fit three DrawData.flags bits, flag bit 15)
 
+    // Mesh::CreateGpuBuffers (Mesh.cpp:1287 @ 4c07baa), the static mesh part: the vertices and indices go to the
+    // shared geometry buffer once and the mesh keeps the base offsets. Dynamic capacities, meshlets, impostor
+    // texels and the blas come with the passes that need them.
+    public void CreateGpuBuffers()
+    {
+        lock (m_mutex)
+        {
+            if (m_gpu_buffers_created || m_vertices.Count == 0 || m_indices.Count == 0)
+                return;
+            m_global_vertex_offset = GeometryBuffer.AppendVertices(CollectionsMarshal.AsSpan(m_vertices));
+            m_global_index_offset  = GeometryBuffer.AppendIndices(CollectionsMarshal.AsSpan(m_indices));
+            m_gpu_buffers_created  = true;
+        }
+    }
+    // the geometry buffer was shut down, the offsets are gone (the next CreateGpuBuffers appends again)
+    internal void ReleaseGpuBuffers() { lock (m_mutex) { m_gpu_buffers_created = false; m_global_vertex_offset = m_global_index_offset = 0; } }
+    public bool HasGpuBuffers() { lock (m_mutex) return m_gpu_buffers_created; }
+    public MeshLod GetLod(int sub_mesh_index, int lod_index) { lock (m_mutex) return m_sub_meshes[sub_mesh_index].lods[lod_index]; }
+    private bool m_gpu_buffers_created;
+
     public bool HasFlag(MeshFlags flag) { return (m_flags & (uint)flag) != 0; }
     public void SetFlag(MeshFlags flag, bool enabled = true) { SetFlag((uint)flag, enabled); }
 

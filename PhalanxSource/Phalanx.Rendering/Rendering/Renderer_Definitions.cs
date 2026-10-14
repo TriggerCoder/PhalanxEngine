@@ -1,5 +1,6 @@
 // Port of the renderer definitions SpartanEngine source/rendering/Renderer_Definitions.h @ 4c07baa needs so far: the
-// constants of the frame loop (:82), Renderer_BindingsCb (:199), Renderer_Sampler (:643), Renderer_Buffer (:657) and
+// constants of the frame loop (:61, :82), Renderer_AntiAliasing_Upsampling (:180), Renderer_BindingsCb (:199),
+// Renderer_BindingsSrv (:204, the g-buffer slots), Renderer_Sampler (:643), Renderer_Buffer (:657) and
 // Renderer_StandardTexture (:723), complete so the indices match spartan's. Renderer_RenderTarget lives in Phalanx.Core
 // (World components read the target sizes) and holds the targets created so far, in spartan's relative order.
 namespace Phalanx.Rendering;
@@ -8,6 +9,8 @@ internal static class Renderer_Definitions
 {
     // matches command list pool size, avoids cpu-gpu memcpy races (Renderer_Definitions.h:82)
     public const uint renderer_draw_data_buffer_count = 4;
+    // Renderer_Definitions.h:61
+    public const uint renderer_max_draw_calls = 32768;
     // Renderer.cpp:83
     public const byte swap_chain_buffer_count = 2;
     // Renderer::Initialize, lower than output so taau works well (Renderer.cpp:607)
@@ -18,6 +21,24 @@ internal static class Renderer_Definitions
 }
 
 internal enum Renderer_BindingsCb : uint { frame }
+
+internal enum Renderer_BindingsUav : uint { tex = 0 }
+
+internal enum Renderer_BindingsSrv : uint
+{
+    // g-buffer
+    gbuffer_color = 0, gbuffer_normal = 1, gbuffer_material = 2, gbuffer_velocity = 3, gbuffer_depth = 4,
+    tex = 7,
+}
+
+public enum Renderer_AntiAliasing_Upsampling : uint
+{
+    AA_Off_Upscale_Linear,
+    AA_Fxaa_Upscale_Linear,
+    AA_Taau_Upscale_Taau,
+    AA_Xess_Upscale_Xess,
+    AA_Dlss_Upscale_Dlss
+}
 
 internal enum Renderer_Sampler
 {

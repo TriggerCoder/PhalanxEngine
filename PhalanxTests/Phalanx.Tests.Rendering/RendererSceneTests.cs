@@ -1,0 +1,318 @@
+using System.Numerics;
+using System.Runtime.InteropServices;
+using Phalanx.Geometry;
+using Phalanx.Rendering;
+using Phalanx.Rendering.RHI;
+using Phalanx.World;
+using RHI_Texture = Phalanx.Rendering.RHI.RHI_Texture;
+using Xunit;
+
+namespace Phalanx.Tests;
+
+// lavapipe, validation on: camera, geometry buffer, g-buffer and resolve end to end
+[Collection("gpu")]
+public class RendererSceneTests
+{
+    private const uint Width = 128, Height = 96;
+
+    private static void AssertClean() =>
+        Assert.True(!RHI_Device.ValidationMessages.Any(m => m.Contains("ErrorBit", StringComparison.Ordinal) || m.Contains("WarningBit", StringComparison.Ordinal)),
+                    string.Join("\n", RHI_Device.ValidationMessages));
+
+    private sealed class Scene
+    {
+        public required Camera camera;
+        public required Entity cube;
+        public required Material material;
+    }
+
+    // a unit cube at the origin, the camera 3 m in front of it looking down +z
+    private static Scene CreateScene(Vector4 color)
+    {
+        var camera_entity = new Entity();
+        var camera = new Camera(camera_entity);
+        camera_entity.SetPosition(new Vector3(0, 0, -3));
+        camera_entity.SetRotation(Quaternion.Identity);
+        camera.Initialize();
+
+        var cube = new Entity();
+        cube.SetPosition(Vector3.Zero);
+
+        var material = new Material();
+        material.SetProperty(MaterialProperty.ColorR, color.X);
+        material.SetProperty(MaterialProperty.ColorG, color.Y);
+        material.SetProperty(MaterialProperty.ColorB, color.Z);
+        material.SetProperty(MaterialProperty.ColorA, color.W);
+        material.SetProperty(MaterialProperty.Roughness, 0.5f);
+        material.SetProperty(MaterialProperty.Metalness, 0.25f);
+
+        Renderer.SetViewCamera(camera);
+        Renderer.AddRenderable(Renderer.GetStandardMesh(MeshType.Cube)!, cube, material);
+        return new Scene { camera = camera, cube = cube, material = material };
+    }
+
+    private static void Run(Action body, Renderer_AntiAliasing_Upsampling aa = Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear)
+    {
+        Skip.IfNot(RenderDevice.IsVulkanAvailable(out string reason), reason);
+        Renderer.AntiAliasingUpsampling = aa;
+        Renderer.Initialize(Width, Height, validation: true);
+        try
+        {
+            body();
+            RHI_Device.QueueWaitAll();
+            AssertClean();
+        }
+        finally
+        {
+            Renderer.AntiAliasingUpsampling = Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau;
+            Renderer.ResolveBackgroundColor = new Vector4(0, 0, 0, 1);
+            Renderer.Shutdown();
+        }
+    }
+
+    private static void Frame(Scene scene)
+    {
+        scene.camera.Tick();
+        Assert.True(Renderer.Tick());
+    }
+
+    private static byte[] Read(Renderer_RenderTarget target)
+    {
+        RHI_Device.QueueWaitAll();
+        return RHI_Device.ReadbackTexture(Renderer.GetRenderTargetTexture(target)!, 0, 0);
+    }
+
+    private static float Half(byte[] b, int offset) => (float)BitConverter.UInt16BitsToHalf(BitConverter.ToUInt16(b, offset));
+    private static int Index(uint x, uint y) => (int)(y * Width + x);
+
+    [SkippableFact]
+    public void Camera_matrices_follow_spartan_reverse_z_and_reach_the_frame_buffer()
+    {
+        Run(() =>
+        {
+            Scene scene = CreateScene(Vector4.One);
+            Frame(scene);
+
+            Camera camera = scene.camera;
+            Matrix4x4 view = camera.GetViewMatrix();
+            Matrix4x4 projection = camera.GetProjectionMatrix();
+            Assert.NotEqual(Matrix4x4.Identity, view);
+            Assert.Equal(new Vector3(0, 0, 3), Vector3.Transform(Vector3.Zero, view)); // the cube 3 m ahead
+
+            // reverse-z: near maps to 1, far to 0; the non reverse-z copy the other way round
+            Vector4 Ndc(Matrix4x4 p, float z) { Vector4 c = Vector4.Transform(new Vector4(0, 0, z, 1), p); return c / c.W; }
+            Assert.Equal(1.0f, Ndc(projection, camera.GetNearPlane()).Z, 4);
+            Assert.Equal(0.0f, Ndc(projection, camera.GetFarPlane()).Z, 4);
+            Assert.Equal(0.0f, Ndc(camera.GetProjectionMatrixNonReverseZ(), camera.GetNearPlane()).Z, 4);
+
+            ref readonly FrameBufferData frame = ref Renderer.GetFrameConstantBuffer();
+            Assert.Equal(view, frame.view);
+            Assert.Equal(projection, frame.projection); // no jitter with aa off
+            Assert.Equal(view * projection, frame.view_projection);
+            Assert.Equal(frame.view_projection, frame.view_projection_unjittered);
+            Assert.Equal(Vector2.Zero, frame.taa_jitter_current);
+            Assert.Equal(new Vector3(0, 0, -3), frame.camera_position);
+            Assert.Equal(camera.GetNearPlane(), frame.camera_near);
+            Assert.Equal(camera.GetFarPlane(), frame.camera_far);
+
+            // the previous matrices are last frame's
+            scene.camera.GetEntity()!.SetPosition(new Vector3(0, 0, -4));
+            Matrix4x4 vp_before = frame.view_projection;
+            Frame(scene);
+            Assert.Equal(vp_before, Renderer.GetFrameConstantBuffer().view_projection_previous);
+            Assert.NotEqual(vp_before, Renderer.GetFrameConstantBuffer().view_projection);
+        });
+    }
+
+    [SkippableFact]
+    public void Taau_jitters_the_projection_with_spartans_halton_sequence()
+    {
+        Run(() =>
+        {
+            Scene scene = CreateScene(Vector4.One);
+            static float halton(uint index, uint b) { float r = 0, f = 1; while (index > 0) { f /= b; r += index % b * f; index /= b; } return r; }
+
+            var seen = new HashSet<Vector2>();
+            for (uint i = 1; i <= 17; i++)
+            {
+                Frame(scene);
+                ref readonly FrameBufferData frame = ref Renderer.GetFrameConstantBuffer();
+                uint phase = i % 16; // spartan pre-increments its phase, the first frame uses phase 1
+                var expected = new Vector2(2.0f * (halton(phase + 1, 2) - 0.5f) / Width, -2.0f * (halton(phase + 1, 3) - 0.5f) / Height);
+                Assert.Equal(expected, frame.taa_jitter_current);
+                Assert.Equal(scene.camera.GetProjectionMatrix() * Matrix4x4.CreateTranslation(expected.X, expected.Y, 0), frame.projection);
+                Assert.Equal(frame.view * scene.camera.GetProjectionMatrix(), frame.view_projection_unjittered);
+                if (i <= 16)
+                    Assert.True(seen.Add(expected));
+            }
+            Assert.Equal(16, seen.Count);
+        }, Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau);
+    }
+
+    [SkippableFact]
+    public void The_gbuffer_holds_the_cubes_depth_albedo_normal_and_material()
+    {
+        Run(() =>
+        {
+            Scene scene = CreateScene(new Vector4(1.0f, 0.5f, 0.0f, 1.0f));
+            Frame(scene);
+            Frame(scene);
+
+            // depth (d32): the front face at z = -0.5, 2.5 m from the camera; nothing at the corners (reverse-z clear 0)
+            byte[] depth = Read(Renderer_RenderTarget.gbuffer_depth);
+            float D(uint x, uint y) => BitConverter.ToSingle(depth, Index(x, y) * 4);
+            Vector4 clip = Vector4.Transform(new Vector4(0, 0, -0.5f, 1), scene.camera.GetViewMatrix() * scene.camera.GetProjectionMatrix());
+            Assert.Equal(clip.Z / clip.W, D(Width / 2, Height / 2), 4);
+            Assert.Equal(0.0f, D(0, 0));
+            Assert.Equal(0.0f, D(Width - 1, Height - 1));
+
+            // the cube covers a centred square: find its horizontal extent on the middle row and compare with the projection
+            Vector4 edge = Vector4.Transform(new Vector4(0.5f, 0, -0.5f, 1), scene.camera.GetViewMatrix() * scene.camera.GetProjectionMatrix());
+            float expected_half_width = edge.X / edge.W * Width / 2;
+            int covered = 0;
+            for (uint x = 0; x < Width; x++)
+                if (D(x, Height / 2) > 0) covered++;
+            Assert.InRange(covered, 2 * expected_half_width - 2, 2 * expected_half_width + 2);
+
+            // albedo (rgba8): the material colour
+            byte[] albedo = Read(Renderer_RenderTarget.gbuffer_color);
+            int c = Index(Width / 2, Height / 2) * 4;
+            Assert.Equal(new byte[] { 255, 128, 0, 255 }, albedo[c..(c + 4)]);
+            Assert.Equal(new byte[] { 0, 0, 0, 0 }, albedo[0..4]);
+
+            // normal (rgba16f): the front face faces the camera (-z), w carries the packed material index 0
+            byte[] normal = Read(Renderer_RenderTarget.gbuffer_normal);
+            int n = Index(Width / 2, Height / 2) * 8;
+            Assert.Equal(0.0f, Half(normal, n), 3);
+            Assert.Equal(0.0f, Half(normal, n + 2), 3);
+            Assert.Equal(-1.0f, Half(normal, n + 4), 3);
+            Assert.Equal((float)BitConverter.UInt16BitsToHalf(0x0400), Half(normal, n + 6));
+
+            // material (rgba8): roughness, metalness, 0, occlusion
+            byte[] material = Read(Renderer_RenderTarget.gbuffer_material);
+            Assert.Equal(new byte[] { 128, 64, 0, 255 }, material[c..(c + 4)]);
+
+            // velocity: the scene is static
+            byte[] velocity = Read(Renderer_RenderTarget.gbuffer_velocity);
+            int v = Index(Width / 2, Height / 2) * 8;
+            Assert.Equal(0.0f, Half(velocity, v), 3);
+            Assert.Equal(0.0f, Half(velocity, v + 2), 3);
+        });
+    }
+
+    [SkippableFact]
+    public void Side_faces_write_their_own_normals_when_the_cube_turns()
+    {
+        Run(() =>
+        {
+            Scene scene = CreateScene(Vector4.One);
+            // turned 90 degrees about y another face looks at the camera, its normal rotated with the transform
+            scene.cube.SetRotation(Quaternion.CreateFromAxisAngle(Vector3.UnitY, MathF.PI / 2));
+            Frame(scene);
+            byte[] normal = Read(Renderer_RenderTarget.gbuffer_normal);
+            int n = Index(Width / 2, Height / 2) * 8;
+            var world_normal = new Vector3(Half(normal, n), Half(normal, n + 2), Half(normal, n + 4));
+            Assert.True(Vector3.Distance(new Vector3(0, 0, -1), world_normal) < 1e-2f, world_normal.ToString()); // whichever face, it faces the camera
+        });
+    }
+
+    [SkippableFact]
+    public void The_resolve_shades_the_albedo_with_the_bindless_lights_into_frame_output()
+    {
+        Run(() =>
+        {
+            Scene scene = CreateScene(new Vector4(0.5f, 0.25f, 1.0f, 1.0f));
+            Renderer.ResolveBackgroundColor = new Vector4(0.1f, 0.2f, 0.3f, 1.0f);
+
+            Vector4 Output(uint x, uint y)
+            {
+                byte[] b = Read(Renderer_RenderTarget.frame_output);
+                int i = Index(x, y) * 8;
+                return new Vector4(Half(b, i), Half(b, i + 2), Half(b, i + 4), Half(b, i + 6));
+            }
+            void Near(Vector4 expected, Vector4 actual) => Assert.True(Vector4.Distance(expected, actual) < 4e-3f, $"expected {expected}, got {actual}");
+
+            // no lights: the albedo as is
+            Frame(scene);
+            Vector4 albedo = new(128 / 255f, 64 / 255f, 1.0f, 1.0f);
+            Near(albedo, Output(Width / 2, Height / 2));
+            Near(Renderer.ResolveBackgroundColor, Output(0, 0));
+
+            // a directional light shining down +z onto the front face: ambient 0.25 plus the light colour
+            var light_entity = new Entity();
+            light_entity.SetPosition(new Vector3(0, 5, 0)); // computes the directions, forward is +z
+            var light = new Light(light_entity);
+            light.SetLightType(LightType.Directional);
+            light.SetColor(new Phalanx.Math.Color(0.5f, 0.5f, 0.5f, 1.0f));
+            Renderer.AddLight(light);
+            Frame(scene);
+            Assert.Equal(0u, light.GetIndex());
+            Assert.Equal(1u, Renderer.GetLightCount());
+            Vector4 expected = new(albedo.X * 0.75f, albedo.Y * 0.75f, albedo.Z * 0.75f, 1.0f);
+            Near(expected, Output(Width / 2, Height / 2));
+
+            // the light parameters table carries the light
+            byte[] table = RHI_Device.ReadbackBuffer(Renderer.GetBuffer(Renderer_Buffer.LightParameters)!, 0, (ulong)Marshal.SizeOf<LightParameters>());
+            LightParameters uploaded = MemoryMarshal.Read<LightParameters>(table);
+            Assert.Equal(1u, uploaded.flags & 1u);
+            Assert.Equal(light_entity.GetForward(), uploaded.direction);
+
+            // and the material table the material
+            byte[] materials = RHI_Device.ReadbackBuffer(Renderer.GetBuffer(Renderer_Buffer.MaterialParameters)!, 0, (ulong)Marshal.SizeOf<MaterialParameters>());
+            MaterialParameters m = MemoryMarshal.Read<MaterialParameters>(materials);
+            Assert.Equal(new Vector4(0.5f, 0.25f, 1.0f, 1.0f), m.color);
+            Assert.Equal(0.5f, m.roughness);
+        });
+    }
+
+    [SkippableFact]
+    public void Geometry_buffer_appends_grow_and_keep_the_committed_range()
+    {
+        Run(() =>
+        {
+            // the standard cube is already in
+            Assert.Equal(24u, GeometryBuffer.GetVertexCount());
+            Assert.Equal(36u, GeometryBuffer.GetIndexCount());
+            Assert.True(Renderer.Tick());
+            RHI_Buffer first = GeometryBuffer.GetVertexBuffer()!;
+            Assert.Equal(GeometryBuffer.add_headroom(24, 24), first.GetElementCount()); // spartan's 25% headroom
+
+            // the identity instance sits in slot 0 of the instance buffer
+            byte[] instance = RHI_Device.ReadbackBuffer(GeometryBuffer.GetInstanceBuffer()!, 0, 32);
+            Assert.Equal(PackedInstance.GetIdentity(), MemoryMarshal.Read<PackedInstance>(instance));
+            Assert.Equal(Matrix4x4.Identity, PackedInstance.GetIdentity().GetMatrix());
+
+            // enough vertices to grow: the base offset follows the committed ones, the old contents move over gpu side
+            var more = new RHI_Vertex_PosTexNorTan[100];
+            for (int i = 0; i < more.Length; i++)
+                more[i] = new RHI_Vertex_PosTexNorTan(new Vector3(i, 0, 0), Vector2.Zero);
+            Assert.Equal(24u, GeometryBuffer.AppendVertices(more));
+            Assert.Equal(36u, GeometryBuffer.AppendIndices(new uint[] { 0, 1, 2 }));
+            Assert.True(Renderer.Tick());
+            RHI_Buffer grown = GeometryBuffer.GetVertexBuffer()!;
+            Assert.NotSame(first, grown);
+            RHI_Device.QueueWaitAll();
+
+            byte[] bytes = RHI_Device.ReadbackBuffer(grown, 0, 124 * 24);
+            var gpu = MemoryMarshal.Cast<byte, RHI_Vertex_PosTexNorTan>(bytes);
+            var cube_v = new List<RHI_Vertex_PosTexNorTan>(); var cube_i = new List<uint>();
+            GeometryGeneration.generate_cube(cube_v, cube_i);
+            for (int i = 0; i < 24; i++)
+                Assert.Equal(cube_v[i], gpu[i]);
+            for (int i = 0; i < 100; i++)
+                Assert.Equal(new Vector3(i, 0, 0), gpu[24 + i].pos);
+        });
+    }
+
+    [SkippableFact]
+    public void Packed_instances_round_trip_a_transform()
+    {
+        var m = Matrix4x4.CreateScale(2, 3, 4) * Matrix4x4.CreateFromYawPitchRoll(0.3f, 0.2f, 0.1f) * Matrix4x4.CreateTranslation(5, 6, 7);
+        var instance = new PackedInstance();
+        instance.SetMatrix(m);
+        Matrix4x4 back = instance.GetMatrix();
+        for (int r = 0; r < 4; r++)
+            for (int c = 0; c < 4; c++)
+                Assert.True(MathF.Abs(m[r, c] - back[r, c]) < 1e-3f, $"[{r},{c}] {m[r, c]} vs {back[r, c]}"); // snorm16 rotation
+    }
+}

@@ -463,6 +463,53 @@ public class Camera : Component
     public List<Entity> GetSelectedEntities() { return m_selected_entities; }
     public int GetSelectedEntityCount() { return m_selected_entities.Count; }
 
+    // Camera::Initialize / Tick / RefreshMatrices / ComputeMatrices (Camera.cpp:64-68, :106-135, :392-405 @ 4c07baa):
+    // the matrices follow the viewport and the entity transform. Reverse-z: the projection swaps near and far, the
+    // non reverse-z copy keeps them for unprojection. Input, lerping and walking are not ported yet.
+    public override void Initialize()
+    {
+        base.Initialize();
+        ComputeMatrices();
+    }
+
+    public override void Tick()
+    {
+        RHI_Viewport current_viewport = RenderView.GetViewport();
+        if (!m_last_known_viewport.Equals(current_viewport))
+        {
+            m_last_known_viewport = current_viewport;
+            SetFlag(CameraFlags.IsDirty, true);
+        }
+        RefreshMatrices();
+    }
+
+    public void RefreshMatrices()
+    {
+        Matrix4x4 current_matrix = GetEntity().GetMatrix();
+        if (m_matrix_previous != current_matrix)
+        {
+            m_matrix_previous = current_matrix;
+            SetFlag(CameraFlags.IsDirty, true);
+        }
+        ComputeMatrices();
+    }
+
+    public void ComputeMatrices()
+    {
+        if (!GetFlag(CameraFlags.IsDirty))
+            return;
+
+        m_view                          = UpdateViewMatrix();
+        m_projection                    = ComputeProjection(m_far_plane, m_near_plane);
+        m_projection_non_reverse_z      = ComputeProjection(m_near_plane, m_far_plane);
+        m_view_projection               = m_view * m_projection;
+        m_view_projection_non_reverse_z = m_view * m_projection_non_reverse_z;
+        m_frustum                       = new Frustum(GetViewMatrix(), GetProjectionMatrix());
+        SetFlag(CameraFlags.IsDirty, false);
+    }
+
+    public Matrix4x4 GetProjectionMatrixNonReverseZ() { return m_projection_non_reverse_z; }
+
     public Matrix4x4 UpdateViewMatrix()
     {
         // extract basis vectors directly from world matrix to avoid quaternion decomposition instability

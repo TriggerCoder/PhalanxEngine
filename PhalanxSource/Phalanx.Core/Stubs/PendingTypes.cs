@@ -49,7 +49,12 @@ public class RHI_Texture
 
 // TODO(port): source/rendering/Renderer_Definitions.h (only the targets referenced so far)
 // the render targets ported so far, in the relative order of spartan's Renderer_RenderTarget (Renderer_Definitions.h:505)
-public enum Renderer_RenderTarget { frame_render, frame_output, shadow_atlas, max }
+// the targets created so far, in spartan's order (Renderer_Definitions.h:505); the ones in between come with their passes
+public enum Renderer_RenderTarget
+{
+    gbuffer_color, gbuffer_normal, gbuffer_normal_previous, gbuffer_material, gbuffer_emissive, gbuffer_velocity,
+    gbuffer_velocity_previous, gbuffer_depth, frame_render, frame_output, shadow_atlas, max
+}
 
 // TODO(port): source/rhi/RHI_Definitions.h (RHI_CullMode)
 public enum RHI_CullMode { Back, Front, None, Max }

@@ -323,6 +323,19 @@ internal sealed unsafe partial class RHI_CommandList : IDisposable
         RHI_Context.Vk.CmdPipelineBarrier2(m_rhi_resource, in dependency);
     }
 
+    // spartan: RHI_CommandList::CopyBufferContents, copies the first size bytes of source into destination on an
+    // immediate list and waits (the geometry buffer moves its committed range into a grown buffer with it)
+    public static void CopyBufferContents(RHI_Buffer source, RHI_Buffer destination, ulong size)
+    {
+        if (size == 0)
+            return;
+        if (size > source.GetObjectSize() || size > destination.GetObjectSize())
+            throw new ArgumentOutOfRangeException(nameof(size));
+        RHI_CommandList cmd_list = ImmediateExecutionBegin(RHI_Queue_Type.Copy);
+        cmd_list.CopyBuffer(source.GetRhiResource(), 0, destination.GetRhiResource(), 0, size);
+        ImmediateExecutionEnd(cmd_list);
+    }
+
     public void CopyBuffer(Silk.NET.Vulkan.Buffer source, ulong source_offset, Silk.NET.Vulkan.Buffer destination, ulong destination_offset, ulong size)
     {
         SuspendRenderPass();

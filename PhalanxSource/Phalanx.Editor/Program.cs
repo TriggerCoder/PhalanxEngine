@@ -14,6 +14,8 @@ namespace Phalanx.Editor;
 //   Phalanx.Editor --rhi-triangle [frames]   draws a triangle every frame (vertex buffer, graphics pipeline)
 //   Phalanx.Editor --rhi-cube [frames]       draws a rotating textured cube every frame (depth, index buffer, texture)
 //   Phalanx.Editor --rhi-triangle-offscreen / --rhi-cube-offscreen   no window: renders one frame and prints the center pixel
+//   Phalanx.Editor --renderer-cube [frames]  spartan's standard cube through the renderer (g-buffer, resolve) with a camera
+//   Phalanx.Editor --renderer-cube-offscreen  no window: renders that frame and prints frame_output's center pixel
 //   add --validation to enable VK_LAYER_KHRONOS_validation (Debug builds enable it by default)
 public static class Program
 {
@@ -45,6 +47,30 @@ public static class Program
             // cornflower blue
             int presented = RenderDevice.RunClearLoop(Window.GetWindow()!, 0.392f, 0.584f, 0.929f, 1.0f, frames, validation, resize_every);
             Console.WriteLine($"rhi-clear: presented {presented} frames");
+            return 0;
+        }
+
+        int renderer_cube = Array.IndexOf(args, "--renderer-cube");
+        bool renderer_cube_offscreen = args.Contains("--renderer-cube-offscreen");
+        if (renderer_cube >= 0 || renderer_cube_offscreen)
+        {
+            if (!RenderDevice.IsVulkanAvailable(out string reason))
+            {
+                Console.Error.WriteLine($"Vulkan is not available: {reason}");
+                return 1;
+            }
+            if (renderer_cube_offscreen)
+            {
+                System.Numerics.Vector4 c = RendererCubeDemo.RunOffscreen(128, validation);
+                Console.WriteLine(FormattableString.Invariant($"renderer-cube-offscreen: center pixel = {c.X:0.###}, {c.Y:0.###}, {c.Z:0.###}, {c.W:0.###}"));
+                return 0;
+            }
+            int frames = 0;
+            if (renderer_cube + 1 < args.Length)
+                int.TryParse(args[renderer_cube + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out frames);
+            Window.Initialize();
+            int presented = RendererCubeDemo.Run(Window.GetWindow()!, frames, validation);
+            Console.WriteLine($"renderer-cube: presented {presented} frames");
             return 0;
         }
 
@@ -99,7 +125,7 @@ public static class Program
             return 0;
         }
 
-        Console.WriteLine("Phalanx editor: nothing to show yet. Try --rhi-clear, --rhi-triangle, --rhi-cube or --rhi-offscreen.");
+        Console.WriteLine("Phalanx editor: nothing to show yet. Try --renderer-cube, --rhi-clear, --rhi-triangle, --rhi-cube or --rhi-offscreen.");
         return 0;
     }
 }

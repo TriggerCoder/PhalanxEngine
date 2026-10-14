@@ -1,7 +1,8 @@
 // Port of the resource half of SpartanEngine source/rendering/Renderer_Resources.cpp @ 4c07baa, the slice the first
-// pass needs: CreateBuffers (:79, the frame constant buffer and the bindless material, light and geometry info
-// tables), CreateSamplers (:406), CreateRenderTargets (:631, frame_render and frame_output), CreateShaders (:1114, the
-// shaders ported so far), CreateStandardTextures (:1422, the noise, checkerboard, black and white textures),
+// pass needs: CreateBuffers (:79, the frame constant buffer, the bindless material, light and geometry info tables,
+// the dummy instance and the draw data), CreateSamplers (:406), CreateRenderTargets (:631, the g-buffer, frame_render
+// and frame_output), CreateShaders (:1114, the shaders ported so far), CreateStandardMeshes (:1365, the cube so far),
+// CreateStandardTextures (:1422, the noise, checkerboard, black and white textures),
 // DestroyResources (:1616) and the getters (:1775).
 // Deviations:
 // - The standard textures are generated (StandardTextures.cs) instead of loaded from data/textures.
@@ -9,6 +10,8 @@
 //   returns null for them.
 // - CreateSamplers keeps spartan's static "created once" guard as a field reset by DestroyResources, so a renderer
 //   initialized again after Shutdown gets its samplers back (spartan's function-local statics never reset).
+// - The g-buffer targets are created at the render resolution without RHI_Texture_ConcurrentSharing and without the
+//   history copies (normal, velocity and depth previous) and the hi-z pyramids, nothing reads them yet.
 // - frame_output has one mip (spartan: a full chain with per-mip views, for the bloom and auto exposure
 //   downsamples); RHI_Texture_ConcurrentSharing is dropped, there is no async compute yet.
 using Phalanx.Rendering.RHI;
@@ -19,7 +22,8 @@ using Texture      = Phalanx.Rendering.RHI.RHI_Texture;
 
 namespace Phalanx.Rendering;
 
-internal enum Renderer_Shader { test_pattern_v, test_pattern_p, blit_c, max }
+// spartan's shader names; resolve_c is Phalanx's stand-in for light, composition and tonemapping
+internal enum Renderer_Shader { gbuffer_v, gbuffer_p, resolve_c, blit_c, max }
 
 public static partial class Renderer
 {
@@ -50,6 +54,12 @@ public static partial class Renderer
         s_buffers[(int)Renderer_Buffer.LightParameters]    = Storage<LightParameters>(RHI_Definitions.rhi_max_array_size, "lights");
         // one record per tlas instance, scattered foliage enters per instance so this outgrows the entity count
         s_buffers[(int)Renderer_Buffer.GeometryInfo]       = Storage<GeometryInfo>(RHI_Definitions.rhi_max_array_size * 4, "geometry_info");
+
+        PackedInstance[] identity = { PackedInstance.GetIdentity() };
+        s_buffers[(int)Renderer_Buffer.DummyInstance] = new RHI_Buffer(RHI_Buffer_Type.Instance, (ulong)System.Runtime.CompilerServices.Unsafe.SizeOf<PackedInstance>(), (uint)identity.Length,
+                                                                      System.Runtime.InteropServices.MemoryMarshal.AsBytes(identity.AsSpan()), mappable: true, "dummy_instance_buffer");
+        // one buffer for every frame, each writes its own offset region so the bindless descriptors never change under in-flight commands
+        s_buffers[(int)Renderer_Buffer.DrawData] = Storage<DrawData>(renderer_max_draw_calls * renderer_draw_data_buffer_count, "draw_data");
     }
 
     private static void CreateSamplers()
@@ -98,26 +108,61 @@ public static partial class Renderer
             RenderView.SetRenderTargetSize(type, width, height);
         }
 
+        // g-buffer (Renderer_Resources.cpp:758-766)
+        void GBuffer(RenderTarget type, RHI_Format format)
+        {
+            const RHI_Texture_Flags gbuffer_flags = RHI_Texture_Flags.RHI_Texture_Rtv | RHI_Texture_Flags.RHI_Texture_Srv | RHI_Texture_Flags.RHI_Texture_ClearBlit;
+            s_render_targets[(int)type]?.Dispose();
+            s_render_targets[(int)type] = new Texture(RHI_Texture_Type.Type2D, s_resolution_render_width, s_resolution_render_height, 1, 1, format, gbuffer_flags, type.ToString());
+            RenderView.SetRenderTargetSize(type, s_resolution_render_width, s_resolution_render_height);
+        }
+
         if (create_render)
+        {
+            GBuffer(RenderTarget.gbuffer_color,    RHI_Format.R8G8B8A8_Unorm);
+            GBuffer(RenderTarget.gbuffer_normal,   RHI_Format.R16G16B16A16_Float);
+            GBuffer(RenderTarget.gbuffer_material, RHI_Format.R8G8B8A8_Unorm);
+            GBuffer(RenderTarget.gbuffer_emissive, RHI_Format.R11G11B10_Float);
+            GBuffer(RenderTarget.gbuffer_velocity, RHI_Format.R16G16B16A16_Float);
+            GBuffer(RenderTarget.gbuffer_depth,    RHI_Format.D32_Float);
             Replace(RenderTarget.frame_render, s_resolution_render_width, s_resolution_render_height);
+        }
         if (create_output)
             Replace(RenderTarget.frame_output, s_resolution_output_width, s_resolution_output_height);
     }
 
     private static void CreateShaders()
     {
-        void Compile(Renderer_Shader type, RHI_Shader_Type stage, string file)
+        void Compile(Renderer_Shader type, RHI_Shader_Type stage, string file, RHI_Vertex_Type vertex_type = RHI_Vertex_Type.Max)
         {
             var shader = new RHI_Shader();
-            shader.Compile(stage, file, async: false);
+            shader.Compile(stage, file, async: false, vertex_type);
             if (!shader.IsCompiled())
                 throw new InvalidOperationException($"{file} failed to compile: {shader.LastError}");
             s_shaders[(int)type] = shader;
         }
 
-        Compile(Renderer_Shader.test_pattern_v, RHI_Shader_Type.Vertex,  "test_pattern.vert");
-        Compile(Renderer_Shader.test_pattern_p, RHI_Shader_Type.Pixel,   "test_pattern.frag");
+        Compile(Renderer_Shader.gbuffer_v, RHI_Shader_Type.Vertex,  "g_buffer.vert", RHI_Vertex_Type.PosUvNorTan);
+        Compile(Renderer_Shader.gbuffer_p, RHI_Shader_Type.Pixel,   "g_buffer.frag");
+        Compile(Renderer_Shader.resolve_c, RHI_Shader_Type.Compute, "resolve.comp");
         Compile(Renderer_Shader.blit_c,         RHI_Shader_Type.Compute, "blit.comp");
+    }
+
+    private static readonly Mesh?[] s_standard_meshes = new Mesh?[(int)Phalanx.Geometry.MeshType.Max];
+    public static Mesh? GetStandardMesh(Phalanx.Geometry.MeshType type) => s_standard_meshes[(int)type];
+
+    private static void CreateStandardMeshes()
+    {
+        var vertices = new List<Phalanx.Geometry.RHI_Vertex_PosTexNorTan>();
+        var indices  = new List<uint>();
+        Phalanx.Geometry.GeometryGeneration.generate_cube(vertices, indices);
+        var mesh = new Mesh();
+        mesh.SetResourceName("standard_cube"); // spartan: SetResourceFilePath(project directory + name), no project directory yet
+        mesh.SetFlag((uint)MeshFlags.PostProcessOptimize, false);
+        mesh.AddGeometry(vertices, indices, false);
+        mesh.SetMeshType(Phalanx.Geometry.MeshType.Cube);
+        mesh.CreateGpuBuffers();
+        s_standard_meshes[(int)Phalanx.Geometry.MeshType.Cube] = mesh;
     }
 
     private static void CreateStandardTextures()
@@ -152,6 +197,7 @@ public static partial class Renderer
         DisposeAll(s_samplers);
         DisposeAll(s_buffers);
         DisposeAll(s_shaders);
+        DisposeAll(s_standard_meshes);
         s_samplers_created = false;
         s_mip_bias         = float.MaxValue;
     }
