@@ -5,7 +5,9 @@
 // (:1291-1318) and light_sample_depth (:1320-1340). The atlas is tex2. Needs common_light.glsl.
 // vogel_depth and directional_filter_radius are upstream 67a6e8b's (see there), which fix pinned's texel grid stair
 // steps. Deviations: compute_normal_offset takes the clip x scale from column 0, not row 0, of the view_projection
-// (see there); otherwise none in the maths. The foliage normal flip is kept, but no material sets the foliage bit yet.
+// and scales a spot / point light's texel by the light space depth (see there); otherwise none in the maths. The
+// foliage normal flip is kept, but no material sets the foliage bit yet. buffer_frame.options bits 28-30 are phalanx
+// diagnostics (Renderer.ShadowDiagnostics, the editor's --shadow-* flags); spartan uses bits 0-4.
 #ifndef PHALANX_COMMON_SHADOW
 #define PHALANX_COMMON_SHADOW
 
@@ -21,6 +23,12 @@ const float g_maximum_penumbra_size          = 64.0;
 const float g_contact_hardening_factor       = 0.5;
 const float g_base_bias_texels               = 0.6;
 const float g_slope_bias_texels              = 2.2;
+
+// phalanx diagnostics, off by default (Renderer_ShadowDiagnostics)
+const uint g_shadow_option_bias_upstream   = 1u << 28; // spartan's normal offset: row 0 clip scale, unit depth texel
+const uint g_shadow_option_blocker_nearest = 1u << 29; // point sampled blocker search
+const uint g_shadow_option_early_out       = 1u << 30; // spot / point keep the centre tap early out
+bool shadow_option(uint bit) { return (buffer_frame.options & bit) != 0u; }
 
 const vec2 g_vogel_samples_penumbra[8] = vec2[8](
     vec2( 0.250000,  0.000000),
@@ -75,7 +83,8 @@ float light_compare_depth(Light light, vec3 uv, float compare)
 
 float light_sample_depth(Light light, vec3 uv)
 {
-    return textureLod(sampler2D(tex2, samplers[sampler_bilinear_clamp_border]), light_atlas_uv(light, uv), 0.0).r;
+    uint s = shadow_option(g_shadow_option_blocker_nearest) ? sampler_point_clamp_border : sampler_bilinear_clamp_border;
+    return textureLod(sampler2D(tex2, samplers[s]), light_atlas_uv(light, uv), 0.0).r;
 }
 
 vec2 rotate_2d(vec2 v, float angle)
@@ -163,18 +172,17 @@ vec2 directional_filter_radius(Light light, vec3 coords, float receiver_depth, v
 }
 
 // shadow factor using vogel disk sampling, upstream 67a6e8b (shadow_mapping.hlsl:143-193): no centre tap early out
-// (a fully lit or shadowed centre doesn't make the footprint uniform, skipping the taps exposes the texel grid), the
-// texel size is the cpu's 1 / slice resolution (pinned 4c07baa divided it by the atlas scale again, :131-139), the
-// near sun cascade filters by the sun's angular size, out of slice taps count as lit and taps stay half a texel
-// inside the slice
+// for any light (a fully lit or shadowed centre doesn't make the footprint uniform, skipping the taps exposes the
+// texel grid as rows of lines), the texel size is the cpu's 1 / slice resolution (pinned 4c07baa divided it by the
+// atlas scale again, :131-139), the near sun cascade filters by the sun's angular size, out of slice taps count as lit
+// and taps stay half a texel inside the slice
 float vogel_depth(Light light, Surface surface, vec3 sample_coords, float receiver_depth, float filter_size_multiplier)
 {
     uint cascade_index   = uint(sample_coords.z);
     bool far_directional = light_is_directional(light) && cascade_index == 1u;
 
-    // bisect-A: without the spot/point depth scaled bias (variant C) the full footprint gives spot/point acne, so they
-    // keep renderer-6's centre tap early out here; the sun takes upstream's path unchanged
-    if (!light_is_directional(light))
+    // diagnostic: the shadow-lines build's spot / point path, pinned 4c07baa's centre tap early out (:119-127)
+    if (!light_is_directional(light) && shadow_option(g_shadow_option_early_out))
     {
         float center = light_compare_depth(light, sample_coords, receiver_depth);
         if (center <= 0.001)
@@ -222,11 +230,27 @@ float vogel_depth(Light light, Surface surface, vec3 sample_coords, float receiv
 vec3 compute_normal_offset(Surface surface, Light light, uint cascade_index)
 {
     // world-space texel size from the projection. Deviation: spartan takes length(transform[0].xyz), row 0 of the
-    // row-vector view_projection (shadow_mapping.hlsl:186-206), which mixes the x, y and z axes' x components and is
-    // only the clip x scale when the light's right vector is world x. Column 0 is the clip x scale for any orientation.
+    // row-vector view_projection (shadow_mapping.hlsl:186-199 @ 4c07baa, :199-212 @ 67a6e8b), which mixes the x, y
+    // and z axes' x components and is only the clip x scale when the light's right vector is world x. Column 0 is the
+    // clip x scale for any orientation.
     mat4 m = light_get_transform(light, cascade_index);
-    float world_frustum_width = 2.0 / length(vec3(m[0][0], m[1][0], m[2][0]));
+    bool upstream = shadow_option(g_shadow_option_bias_upstream);
+    vec3 clip_x   = upstream ? vec3(m[0][0], m[0][1], m[0][2]) : vec3(m[0][0], m[1][0], m[2][0]);
+    float world_frustum_width = 2.0 / length(clip_x);
     float texel_size_world    = world_frustum_width * light_get_atlas_texel_size(light, cascade_index).x;
+
+    // Deviation: a perspective (spot, point) projection divides by the view depth, so a texel is that depth times
+    // wider than spartan's size, which holds at 1 m only. A few metres out the offset is a fraction of a texel and the
+    // receiver self shadows in rows along the texel grid. The depth is the selected face's: for a point light the
+    // largest axis of the light to surface vector (the face selection below uses the same test), for a spot light
+    // clip w. The shadow-fix build took clip w of face 0 for point lights, which is negative on the far side of the
+    // light and clamped the offset to zero there.
+    if (!light_is_directional(light) && !upstream)
+    {
+        vec3 d = surface.position - light.position;
+        float depth = light_is_point(light) ? max(max(abs(d.x), abs(d.y)), abs(d.z)) : (m * vec4(surface.position, 1.0)).w;
+        texel_size_world *= max(depth, 0.0);
+    }
 
     vec3 light_dir = light_is_directional(light) ? normalize(-light.forward) : normalize(light.position - surface.position);
     float n_dot_l  = dot(surface.normal, light_dir);
