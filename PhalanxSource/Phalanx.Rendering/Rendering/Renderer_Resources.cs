@@ -11,7 +11,24 @@
 // - CreateSamplers keeps spartan's static "created once" guard as a field reset by DestroyResources, so a renderer
 //   initialized again after Shutdown gets its samplers back (spartan's function-local statics never reset).
 // - The g-buffer targets are created at the render resolution without RHI_Texture_ConcurrentSharing and without the
-//   history copies (normal, velocity and depth previous) and the hi-z pyramids, nothing reads them yet.
+//   normal and velocity history copies and the hi-z pyramids, nothing reads them yet. gbuffer_depth_previous
+//   (:770, taau and the upscaler reactivity read it), dlss_reactivity (:767) and taau_history (:866, mono) are created.
+// - taau_history and frame_output_2 (the target it swaps with) are R32G32B32A32_Float, spartan creates both as
+//   R16G16B16A16_Float (:849, :859, :872). taau.hlsl blends each new jitter sample into the history with a weight of
+//   about 1/(n+1) for up to 128 frames (taau.hlsl:454-475) and writes the result to the history every frame (:514). A half float has
+//   11 significant bits, so once a pixel's history weight is in the tens, the change a sample makes, (sample -
+//   history)/(n+1), is under half a half-float step whenever the history is within a few percent of the samples, and
+//   the stored value doesn't move. The clip box doesn't pull it back either: the luminance padding of taau.hlsl:384-386
+//   (0.05 * level * (1 - level) in taa tonemapped space) is several percent of the radiance. Each pixel freezes at
+//   whatever value it had when its weight grew, so a smooth gradient (a floor lit by a point light) turns into
+//   fine contour lines that follow the shading. A float history converges to the jittered mean.
+// - light_diffuse and light_specular are R16G16B16A16_Float, spartan creates them as R11G11B10_Float (:809-810). That
+//   format keeps 6 mantissa bits for red and green and 5 for blue, so the light comes out in steps of 1.6% to 3%. With
+//   anti-aliasing off they are single steps, under one 8 bit code after the tonemapper. Taau turns them into bands:
+//   the jitter moves each pixel's samples across the steps, the clip box is wider than a step, so a jump to the next
+//   step isn't clipped and the history only creeps towards it at 1/(n+1) per frame. When a soft shadow or a light moves
+//   over a static floor, every pixel lags by a different amount depending on when it last crossed a step, and the
+//   lags show as stepped contour bands behind the shadow. rgba16f has 11 significant bits, the steps fall to 0.05%.
 // - frame_output has one mip (spartan: a full chain with per-mip views, for the bloom and auto exposure
 //   downsamples); RHI_Texture_ConcurrentSharing is dropped, there is no async compute yet.
 using Phalanx.Rendering.RHI;
@@ -26,7 +43,7 @@ using MaterialTextureType = Phalanx.World.MaterialTextureType;
 namespace Phalanx.Rendering;
 
 // spartan's shader names; resolve_c is Phalanx's stand-in for light, composition and tonemapping
-internal enum Renderer_Shader { gbuffer_v, gbuffer_p, depth_prepass_alpha_p, light_c, light_composition_c, output_c, blit_c, depth_light_v, depth_light_alpha_p, max }
+internal enum Renderer_Shader { gbuffer_v, gbuffer_p, depth_prepass_alpha_p, light_c, light_composition_c, output_c, blit_c, depth_light_v, depth_light_alpha_p, taau_c, dlss_reactivity_c, max }
 
 public static partial class Renderer
 {
@@ -127,11 +144,15 @@ public static partial class Renderer
             GBuffer(RenderTarget.gbuffer_material, RHI_Format.R8G8B8A8_Unorm);
             GBuffer(RenderTarget.gbuffer_emissive, RHI_Format.R11G11B10_Float);
             GBuffer(RenderTarget.gbuffer_velocity, RHI_Format.R16G16B16A16_Float);
+            Replace(RenderTarget.dlss_reactivity, s_resolution_render_width, s_resolution_render_height, RHI_Format.R8G8B8A8_Unorm);
             GBuffer(RenderTarget.gbuffer_depth,    RHI_Format.D32_Float);
+            // the temporal passes test disocclusion against the prior depth (:770); it starts cleared, see Pass_Depth_Prepass
+            GBuffer(RenderTarget.gbuffer_depth_previous, RHI_Format.D32_Float);
+            s_depth_history_cleared = false;
             Replace(RenderTarget.frame_render, s_resolution_render_width, s_resolution_render_height);
-            // light (Renderer_Resources.cpp:809-810)
-            Replace(RenderTarget.light_diffuse,  s_resolution_render_width, s_resolution_render_height, RHI_Format.R11G11B10_Float);
-            Replace(RenderTarget.light_specular, s_resolution_render_width, s_resolution_render_height, RHI_Format.R11G11B10_Float);
+            // light (Renderer_Resources.cpp:809-810), rgba16f instead of r11g11b10, see the deviation in the header
+            Replace(RenderTarget.light_diffuse,  s_resolution_render_width, s_resolution_render_height, LightBufferFormat);
+            Replace(RenderTarget.light_specular, s_resolution_render_width, s_resolution_render_height, LightBufferFormat);
 
             // shadow atlas (Renderer_Resources.cpp:842), d32, independent of the resolution: created once
             Texture? atlas = s_render_targets[(int)RenderTarget.shadow_atlas];
@@ -147,8 +168,15 @@ public static partial class Renderer
         {
             // Renderer_Resources.cpp:848-849, frame_output_2 is the post process ping-pong target
             Replace(RenderTarget.frame_output,   s_resolution_output_width, s_resolution_output_height);
-            Replace(RenderTarget.frame_output_2, s_resolution_output_width, s_resolution_output_height);
+            // :866, the mono history; Pass_AA_Upscale swaps it with frame_output_2 every taau frame, so both need the
+            // same size and format. Both are rgba32f (spartan: rgba16f), see the deviation in the header.
+            RHI_Format history_format = TaauHistoryFormat;
+            Replace(RenderTarget.frame_output_2, s_resolution_output_width, s_resolution_output_height, history_format);
+            Replace(RenderTarget.taau_history,   s_resolution_output_width, s_resolution_output_height, history_format);
         }
+
+        // new targets hold no history (Renderer.cpp:1720, SetResolution resets it with the targets)
+        s_taau_reset_history = true;
     }
 
     private static void CreateShaders()
@@ -171,6 +199,8 @@ public static partial class Renderer
         Compile(Renderer_Shader.blit_c,         RHI_Shader_Type.Compute, "blit.comp");
         Compile(Renderer_Shader.depth_light_v,       RHI_Shader_Type.Vertex,  "depth_light.vert", RHI_Vertex_Type.PosUvNorTan);
         Compile(Renderer_Shader.depth_light_alpha_p, RHI_Shader_Type.Pixel,   "depth_light_alpha.frag");
+        Compile(Renderer_Shader.taau_c,              RHI_Shader_Type.Compute, "taau.comp");
+        Compile(Renderer_Shader.dlss_reactivity_c,   RHI_Shader_Type.Compute, "dlss_reactivity.comp");
     }
 
     private static readonly Mesh?[] s_standard_meshes = new Mesh?[(int)Phalanx.Geometry.MeshType.Max];

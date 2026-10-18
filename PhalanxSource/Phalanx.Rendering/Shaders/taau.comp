@@ -1,0 +1,510 @@
+// GLSL port of SpartanEngine data/shaders/taau.hlsl @ 4c07baa (identical at upstream 67a6e8b) with shared_taau.h:
+// single pass, phase weighted taau, 8x8 groups sharing a (8 + 4) x (8 + 4) tile of the current frame in shared
+// memory, up to five history taps. Reads frame_render (tex2), the history (tex), the previous depth (tex3), the
+// upscaler reactivity (tex4), gbuffer_depth and gbuffer_velocity; writes the output (tex_uav) and the new history
+// (tex_uav2). Line references are to taau.hlsl.
+// Deviations: mono only, the stereo eye selection of compute_sky_velocity (:136-141) and the write_history off
+// branch for the second eye are dropped (write_history is always set); no cloud velocity (spartan binds
+// cloud_velocity instead of gbuffer_velocity when the cloud history is valid, there are no clouds).
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "common_resources.glsl"
+#include "common_light.glsl"
+
+// shared_taau.h, the cpu dispatch uses the same numbers (Renderer_Passes.cs)
+#ifndef TAAU_GROUP_X
+#define TAAU_GROUP_X 8
+#endif
+#ifndef TAAU_GROUP_Y
+#define TAAU_GROUP_Y 8
+#endif
+
+layout(local_size_x = TAAU_GROUP_X, local_size_y = TAAU_GROUP_Y, local_size_z = 1) in;
+
+// pass_taau (shared_buffers.h:571-575)
+const uint pass_taau_reset_history = 0u;
+const uint pass_taau_write_history = 1u;
+
+const uint tile_capacity = (TAAU_GROUP_X + 4) * (TAAU_GROUP_Y + 4);
+// fp32 prevents compressed highlights rounding to 1; separate planes avoid a four-word lds stride.
+shared float current_tile_y[tile_capacity];
+shared float current_tile_co[tile_capacity];
+shared float current_tile_cg[tile_capacity];
+shared float current_tile_depth[tile_capacity];
+
+vec4 read_current_tile(uint i)
+{
+    return vec4(current_tile_y[i], current_tile_co[i], current_tile_cg[i], current_tile_depth[i]);
+}
+
+bool reset_history() { return pass_bool(pass_taau_reset_history); }
+
+const float sky_depth       = 1e-7;
+const float reuse_depth_tol = 0.02;
+
+vec3 tonemap_for_taa(vec3 c)
+{
+    float l = max(c.r, max(c.g, c.b));
+    return c * (1.0 / (1.0 + l));
+}
+
+vec3 tonemap_for_taa_inv(vec3 c)
+{
+    float l = max(c.r, max(c.g, c.b));
+    return c * (1.0 / max(1.0 - l, 1.0 / (1.0 + FLT_MAX_16U)));
+}
+
+vec3 to_ycocg(vec3 c)
+{
+    return vec3(dot(c, vec3(0.25, 0.5, 0.25)),
+                0.5 * (c.r - c.b), 0.5 * c.g - 0.25 * (c.r + c.b));
+}
+
+vec3 from_ycocg(vec3 c)
+{
+    return vec3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z);
+}
+
+vec4 load_current(ivec2 px)
+{
+    vec3 rgb    = texelFetch(tex2, px, 0).rgb;
+    float depth = texelFetch(tex_depth, px, 0).r;
+    // negative luminance marks invalid color while preserving depth.
+    if (any(isnan(rgb)) || any(isinf(rgb)))
+        return vec4(-1.0, 0.0, 0.0, depth);
+    return vec4(to_ycocg(tonemap_for_taa(clamp(rgb, vec3(0.0), vec3(FLT_MAX_16U)))), depth);
+}
+
+ivec2 render_center(vec2 px_out, vec2 res_out, vec2 res_render)
+{
+    vec2 jitter_px = buffer_frame.taa_jitter_current * vec2(0.5, -0.5) * res_render;
+    return ivec2(floor(clamp((px_out + 0.5) / res_out * res_render + jitter_px, vec2(0.5), res_render - 0.5)));
+}
+
+float max3(vec3 c)
+{
+    return max(c.r, max(c.g, c.b));
+}
+
+vec4 sample_history_bilinear(vec2 uv)
+{
+    return textureLod(sampler2D(tex, samplers[sampler_bilinear_clamp]), uv, 0.0);
+}
+
+// five-tap catmull-rom approximation with omitted corners and renormalized weights.
+vec4 sample_history(vec2 uv, vec2 res, bool depth_edge)
+{
+    // positive weights prevent neighboring surfaces from ringing into a geometric silhouette.
+    if (depth_edge)
+        return sample_history_bilinear(uv);
+
+    vec2 sample_pos = uv * res;
+    vec2 tc1        = floor(sample_pos - 0.5) + 0.5;
+    vec2 f          = sample_pos - tc1;
+    vec2 f2         = f * f;
+    vec2 f3         = f2 * f;
+
+    vec2 w0 = f2 - 0.5 * (f3 + f);
+    vec2 w1 = 1.5 * f3 - 2.5 * f2 + 1.0;
+    vec2 w3 = 0.5 * (f3 - f2);
+    vec2 w2 = 1.0 - w0 - w1 - w3;
+
+    vec2 w12  = max(w1 + w2, vec2(1e-5));
+    vec2 tc0  = (tc1 - 1.0) / res;
+    vec2 tc3  = (tc1 + 2.0) / res;
+    vec2 tc12 = (tc1 + w2 / w12) / res;
+
+    vec4 s0 = sample_history_bilinear(vec2(tc12.x, tc0.y));
+    vec4 s1 = sample_history_bilinear(vec2(tc0.x,  tc12.y));
+    vec4 s2 = sample_history_bilinear(vec2(tc12.x, tc12.y));
+    vec4 s3 = sample_history_bilinear(vec2(tc3.x,  tc12.y));
+    vec4 s4 = sample_history_bilinear(vec2(tc12.x, tc3.y));
+
+    float k0 = w12.x * w0.y;
+    float k1 = w0.x  * w12.y;
+    float k2 = w12.x * w12.y;
+    float k3 = w3.x  * w12.y;
+    float k4 = w12.x * w3.y;
+
+    float k_sum = k0 + k1 + k2 + k3 + k4;
+    vec3 result = s0.rgb * k0 + s1.rgb * k1 + s2.rgb * k2 + s3.rgb * k3 + s4.rgb * k4;
+    result      = result * (1.0 / max(k_sum, 1e-5));
+
+    // clamp negative-lobe ringing around bright subpixel highlights.
+    vec3 lo = min(s2.rgb, min(min(s0.rgb, s1.rgb), min(s3.rgb, s4.rgb)));
+    vec3 hi = max(s2.rgb, max(max(s0.rgb, s1.rgb), max(s3.rgb, s4.rgb)));
+    return vec4(max(clamp(result, lo, hi), vec3(0.0)), max(s2.a, 0.0));
+}
+
+vec3 clip_to_aabb(vec3 box_min, vec3 box_max, vec3 history)
+{
+    vec3 center = 0.5 * (box_max + box_min);
+    vec3 extent = max(0.5 * (box_max - box_min), vec3(1e-5));
+    vec3 offset = history - center;
+    vec3 units  = abs(offset) / extent;
+    float ratio = max3(units);
+
+    return (ratio > 1.0) ? (center + offset / ratio) : history;
+}
+
+vec2 compute_sky_velocity(vec2 uv)
+{
+    mat4 vp_curr = buffer_frame.view_projection_unjittered;
+    mat4 vp_prev = buffer_frame.view_projection_previous_unjittered;
+
+    vec2 ndc      = uv_to_ndc(uv);
+    vec4 world    = buffer_frame.view_projection_inverted * vec4(ndc, 0.0001, 1.0);
+    vec3 view_dir = normalize(world.xyz / world.w - buffer_frame.camera_position);
+
+    // w=0 removes camera translation, including the stereo eye offset.
+    vec4 curr_clip = vp_curr * vec4(view_dir, 0.0);
+    vec4 prev_clip = vp_prev * vec4(view_dir, 0.0);
+    return curr_clip.xy / max(curr_clip.w, 1e-6) - prev_clip.xy / max(prev_clip.w, 1e-6);
+}
+
+float compute_history_reuse(ivec2 px_render, vec2 res_render, ivec2 px_render_max, vec2 uv_prev, float depth_raw, float previous_depth, float moving, bool foliage_coverage, vec2 depth_range)
+{
+    bool is_sky    = depth_raw <= sky_depth;
+    float expected = abs(previous_depth);
+    // older/custom velocity producers may not provide previous surface depth.
+    if (!is_sky && (expected <= 0.0 || expected >= FLT_MAX_16U || isnan(expected) || isinf(expected)))
+    {
+        vec2 uv_render = (vec2(px_render) + 0.5) / res_render;
+        vec3 position  = get_position(depth_raw, uv_render);
+        vec4 prev_clip = buffer_frame.view_projection_previous * vec4(position, 1.0);
+        if (prev_clip.w <= 1e-6 || prev_clip.z < 0.0 || prev_clip.z > prev_clip.w)
+            return 0.0;
+        expected = linearize_depth(prev_clip.z / prev_clip.w);
+    }
+
+    vec2 prev_uv  = uv_prev + buffer_frame.taa_jitter_previous * vec2(0.5, -0.5);
+    vec2 prev_pos = prev_uv * res_render - 0.5;
+    ivec2 base    = ivec2(floor(prev_pos));
+    vec2 f        = fract(prev_pos);
+    float reuse    = 0.0;
+    float coverage = 0.0;
+    for (int y = 0; y < 2; ++y)
+    {
+        for (int x = 0; x < 2; ++x)
+        {
+            ivec2 tap = base + ivec2(x, y);
+            if (any(lessThan(tap, ivec2(0))) || any(greaterThan(tap, px_render_max)))
+                continue;
+            float z     = texelFetch(tex3, tap, 0).r;
+            float match = 0.0;
+            if (is_sky)
+                match = z <= sky_depth ? 1.0 : 0.0;
+            else if (z > sky_depth)
+            {
+                float error = abs(linearize_depth(z) - expected) / max(expected, 1e-3);
+                match = 1.0 - smoothstep(reuse_depth_tol, 2.0 * reuse_depth_tol, error);
+            }
+            // cutout jitter alternates visible layers; validate their local depth range instead of one leaf.
+            if (foliage_coverage)
+                match = max(match, z >= depth_range.x && z <= depth_range.y ? 1.0 : 0.0);
+            vec2 w = vec2(x == 0 ? 1.0 - f.x : f.x, y == 0 ? 1.0 - f.y : f.y);
+            coverage += w.x * w.y * match;
+            // stationary coverage can survive a jitter phase; moving coverage must actually match.
+            if (w.x * w.y > 0.01)
+                reuse = max(reuse, match);
+        }
+    }
+    // retain partial surface coverage proportionally instead of treating one matching tap as full support.
+    return clamp(mix(reuse, coverage, moving), 0.0, 1.0);
+}
+
+vec4 current_sample(ivec2 tap, ivec2 tile_origin, uint tile_width, bool use_tile)
+{
+    if (use_tile)
+        return read_current_tile(uint(tap.y - tile_origin.y) * tile_width + uint(tap.x - tile_origin.x));
+    return load_current(tap);
+}
+
+vec4 taau(uvec2 px_out, vec2 res_out, ivec2 tile_origin, uint tile_width, bool use_tile)
+{
+    vec2 uv_out          = (vec2(px_out) + 0.5) / res_out;
+    uvec2 active_render  = uvec2(get_render_resolution_active());
+    ivec2 px_render_max  = max(ivec2(active_render) - 1, ivec2(0));
+
+    vec2 active_render_f = vec2(active_render);
+    vec2 jitter_px       = buffer_frame.taa_jitter_current * vec2(0.5, -0.5) * active_render_f;
+    vec2 p_render        = uv_out * active_render_f + jitter_px;
+
+    p_render     = clamp(p_render, vec2(0.5), active_render_f - 0.5);
+    ivec2 center = clamp(ivec2(floor(p_render)), ivec2(0), px_render_max);
+
+    ivec2 base = ivec2(floor(p_render - 0.5));
+    vec2 f     = p_render - (vec2(base) + 0.5);
+    vec2 f2    = f * f;
+    vec2 f3    = f2 * f;
+    // all four cubic taps are needed to preserve linear ramps across jitter phases.
+    vec2 w0 = f2 - 0.5 * (f3 + f);
+    vec2 w1 = 1.5 * f3 - 2.5 * f2 + 1.0;
+    vec2 w3 = 0.5 * (f3 - f2);
+    vec2 w2 = 1.0 - w0 - w1 - w3;
+    vec4 wx = vec4(w0.x, w1.x, w2.x, w3.x);
+    vec4 wy = vec4(w0.y, w1.y, w2.y, w3.y);
+
+    vec3 color_min              = vec3( FLT_MAX_16U);
+    vec3 color_max              = vec3(-FLT_MAX_16U);
+    vec3 reconstruction_min     = vec3( FLT_MAX_16U);
+    vec3 reconstruction_max     = vec3(-FLT_MAX_16U);
+    vec3 moment1                = vec3(0.0);
+    vec3 moment2                = vec3(0.0);
+    float sample_count          = 0.0;
+    vec3 current_ycocg          = vec3(0.0);
+    vec4 current_linear         = vec4(0.0);
+    vec3 coverage_min           = vec3(FLT_MAX_16U);
+    vec3 coverage_max           = vec3(0.0);
+    float neighborhood_peak_tm  = 0.0;
+    float neighborhood_floor_tm = 1.0;
+    float weight_sum            = 0.0;
+
+    ivec2 closest_px     = center;
+    float closest_depth  = -1.0;
+    float furthest_depth = 1.0;
+
+    for (int oy = -1; oy <= 2; ++oy)
+    {
+        for (int ox = -1; ox <= 2; ++ox)
+        {
+            ivec2 tap = base + ivec2(ox, oy);
+            if (any(lessThan(tap, ivec2(0))) || any(greaterThan(tap, px_render_max)))
+                continue;
+
+            vec4 sample_data = current_sample(tap, tile_origin, tile_width, use_tile);
+            if (sample_data.x < 0.0)
+                continue;
+            vec3 ycocg = sample_data.xyz;
+            float w    = wx[ox + 1] * wy[oy + 1];
+            current_ycocg += ycocg * w;
+            weight_sum    += w;
+            if (ox >= 0 && ox <= 1 && oy >= 0 && oy <= 1)
+            {
+                reconstruction_min = min(reconstruction_min, ycocg);
+                reconstruction_max = max(reconstruction_max, ycocg);
+                float coverage_weight = (ox == 0 ? 1.0 - f.x : f.x) * (oy == 0 ? 1.0 - f.y : f.y);
+                vec3 sample_linear    = tonemap_for_taa_inv(max(from_ycocg(ycocg), vec3(0.0)));
+                current_linear += vec4(sample_linear, 1.0) * coverage_weight;
+                coverage_min    = min(coverage_min, sample_linear);
+                coverage_max    = max(coverage_max, sample_linear);
+            }
+
+            // rectification must see every sample used to reconstruct thin texture lines.
+            color_min     = min(color_min, ycocg);
+            color_max     = max(color_max, ycocg);
+            moment1      += ycocg;
+            moment2      += ycocg * ycocg;
+            sample_count += 1.0;
+
+            // keep motion dilation local so distant surfaces do not steer reprojection.
+            if (all(lessThanEqual(abs(tap - center), ivec2(1))))
+            {
+                neighborhood_peak_tm  = max(neighborhood_peak_tm, ycocg.x + max(ycocg.z, abs(ycocg.y) - ycocg.z));
+                neighborhood_floor_tm = min(neighborhood_floor_tm, ycocg.x + min(ycocg.z, -abs(ycocg.y) - ycocg.z));
+                furthest_depth        = min(furthest_depth, sample_data.w);
+                if (sample_data.w > closest_depth)
+                {
+                    closest_depth = sample_data.w;
+                    closest_px    = tap;
+                }
+            }
+        }
+    }
+
+    bool current_valid = weight_sum > 1e-5 && sample_count > 0.0;
+    // clamp to the interpolation footprint, not distant cubic taps that can create an outline.
+    if (reconstruction_min.x > reconstruction_max.x)
+    {
+        reconstruction_min = color_min;
+        reconstruction_max = color_max;
+    }
+    current_ycocg = current_valid ? clamp(current_ycocg * (1.0 / weight_sum), reconstruction_min, reconstruction_max) : vec3(0.0);
+    vec3 current_rgb_tm = max(from_ycocg(current_ycocg), vec3(0.0));
+
+    vec4 center_data   = current_sample(center, tile_origin, tile_width, use_tile);
+    float center_depth = center_data.w;
+    bool depth_edge    = closest_depth - furthest_depth > max(closest_depth * reuse_depth_tol, sky_depth);
+    // resets and bootstrap must reconstruct geometric coverage before compressing radiance.
+    if (depth_edge && current_linear.a > 1e-5)
+    {
+        current_rgb_tm = tonemap_for_taa(current_linear.rgb / current_linear.a);
+        current_ycocg  = to_ycocg(current_rgb_tm);
+    }
+    vec4 center_velocity  = texelFetch(tex_velocity, center, 0);
+    vec4 closest_velocity = depth_edge ? texelFetch(tex_velocity, closest_px, 0) : center_velocity;
+    bool foliage_coverage = center_velocity.w < 0.0 || closest_velocity.w < 0.0;
+    bool is_sky           = center_depth <= sky_depth;
+    vec2 velocity_ndc;
+    if (is_sky)
+    {
+        velocity_ndc = center_velocity.xy;
+        if (dot(velocity_ndc, velocity_ndc) < 1e-12)
+            velocity_ndc = compute_sky_velocity(p_render / active_render_f);
+    }
+    else
+    {
+        // motion and depth must refer to the same sample that supplies the reconstructed color.
+        velocity_ndc = center_velocity.xy;
+    }
+    vec2 velocity_uv = velocity_ndc * vec2(0.5, -0.5);
+    vec2 uv_prev     = uv_out - velocity_uv;
+
+    vec2 inset           = 0.5 / res_out;
+    bool uv_prev_valid   = all(greaterThanEqual(uv_prev, inset)) && all(lessThanEqual(uv_prev, 1.0 - inset));
+    bool history_invalid = reset_history() || !uv_prev_valid;
+
+    if (!current_valid)
+        return vec4(0.0);
+
+    if (history_invalid)
+        return vec4(saturate_16(max(tonemap_for_taa_inv(current_rgb_tm), vec3(0.0))), 0.0);
+
+    float motion_px = length(velocity_uv * res_out);
+    // stationary background can still be uncovered by a moving foreground edge.
+    if (depth_edge)
+        motion_px = max(motion_px, length(closest_velocity.xy * vec2(0.5, -0.5) * res_out));
+    float moving_coverage = clamp(motion_px * (depth_edge ? 8.0 : 2.0), 0.0, 1.0);
+    // subpixel motion also resamples history, so it needs a shorter accumulation window.
+    float motion = clamp(motion_px * 8.0, 0.0, 1.0);
+
+    vec3 mean         = moment1 / sample_count;
+    vec3 sigma        = sqrt(max(moment2 / sample_count - mean * mean, vec3(0.0)));
+    float clip_motion = clamp(motion_px * 0.5, 0.0, 1.0);
+    float gamma       = mix(2.5, 1.0, clip_motion);
+    vec3 box_min      = max(color_min, mean - gamma * sigma);
+    vec3 box_max      = min(color_max, mean + gamma * sigma);
+    box_min           = min(box_min, current_ycocg);
+    box_max           = max(box_max, current_ycocg);
+
+    float level = max3(current_rgb_tm);
+    // allow static shadow noise to accumulate instead of clipping history to each new sample.
+    float noise_pad = depth_edge ? 0.0 : max(0.0001, 0.05 * level * (1.0 - level)) * (1.0 - clip_motion);
+    box_min.x -= noise_pad;
+    box_max.x += noise_pad;
+
+    // depth belongs to the selected render sample, not the output pixel between samples.
+    vec2 surface_uv_prev = uv_prev + (vec2(center) + 0.5 - p_render) / active_render_f;
+    float reuse = compute_history_reuse(center, active_render_f, px_render_max, surface_uv_prev, center_depth, center_velocity.w, moving_coverage, foliage_coverage, vec2(furthest_depth, closest_depth));
+    // shared transparency/disocclusion rejection, also consumed by dlss and xess.
+    reuse *= 1.0 - clamp(texelFetch(tex4, center, 0).r, 0.0, 1.0);
+    if (reuse <= 0.0)
+        return vec4(saturate_16(max(tonemap_for_taa_inv(current_rgb_tm), vec3(0.0))), 0.0);
+
+    vec4 history_sample;
+    if (all(equal(velocity_uv, vec2(0.0))))
+        history_sample = texelFetch(tex, ivec2(px_out), 0);
+    else
+        history_sample = sample_history(uv_prev, res_out, depth_edge);
+    vec3 history_rgb = history_sample.rgb;
+    if (any(isnan(history_sample)) || any(isinf(history_sample)))
+        return vec4(saturate_16(max(tonemap_for_taa_inv(current_rgb_tm), vec3(0.0))), 0.0);
+
+    vec3 history_tm     = tonemap_for_taa(history_rgb);
+    vec3 history_ycocg  = to_ycocg(history_tm);
+    vec2 scale          = res_out / active_render_f;
+    vec2 distance_out   = abs((vec2(center) + 0.5 - p_render) * scale);
+    vec2 kernel         = clamp(1.0 - distance_out, 0.0, 1.0);
+    float sample_weight = kernel.x * kernel.y;
+    float sample_area   = max(scale.x * scale.y, 1.0);
+    // stationary texture detail needs a variance margin independent of the current jitter phase.
+    // geometric edges keep strict bounds so this margin cannot preserve a neighboring surface's outline.
+    vec3 clip_pad = depth_edge ? vec3(0.0) : sigma * (1.0 - motion);
+    vec3 clipped_ycocg;
+    vec3 history_clipped_tm;
+    if (depth_edge && current_linear.a > 1e-5)
+    {
+        // chroma-box rectification can darken valid mixed coverage; bound silhouettes in radiance instead.
+        vec3 coverage_center = current_linear.rgb / current_linear.a;
+        vec3 edge_min        = mix(coverage_min, coverage_center, 0.25 * clip_motion);
+        vec3 edge_max        = mix(coverage_max, coverage_center, 0.25 * clip_motion);
+        // preserve stationary highlights supported by nearby jitter samples without relaxing the dark silhouette bound.
+        float neighborhood_peak = neighborhood_peak_tm / max(1.0 - neighborhood_peak_tm, 1.0 / (1.0 + FLT_MAX_16U));
+        edge_max = mix(edge_max, max(edge_max, min(history_rgb, vec3(neighborhood_peak))), 1.0 - (foliage_coverage ? clip_motion : motion));
+        if (foliage_coverage)
+        {
+            // a leaf can leave the central footprint for one jitter phase without leaving the pixel coverage.
+            float neighborhood_floor = max(neighborhood_floor_tm, 0.0) / max(1.0 - neighborhood_floor_tm, 1.0 / (1.0 + FLT_MAX_16U));
+            edge_min = mix(edge_min, min(edge_min, max(history_rgb, vec3(neighborhood_floor))), 1.0 - clip_motion);
+        }
+        history_clipped_tm = tonemap_for_taa(clip_to_aabb(edge_min, edge_max, history_rgb));
+        clipped_ycocg      = to_ycocg(history_clipped_tm);
+    }
+    else
+    {
+        vec3 clip_min = box_min - clip_pad;
+        vec3 clip_max = box_max + clip_pad;
+        // stationary chroma corrections must not drag valid grout luminance toward the box center.
+        clipped_ycocg = clip_to_aabb(clip_min, clip_max, history_ycocg);
+        if (!is_sky && !depth_edge)
+            clipped_ycocg.x = mix(clamp(history_ycocg.x, clip_min.x, clip_max.x), clipped_ycocg.x, motion);
+        history_clipped_tm = max(from_ycocg(clipped_ycocg), vec3(0.0));
+    }
+
+    float rejection = clamp(max3(abs(history_ycocg - clipped_ycocg)) / max(max3(box_max - box_min), 0.02), 0.0, 1.0);
+    // accumulate reprojected samples while moving as well as at rest; motion is not a reset.
+    float max_weight      = mix(128.0, 8.0, motion) / sample_area;
+    float retained_weight = min(history_sample.a, max_weight) * reuse;
+    // clipping repairs the history color; reduce its confidence in proportion to that repair.
+    retained_weight    *= 1.0 - 0.75 * rejection;
+    float total_weight  = retained_weight + sample_weight;
+    float sample_blend  = sample_weight / max(total_weight, 1e-5);
+    vec3 point_rgb_tm   = center_data.x >= 0.0 ? max(from_ycocg(center_data.xyz), vec3(0.0)) : current_rgb_tm;
+    // use reconstruction while the first few valid jitter samples establish coverage.
+    float confidence = clamp(retained_weight * sample_area * 0.25, 0.0, 1.0) * reuse;
+    // every coverage blend must use radiance, including bootstrap and confidence blending.
+    if (depth_edge)
+    {
+        vec3 history_linear     = tonemap_for_taa_inv(history_clipped_tm);
+        vec3 accumulated_linear = mix(history_linear, tonemap_for_taa_inv(point_rgb_tm), sample_blend);
+        vec3 bootstrap_linear   = mix(history_linear, tonemap_for_taa_inv(current_rgb_tm), mix(1.0, 0.125, reuse));
+        return vec4(saturate_16(max(mix(bootstrap_linear, accumulated_linear, confidence), vec3(0.0))), min(total_weight, max_weight));
+    }
+    vec3 accumulated_tm = mix(history_clipped_tm, point_rgb_tm, sample_blend);
+    // uncovered pixels must recover even when this jitter phase contributes no point sample.
+    vec3 bootstrap_tm  = mix(history_clipped_tm, current_rgb_tm, mix(1.0, 0.125, reuse));
+    vec3 result_rgb_tm = max(mix(bootstrap_tm, accumulated_tm, confidence), vec3(0.0));
+    return vec4(saturate_16(tonemap_for_taa_inv(result_rgb_tm)), min(total_weight, max_weight));
+}
+
+void main()
+{
+    uvec2 thread_id = gl_GlobalInvocationID.xy;
+    uvec2 group_id  = gl_WorkGroupID.xy;
+    uint lane       = gl_LocalInvocationIndex;
+
+    vec2 resolution_out = vec2(imageSize(tex_uav));
+    vec2 res_render     = get_render_resolution_active();
+    // downsampling can exceed the fixed tile capacity; this branch is uniform across the group.
+    bool use_tile       = all(lessThanEqual(res_render, resolution_out));
+    uvec2 group_start   = group_id * uvec2(TAAU_GROUP_X, TAAU_GROUP_Y);
+    ivec2 tile_origin   = render_center(vec2(group_start), resolution_out, res_render) - 2;
+    ivec2 tile_end      = render_center(vec2(group_start + uvec2(TAAU_GROUP_X - 1, TAAU_GROUP_Y - 1)), resolution_out, res_render) + 2;
+    uvec2 tile_size     = uvec2(tile_end - tile_origin + 1);
+    if (use_tile)
+    {
+        for (uint i = lane; i < tile_size.x * tile_size.y; i += uint(TAAU_GROUP_X * TAAU_GROUP_Y))
+        {
+            ivec2 px  = tile_origin + ivec2(int(i % tile_size.x), int(i / tile_size.x));
+            vec4 data = vec4(-1.0, 0.0, 0.0, 0.0);
+            if (all(greaterThanEqual(px, ivec2(0))) && all(lessThan(px, ivec2(res_render))))
+                data = load_current(px);
+            current_tile_y[i]     = data.x;
+            current_tile_co[i]    = data.y;
+            current_tile_cg[i]    = data.z;
+            current_tile_depth[i] = data.w;
+        }
+        // out-of-bounds output lanes must reach this barrier before returning.
+        memoryBarrierShared();
+        barrier();
+    }
+    if (any(greaterThanEqual(thread_id, uvec2(resolution_out))))
+        return;
+
+    vec4 result        = taau(thread_id, resolution_out, tile_origin, tile_size.x, use_tile);
+    bool write_history = pass_bool(pass_taau_write_history);
+    imageStore(tex_uav, ivec2(thread_id), vec4(result.rgb, write_history ? 1.0 : result.a));
+    if (write_history)
+        imageStore(tex_uav2, ivec2(thread_id), result);
+}

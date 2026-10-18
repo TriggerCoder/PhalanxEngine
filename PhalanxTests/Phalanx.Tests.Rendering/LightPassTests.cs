@@ -33,7 +33,13 @@ public partial class RendererSceneTests
     private static Vector3 LightTarget(Renderer_RenderTarget target, uint x, uint y)
     {
         byte[] b = Read(target);
-        Assert.Equal(RHI_Format.R11G11B10_Float, Renderer.GetRenderTargetTexture(target)!.GetFormat());
+        RHI_Format format = Renderer.GetRenderTargetTexture(target)!.GetFormat();
+        if (format == RHI_Format.R16G16B16A16_Float) // the default, Renderer_Resources.cs
+        {
+            int i = Index(x, y) * 8;
+            return new Vector3(Half(b, i), Half(b, i + 2), Half(b, i + 4));
+        }
+        Assert.Equal(RHI_Format.R11G11B10_Float, format); // Renderer.LightBuffersPacked, spartan's format
         uint v = BitConverter.ToUInt32(b, Index(x, y) * 4);
         return new Vector3(UFloat(v & 0x7FF, 6), UFloat((v >> 11) & 0x7FF, 6), UFloat(v >> 22, 5));
     }

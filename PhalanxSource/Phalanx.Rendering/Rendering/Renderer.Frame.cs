@@ -14,6 +14,14 @@
 //   the scalars. Cluster lighting, feature bits, stereo, radial blur hubs, the emissive pool and the orthographic
 //   projection come with the passes that read them. Without a camera the matrices stay identity.
 // - The halton phase is a field reset by Initialize (spartan: a function-local static that never resets).
+// - AntiAliasingUpsampling's setter does what spartan's on_antialiasing_change does (ConsoleVariables.cpp:108-132):
+//   XeSS and DLSS aren't integrated, so like on a gpu without them the value falls back to AA_Off_Upscale_Linear with
+//   a warning, and selecting taau resets its history. FXAA isn't ported yet, it renders like AA_Off_Upscale_Linear.
+// - A camera cut (NotifyCameraCut, :4886, applied in UpdateFrameConstantBuffer :2294-2310) resets the taau history and
+//   makes the previous camera matrices the current ones. Spartan also cuts when the world unloads (:669-677); Phalanx
+//   has no world unload event, it cuts when the view camera changes instead.
+// - resolution_scale is spartan's dynamic resolution scale (GetResolutionScale, :1925), always 1 here (no
+//   r.resolution_scale or dynamic resolution yet); get_render_resolution_active in the shaders reads it.
 // - The output resolution follows the swapchain when the window is resized (spartan: OnResize from the window event).
 // - Frames in flight are throttled by RHI_Device.BeginFrame (FramesInFlight timeline values), which is what
 //   RotateFrameBuffers' slot wait does in spartan; the per-slot gpu-driven buffers it rotates don't exist yet.
@@ -40,9 +48,65 @@ public static partial class Renderer
     private static double s_time_last;
     private static uint s_jitter_phase_index;
     private static Vector2 s_jitter_offset;
+    private static bool s_camera_cut_pending;
+    private static Phalanx.World.Camera? s_camera_previous;
 
-    /// <summary>spartan's r.antialiasing_upsampling (default taau, ConsoleVariables.cpp:189); only taau jitters so far.</summary>
-    public static Renderer_AntiAliasing_Upsampling AntiAliasingUpsampling { get; set; } = Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau;
+    /// <summary>spartan's r.antialiasing_upsampling default (ConsoleVariables.cpp:189).</summary>
+    internal const Renderer_AntiAliasing_Upsampling AntiAliasingUpsamplingDefault = Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau;
+    private static Renderer_AntiAliasing_Upsampling s_antialiasing_upsampling = AntiAliasingUpsamplingDefault;
+
+    /// <summary>
+    /// spartan's r.antialiasing_upsampling (default taau). AA_Taau_Upscale_Taau jitters the projection and resolves
+    /// with the temporal upsampler; AA_Off_Upscale_Linear (and AA_Fxaa_Upscale_Linear until fxaa is ported) scales
+    /// frame_render to the output linearly. XeSS and DLSS aren't integrated: like spartan on a gpu without them
+    /// (on_antialiasing_change, Renderer_ConsoleVariables.cpp:108-132) they log a warning and fall back to off.
+    /// </summary>
+    public static Renderer_AntiAliasing_Upsampling AntiAliasingUpsampling
+    {
+        get => s_antialiasing_upsampling;
+        set
+        {
+            if (value == Renderer_AntiAliasing_Upsampling.AA_Xess_Upscale_Xess || value == Renderer_AntiAliasing_Upsampling.AA_Dlss_Upscale_Dlss)
+            {
+                Log.LogWarning($"{(value == Renderer_AntiAliasing_Upsampling.AA_Xess_Upscale_Xess ? "XeSS" : "DLSS")} isn't supported, anti-aliasing is off");
+                value = Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear;
+            }
+            if (value == Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau)
+                s_taau_reset_history = true;
+            s_antialiasing_upsampling = value;
+        }
+    }
+
+    /// <summary>TEMPORARY, a diagnostic for the taau history precision: when set before Initialize, taau_history and
+    /// frame_output_2 are created as R16G16B16A16_Float like spartan instead of R32G32B32A32_Float (see
+    /// Renderer_Resources.cs). The editor sets it with --taau-history-fp16. Remove it once the float history is
+    /// confirmed on real gpus.</summary>
+    public static bool TaauHistoryHalfPrecision { get; set; }
+
+    internal static RHI_Format TaauHistoryFormat => TaauHistoryHalfPrecision ? RHI_Format.R16G16B16A16_Float : RHI_Format.R32G32B32A32_Float;
+
+    /// <summary>TEMPORARY, a diagnostic for the light buffer precision: when set before Initialize, light_diffuse and
+    /// light_specular are created as R11G11B10_Float like spartan instead of R16G16B16A16_Float (see
+    /// Renderer_Resources.cs). The editor sets it with --light-r11g11b10. Remove it once rgba16f is confirmed on real
+    /// gpus.</summary>
+    public static bool LightBuffersPacked { get; set; }
+
+    internal static RHI_Format LightBufferFormat => LightBuffersPacked ? RHI_Format.R11G11B10_Float : RHI_Format.R16G16B16A16_Float;
+
+    /// <summary>spartan's r.dlss_reactivity (default 1, ConsoleVariables.cpp:190): how strongly disocclusion and
+    /// motion edges in the upscaler reactivity mask reject the taau history, 0 to 1.</summary>
+    public static float UpscalerReactivity { get; set; } = 1.0f;
+
+    /// <summary>The next frame starts a new shot (spartan: Renderer::NotifyCameraCut): the taau history is dropped and the
+    /// previous camera matrices are set to the current ones, so nothing reprojects across the cut. A change of the view
+    /// camera does this by itself.</summary>
+    public static void NotifyCameraCut() => s_camera_cut_pending = true;
+
+    /// <summary>Drops the taau history, the next taau frame starts from the current frame only (spartan: Renderer::ResetTaauHistory).</summary>
+    public static void ResetTaauHistory() => s_taau_reset_history = true;
+
+    // whether the next taau resolve ignores the history (tests)
+    internal static bool IsTaauHistoryResetPending() => s_taau_reset_history;
 
     /// <summary>Whether <see cref="Initialize(IWindow, bool)"/> (or the headless overload) ran and <see cref="Shutdown"/> did not.</summary>
     public static bool IsInitialized => s_initialized;
@@ -121,10 +185,13 @@ public static partial class Renderer
         s_cb_frame.view = s_cb_frame.projection = s_cb_frame.view_projection = s_cb_frame.view_projection_unjittered = Matrix4x4.Identity;
         s_jitter_phase_index = 0;
         s_jitter_offset      = Vector2.Zero;
+        s_camera_cut_pending = false;
+        s_camera_previous    = null;
+        s_taau_reset_history = true;
         s_clock.Restart();
         s_time_last   = 0.0;
         s_initialized = true;
-        Log.LogInfo($"output {output_width}x{output_height}, render {render_width}x{render_height}{(window == null ? ", headless" : "")}");
+        Log.LogInfo($"output {output_width}x{output_height}, render {render_width}x{render_height}{(window == null ? ", headless" : "")}, anti-aliasing {AntiAliasingUpsampling}, taau history {TaauHistoryFormat}, light buffers {LightBufferFormat}");
     }
 
     public static void Shutdown()
@@ -229,6 +296,27 @@ public static partial class Renderer
         UpdateFrameCb_ViewProjectionAndCameraFields();
         UpdateFrameCb_ScalarFields();
 
+        // Renderer.cpp:2294-2310: after a cut nothing reprojects, the previous matrices are the current ones
+        Phalanx.World.Camera? camera = GetViewCamera();
+        if (camera != s_camera_previous)
+        {
+            // the first camera has no history to cut, but the targets don't either
+            s_camera_cut_pending = true;
+            s_camera_previous    = camera;
+        }
+        if (s_camera_cut_pending)
+        {
+            s_camera_cut_pending = false;
+            s_taau_reset_history = true;
+            s_cb_frame.view_previous                       = s_cb_frame.view;
+            s_cb_frame.projection_previous                 = s_cb_frame.projection;
+            s_cb_frame.view_projection_previous            = s_cb_frame.view_projection;
+            s_cb_frame.view_projection_previous_unjittered = s_cb_frame.view_projection_unjittered;
+            s_cb_frame.camera_position_previous            = s_cb_frame.camera_position;
+            s_cb_frame.taa_jitter_previous                 = s_cb_frame.taa_jitter_current;
+            s_cb_frame.view_projection_previous_relative   = s_cb_frame.view_projection_relative;
+        }
+
         GetBuffer(Renderer_Buffer.ConstantFrame)!.Update(cmd, MemoryMarshal.AsBytes(new ReadOnlySpan<FrameBufferData>(in s_cb_frame)));
     }
 
@@ -249,34 +337,41 @@ public static partial class Renderer
     {
         if (AntiAliasingUpsampling == Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau)
         {
-            // halton-2,3 jitter, taau pass uses it to reconstruct sub-pixel detail
-            static float halton(uint index, uint @base)
-            {
-                float result = 0.0f;
-                float bk     = 1.0f;
-                while (index > 0)
-                {
-                    bk     /= @base;
-                    result += (index % @base) * bk;
-                    index  /= @base;
-                }
-                return result;
-            }
-
-            const uint phase_count = 16;
-            s_jitter_phase_index   = (s_jitter_phase_index + 1) % phase_count;
-
-            float jx = halton(s_jitter_phase_index + 1, 2) - 0.5f;
-            float jy = halton(s_jitter_phase_index + 1, 3) - 0.5f;
+            s_jitter_phase_index = (s_jitter_phase_index + 1) % TaauJitterPhaseCount;
 
             // the render resolution has no dynamic scale yet (spartan: m_resolution_render * GetResolutionScale())
-            s_jitter_offset = new Vector2(2.0f * jx / s_resolution_render_width, -2.0f * jy / s_resolution_render_height);
+            s_jitter_offset = GetTaauJitter(s_jitter_phase_index, s_resolution_render_width, s_resolution_render_height);
             s_cb_frame.projection *= Matrix4x4.CreateTranslation(s_jitter_offset.X, s_jitter_offset.Y, 0.0f);
         }
         else
         {
             s_jitter_offset = Vector2.Zero;
         }
+    }
+
+    // Renderer.cpp:1852
+    internal const uint TaauJitterPhaseCount = 16;
+
+    // halton-2,3 jitter, taau pass uses it to reconstruct sub-pixel detail (Renderer.cpp:1836-1866): the ndc offset of
+    // phase_index, within half a render pixel each way, y negated (ndc y points up, pixel rows down)
+    internal static Vector2 GetTaauJitter(uint phase_index, uint render_width, uint render_height)
+    {
+        static float halton(uint index, uint @base)
+        {
+            float result = 0.0f;
+            float bk     = 1.0f;
+            while (index > 0)
+            {
+                bk     /= @base;
+                result += (index % @base) * bk;
+                index  /= @base;
+            }
+            return result;
+        }
+
+        float jx = halton(phase_index + 1, 2) - 0.5f;
+        float jy = halton(phase_index + 1, 3) - 0.5f;
+        return new Vector2(2.0f * jx / render_width, -2.0f * jy / render_height);
     }
 
     private static void UpdateFrameCb_ViewProjectionAndCameraFields()
@@ -320,7 +415,7 @@ public static partial class Renderer
         s_cb_frame.time                = time;
         s_cb_frame.delta_time          = (float)(time - s_time_last);
         s_cb_frame.frame               = ++s_temporal_frame;
-        s_cb_frame.resolution_scale    = (float)s_resolution_render_width / System.Math.Max(s_resolution_output_width, 1u);
+        s_cb_frame.resolution_scale    = 1.0f; // GetResolutionScale(), no dynamic resolution yet
         s_cb_frame.hdr_enabled         = RHI_Device.GetSwapChain() is { } swapchain && swapchain.IsHdr() ? 1.0f : 0.0f;
         s_cb_frame.gamma               = Gamma;
         // Renderer.cpp:1963-1974: the camera's exposure, 1 without one; auto exposure isn't ported, so the mode stays manual

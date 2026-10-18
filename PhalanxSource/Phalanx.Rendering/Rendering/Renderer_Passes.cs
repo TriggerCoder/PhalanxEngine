@@ -4,8 +4,9 @@
 // Renderer_Passes_Geometry.cpp (Pass_GBuffer), Pass_Blit is a port of Renderer_Passes_Post.cpp:590-619.
 // Pass_Light and Pass_Light_Composition port Renderer_Passes_Lighting.cpp:1580-1652 (light.hlsl,
 // light_composition.hlsl), Pass_Tonemap ports Renderer_Passes_Post.cpp:385-398 (output.hlsl).
-// After composition frame_render goes to frame_output_2 through Pass_Blit (spartan: the upscaler, then the post
-// process chain ping-pongs frame_output/frame_output_2), the tonemapper writes frame_output, display ready.
+// After composition the upscaler takes frame_render to frame_output (Pass_AA_Upscale, taau or a linear blit, see
+// Renderer_Passes_Post.cs) and the post process chain ping-pongs frame_output/frame_output_2, ending display ready in
+// frame_output.
 // Pass_Depth_Prepass ports both halves of Renderer_Passes_Geometry.cpp:1463: opaque draws without a pixel shader,
 // then alpha tested draws with depth_prepass_alpha (discard below the alpha threshold), depth loaded, cull None
 // (:1553-1570). The g-buffer shades only the prepass survivors with an equal depth test (ReadEqual, the state
@@ -14,8 +15,8 @@
 // different mesh shaders that are not bit identical; Phalanx's prepass runs the g-buffer's own vertex shader module
 // (spartan: a separate depth_prepass_v) with an invariant gl_Position, so the depths match by construction and the
 // equal test is safe. The prepass culls back faces (spartan: cull None, its triangles are culled on the gpu before).
-// No previous depth copy or hi-z yet; no gpu-driven indirect path, culling or lods; frame_render goes to
-// frame_output through Pass_Blit; the passes have no gpu timing (no profiler yet), they are markers.
+// No hi-z yet; no gpu-driven indirect path, culling or lods; the passes have no gpu timing (no profiler yet), they
+// are markers.
 using Phalanx.Geometry;
 using System.Numerics;
 using Phalanx.Rendering.RHI;
@@ -75,18 +76,18 @@ public static partial class Renderer
 
     private static void ProduceFrame(RHI_CommandList cmd)
     {
-        RHI_Texture rt_render   = GetRenderTargetTexture(RenderTarget.frame_render)!;
-        RHI_Texture rt_output   = GetRenderTargetTexture(RenderTarget.frame_output)!;
-        RHI_Texture rt_output_2 = GetRenderTargetTexture(RenderTarget.frame_output_2)!;
+        RHI_Texture rt_render = GetRenderTargetTexture(RenderTarget.frame_render)!;
 
+        SwapDepthHistory();
+        ClearDepthHistoryIfNeeded(cmd);
         Pass_Depth_Prepass(cmd);
         Pass_GBuffer(cmd);
         Entity.CommitTransformHistory(); // Renderer_Passes_Geometry.cpp:2022, after the opaque g-buffer
         Pass_ShadowMaps(cmd);            // Pass_GraphicsPhase2_ShadowsAndRT (Renderer.cpp:5431)
         Pass_Light(cmd);
         Pass_Light_Composition(cmd, rt_render);
-        Pass_Blit(cmd, rt_render, rt_output_2);
-        Pass_Tonemap(cmd, rt_output_2, rt_output);
+        Pass_AA_Upscale(cmd);
+        Pass_PostProcess(cmd);
     }
 
     // Renderer_Passes_Geometry.cpp:1463: the opaque half has no pixel shader, ReadWrite depth and clears the depth

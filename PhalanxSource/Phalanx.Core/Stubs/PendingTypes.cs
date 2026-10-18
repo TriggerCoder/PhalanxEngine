@@ -28,8 +28,8 @@ public struct RHI_Viewport
 public enum Renderer_RenderTarget
 {
     gbuffer_color, gbuffer_normal, gbuffer_normal_previous, gbuffer_material, gbuffer_emissive, gbuffer_velocity,
-    gbuffer_velocity_previous, gbuffer_depth, frame_render, frame_output, frame_output_2, light_diffuse, light_specular,
-    shadow_atlas, max
+    gbuffer_velocity_previous, gbuffer_depth, gbuffer_depth_previous, frame_render, frame_output, frame_output_2, taau_history,
+    dlss_reactivity, light_diffuse, light_specular, shadow_atlas, max
 }
 
 // TODO(port): source/rhi/RHI_Definitions.h (RHI_CullMode)

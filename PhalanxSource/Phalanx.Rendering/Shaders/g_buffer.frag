@@ -3,13 +3,15 @@
 // :708, packed occlusion/roughness/metalness :742, all through sampler_anisotropic_wrap) and the normal go to the
 // g-buffer.
 // World space uvs follow :505-525; alpha tested draws negate velocity.w (:1004), their cutout is the prepass's.
-// Deviations: no parallax, terrain, vegetation, decals, paint, impostors or specular aa yet; the previous depth in
-// velocity.w is the raw previous ndc depth (spartan linearizes it).
+// velocity.w is the previous linear depth (:1001-1002), taau and the upscaler reactivity validate history with it.
+// Deviations: no parallax, terrain, vegetation, decals, paint, impostors or specular aa yet; velocity.z (the motion
+// blur mask) stays 0, there is no motion blur.
 #version 460
 #extension GL_GOOGLE_include_directive : require
 
 #include "common_resources.glsl"
 #include "common_material.glsl"
+#include "common_light.glsl"
 
 layout(location = 0) in vec3 in_position_world;
 layout(location = 1) in vec2 in_uv;
@@ -103,7 +105,9 @@ void main()
     out_normal   = vec4(normal, pack_material_index(in_material_index));
     out_material = vec4(roughness, metalness, 0.0, occlusion);
     // the depth sign identifies cutout coverage without another mask texture
-    float previous_depth = in_position_previous.z / max(in_position_previous.w, 1e-6);
+    // previous surface depth lets temporal reconstruction validate object motion along the view axis
+    float previous_depth = in_position_previous.w > 0.0 ?
+        min(linearize_depth(in_position_previous.z / in_position_previous.w), FLT_MAX_16U) : 0.0;
     if (has_flag(material, 16u))
         previous_depth = -previous_depth;
     out_velocity = vec4(position_ndc - position_ndc_previous, 0.0, previous_depth);

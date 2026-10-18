@@ -19,6 +19,8 @@ namespace Phalanx.Editor;
 //     with --png <file> [--size w h] [--time t] it writes the whole frame (default 1920x1080) as a png instead
 //   add --texture <image file> to either to texture the cube; --point-light adds a bright point light
 //   add --validation to enable VK_LAYER_KHRONOS_validation (Debug builds enable it by default)
+//   add --aa <taau|off|fxaa|xess|dlss> to pick Renderer.AntiAliasingUpsampling (default taau; fxaa isn't ported and
+//     renders like off, xess and dlss aren't integrated and fall back to off)
 public static class Program
 {
     public static int Main(string[] args)
@@ -51,6 +53,31 @@ public static class Program
             Console.WriteLine($"rhi-clear: presented {presented} frames");
             return 0;
         }
+
+        int aa_arg = Array.IndexOf(args, "--aa");
+        if (aa_arg >= 0 && aa_arg + 1 < args.Length)
+        {
+            Renderer_AntiAliasing_Upsampling? aa = args[aa_arg + 1].ToLowerInvariant() switch
+            {
+                "off"  => Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear,
+                "fxaa" => Renderer_AntiAliasing_Upsampling.AA_Fxaa_Upscale_Linear,
+                "taau" => Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau,
+                "xess" => Renderer_AntiAliasing_Upsampling.AA_Xess_Upscale_Xess,
+                "dlss" => Renderer_AntiAliasing_Upsampling.AA_Dlss_Upscale_Dlss,
+                _      => null
+            };
+            if (aa is { } mode)
+                Renderer.AntiAliasingUpsampling = mode;
+            else
+                Console.Error.WriteLine($"--aa: unknown mode '{args[aa_arg + 1]}', expected taau, off, fxaa, xess or dlss");
+        }
+
+        // TEMPORARY: the taau history in half floats like spartan, to compare against the float history
+        if (args.Contains("--taau-history-fp16"))
+            Renderer.TaauHistoryHalfPrecision = true;
+        // TEMPORARY: the light buffers in r11g11b10 like spartan, to compare against rgba16f
+        if (args.Contains("--light-r11g11b10"))
+            Renderer.LightBuffersPacked = true;
 
         int renderer_cube = Array.IndexOf(args, "--renderer-cube");
         bool renderer_cube_offscreen = args.Contains("--renderer-cube-offscreen");

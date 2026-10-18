@@ -17,6 +17,13 @@
 layout(std140, set = 0, binding = 200) uniform BufferFrame { FrameBufferData buffer_frame; };
 layout(push_constant, std430) uniform BufferPass { PassBufferData buffer_pass; };
 
+// pass parameters, slot comes from the pass_* tables (common_resources_buffers.hlsl:75-80); the cpu writes them with
+// PassBufferData.Set(slot, value), uints and bools as their bits
+float pass_float(uint slot) { return buffer_pass.values[slot / 4u][slot % 4u]; }
+vec2  pass_float2(uint slot) { return vec2(pass_float(slot), pass_float(slot + 1u)); }
+uint  pass_uint(uint slot)  { return floatBitsToUint(pass_float(slot)); }
+bool  pass_bool(uint slot)  { return pass_uint(slot) != 0u; }
+
 // Texture2D tex .. tex4 : register(t7 .. t10) (common_resources_pass.hlsl:12-15)
 layout(set = 0, binding = 307) uniform texture2D tex;
 layout(set = 0, binding = 308) uniform texture2D tex2;

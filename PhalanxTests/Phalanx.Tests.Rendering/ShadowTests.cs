@@ -259,9 +259,10 @@ public partial class RendererSceneTests
     private static float[] DiffuseRed()
     {
         byte[] b = Read(Renderer_RenderTarget.light_diffuse);
+        bool packed = Renderer.GetRenderTargetTexture(Renderer_RenderTarget.light_diffuse)!.GetFormat() == RHI_Format.R11G11B10_Float;
         var r = new float[Width * Height];
         for (int i = 0; i < r.Length; i++)
-            r[i] = UFloat(BitConverter.ToUInt32(b, i * 4) & 0x7FF, 6);
+            r[i] = packed ? UFloat(BitConverter.ToUInt32(b, i * 4) & 0x7FF, 6) : Half(b, i * 8);
         return r;
     }
 
@@ -325,13 +326,5 @@ public partial class RendererSceneTests
             Assert.True(rows > 5, $"rows {rows}");
             Assert.True(wide > 0.75f * rows, $"wide transitions {wide} of {rows} rows");
         }, shadow_atlas: 4096);
-    }
-
-    // deviation until taa/taau is ported: no projection jitter by default (unresolved jitter flickers on screen)
-    [Fact]
-    public void Anti_aliasing_defaults_to_off_until_the_taa_resolve_is_ported()
-    {
-        Assert.Equal(Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear, (Renderer_AntiAliasing_Upsampling)0);
-        Assert.Equal(Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear, Renderer.AntiAliasingUpsampling);
     }
 }

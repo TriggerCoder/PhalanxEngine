@@ -39,6 +39,30 @@ vec3 get_position(float z, vec2 uv)
     return pos_world.xyz / pos_world.w;
 }
 
+// common.hlsl:504-507, clamp to the float16 range
+float saturate_16(float x) { return clamp(x, 0.0, FLT_MAX_16U); }
+vec2  saturate_16(vec2 x)  { return clamp(x, 0.0, FLT_MAX_16U); }
+vec3  saturate_16(vec3 x)  { return clamp(x, 0.0, FLT_MAX_16U); }
+vec4  saturate_16(vec4 x)  { return clamp(x, 0.0, FLT_MAX_16U); }
+
+// common.hlsl:640-643, flip y for dx style
+vec2 uv_to_ndc(vec2 uv) { return vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0); }
+
+// common.hlsl:645-648, the render target area the dynamic resolution scale leaves active (phalanx: scale 1)
+vec2 get_render_resolution_active()
+{
+    return max(floor(buffer_frame.resolution_render * buffer_frame.resolution_scale), vec2(1.0));
+}
+
+// common.hlsl:763-770, reverse-z depth to view distance (near at z 1, far at z 0)
+float linearize_depth(float z)
+{
+    float near = buffer_frame.camera_near;
+    float far  = buffer_frame.camera_far;
+    float z_n  = 2.0 * z - 1.0;
+    return 2.0 * far * near / (near + far - z_n * (near - far));
+}
+
 // chan 2018 microshadowing, ao driven terminator darkening, occlusion 1 means no effect
 float microw_shadowing_cod(float n_dot_l, float visibility)
 {

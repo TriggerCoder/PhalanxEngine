@@ -1,0 +1,106 @@
+// GLSL port of SpartanEngine data/shaders/dlss_reactivity.hlsl @ 4c07baa (identical at upstream 67a6e8b): the
+// shared temporal upscaler reactivity mask, 1 where the history can't be reused (disocclusion against the previous
+// depth, tex3) or where the motion changes sharply between neighbours. Taau reads it as tex4. Writes tex_uav (r).
+// Deviations: none in the maths; spartan's particles add their coverage to the mask afterwards, there are no
+// particles yet.
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "common_resources.glsl"
+#include "common_light.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// pass_dlss_reactivity (shared_buffers.h:566-569)
+const uint pass_dlss_reactivity_scale = 0u;
+
+// relative depth match for the same surface
+const float reuse_depth_tol = 0.02;
+const float edge_px_start   = 0.5;
+const float edge_px_full    = 3.0;
+
+float history_reuse(ivec2 px, vec2 res, ivec2 px_max, vec2 velocity_ndc)
+{
+    float depth_raw = texelFetch(tex_depth, px, 0).r;
+    vec2 uv = (vec2(px) + 0.5) / res;
+    // geometry motion includes the object's previous transform. camera-only reprojection
+    // follows the road behind a moving car instead of the car and its thin mirrors.
+    vec2 prev_uv = uv - velocity_ndc * vec2(0.5, -0.5)
+        + (buffer_frame.taa_jitter_previous - buffer_frame.taa_jitter_current) * vec2(0.5, -0.5);
+    if (any(lessThan(prev_uv, vec2(0.0))) || any(greaterThan(prev_uv, vec2(1.0))))
+        return 0.0;
+
+    float expected = abs(texelFetch(tex_velocity, px, 0).w);
+    if (expected <= 0.0 || expected >= FLT_MAX_16U || isnan(expected) || isinf(expected))
+    {
+        vec3 position  = get_position(depth_raw, uv);
+        vec4 prev_clip = buffer_frame.view_projection_previous * vec4(position, 1.0);
+        if (prev_clip.w <= 1e-6)
+            return 0.0;
+        expected = linearize_depth(prev_clip.z / prev_clip.w);
+    }
+
+    // weight depth support at the reprojected footprint; a single unrelated neighbor
+    // must not validate the entire pixel along a moving silhouette.
+    vec2 pos    = prev_uv * res - 0.5;
+    ivec2 base  = ivec2(floor(pos));
+    vec2 f      = fract(pos);
+    float reuse = 0.0;
+    for (int y = 0; y < 2; ++y)
+    {
+        for (int x = 0; x < 2; ++x)
+        {
+            ivec2 tap = base + ivec2(x, y);
+            if (any(lessThan(tap, ivec2(0))) || any(greaterThan(tap, px_max)))
+                continue;
+            float z     = texelFetch(tex3, tap, 0).r;
+            float match = 0.0;
+            if (depth_raw <= 1e-8)
+                match = z <= 1e-8 ? 1.0 : 0.0;
+            else if (z > 1e-8)
+            {
+                float error = abs(linearize_depth(z) - expected) / max(expected, 1e-3);
+                match = 1.0 - smoothstep(reuse_depth_tol, 2.0 * reuse_depth_tol, error);
+            }
+            vec2 weight = vec2(x == 0 ? 1.0 - f.x : f.x, y == 0 ? 1.0 - f.y : f.y);
+            reuse += weight.x * weight.y * match;
+        }
+    }
+    return clamp(reuse, 0.0, 1.0);
+}
+
+float velocity_edge(ivec2 px, vec2 res, ivec2 px_max, vec2 velocity_ndc)
+{
+    float max_rel = 0.0;
+    for (int y = -1; y <= 1; ++y)
+    {
+        for (int x = -1; x <= 1; ++x)
+        {
+            if (x == 0 && y == 0)
+                continue;
+
+            ivec2 tap    = clamp(px + ivec2(x, y), ivec2(0), px_max);
+            vec2 vel_n   = texelFetch(tex_velocity, tap, 0).xy;
+            float rel_px = length((vel_n - velocity_ndc) * vec2(0.5, -0.5) * res);
+            max_rel      = max(max_rel, rel_px);
+        }
+    }
+
+    return clamp((max_rel - edge_px_start) / (edge_px_full - edge_px_start), 0.0, 1.0);
+}
+
+void main()
+{
+    vec2 res     = get_render_resolution_active();
+    ivec2 px_max = max(ivec2(res) - 1, ivec2(0));
+    ivec2 px     = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThan(px, px_max)))
+        return;
+
+    float scale        = clamp(pass_float(pass_dlss_reactivity_scale), 0.0, 1.0);
+    vec2 velocity_ndc  = texelFetch(tex_velocity, px, 0).xy;
+    float disocclusion = 1.0 - history_reuse(px, res, px_max, velocity_ndc);
+    float edge         = velocity_edge(px, res, px_max, velocity_ndc);
+    float reactive     = clamp(max(disocclusion, edge), 0.0, 1.0) * scale;
+    imageStore(tex_uav, px, vec4(reactive, 0.0, 0.0, 0.0));
+}
