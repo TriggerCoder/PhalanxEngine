@@ -14,21 +14,23 @@
 //   normal and velocity history copies and the hi-z pyramids, nothing reads them yet. gbuffer_depth_previous
 //   (:770, taau and the upscaler reactivity read it), dlss_reactivity (:767) and taau_history (:866, mono) are created.
 // - taau_history and frame_output_2 (the target it swaps with) are R32G32B32A32_Float, spartan creates both as
-//   R16G16B16A16_Float (:849, :859, :872). taau.hlsl blends each new jitter sample into the history with a weight of
-//   about 1/(n+1) for up to 128 frames (taau.hlsl:454-475) and writes the result to the history every frame (:514). A half float has
-//   11 significant bits, so once a pixel's history weight is in the tens, the change a sample makes, (sample -
-//   history)/(n+1), is under half a half-float step whenever the history is within a few percent of the samples, and
-//   the stored value doesn't move. The clip box doesn't pull it back either: the luminance padding of taau.hlsl:384-386
-//   (0.05 * level * (1 - level) in taa tonemapped space) is several percent of the radiance. Each pixel freezes at
-//   whatever value it had when its weight grew, so a smooth gradient (a floor lit by a point light) turns into
-//   fine contour lines that follow the shading. A float history converges to the jittered mean.
-// - light_diffuse and light_specular are R16G16B16A16_Float, spartan creates them as R11G11B10_Float (:809-810). That
-//   format keeps 6 mantissa bits for red and green and 5 for blue, so the light comes out in steps of 1.6% to 3%. With
-//   anti-aliasing off they are single steps, under one 8 bit code after the tonemapper. Taau turns them into bands:
-//   the jitter moves each pixel's samples across the steps, the clip box is wider than a step, so a jump to the next
-//   step isn't clipped and the history only creeps towards it at 1/(n+1) per frame. When a soft shadow or a light moves
-//   over a static floor, every pixel lags by a different amount depending on when it last crossed a step, and the
-//   lags show as stepped contour bands behind the shadow. rgba16f has 11 significant bits, the steps fall to 0.05%.
+//   R16G16B16A16_Float (:849, :859, :872; upstream 67a6e8b :912, :922, :935), a flaw in spartan that bands on real
+//   hardware (an rtx 3080), with rgba16f light buffers too. taau.hlsl blends each new jitter sample into the history
+//   with a weight of about 1/(n+1) for up to 128 frames (taau.hlsl:454-475) and writes the result to the history every
+//   frame (:514). A half float has 11 significant bits, so once a pixel's history weight is in the tens, the change a
+//   sample makes, (sample - history)/(n+1), is under half a half-float step whenever the history is within a few
+//   percent of the samples, and the stored value doesn't move. The clip box doesn't pull it back either: the luminance
+//   padding of taau.hlsl:384-386 (0.05 * level * (1 - level) in taa tonemapped space) is several percent of the
+//   radiance. Each pixel freezes at whatever value it had when its weight grew, so a smooth gradient (a floor lit by a
+//   point light) turns into fine contour lines that follow the shading. A float history converges to the jittered mean.
+// - light_diffuse and light_specular are R16G16B16A16_Float, spartan creates them as R11G11B10_Float (:809-810;
+//   upstream 67a6e8b :870-871), a flaw in spartan as well. That format keeps 6 mantissa bits for red and green and 5
+//   for blue, so the light comes out in steps of 1.6% to 3%. With anti-aliasing off they are single steps, under one 8
+//   bit code after the tonemapper. Taau turns them into bands: the jitter moves each pixel's samples across the steps,
+//   the clip box is wider than a step, so a jump to the next step isn't clipped and the history only creeps towards it
+//   at 1/(n+1) per frame. When a soft shadow or a light moves over a static floor, every pixel lags by a different
+//   amount depending on when it last crossed a step, and the lags show as stepped contour bands behind the shadow.
+//   rgba16f has 11 significant bits, the steps fall to 0.05%.
 // - frame_output has one mip (spartan: a full chain with per-mip views, for the bloom and auto exposure
 //   downsamples); RHI_Texture_ConcurrentSharing is dropped, there is no async compute yet.
 using Phalanx.Rendering.RHI;

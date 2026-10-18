@@ -255,14 +255,13 @@ public partial class RendererSceneTests
         });
     }
 
-    // light_diffuse's red channel for the whole frame (r11g11b10, one readback)
+    // light_diffuse's red channel for the whole frame (rgba16f, one readback)
     private static float[] DiffuseRed()
     {
         byte[] b = Read(Renderer_RenderTarget.light_diffuse);
-        bool packed = Renderer.GetRenderTargetTexture(Renderer_RenderTarget.light_diffuse)!.GetFormat() == RHI_Format.R11G11B10_Float;
         var r = new float[Width * Height];
         for (int i = 0; i < r.Length; i++)
-            r[i] = packed ? UFloat(BitConverter.ToUInt32(b, i * 4) & 0x7FF, 6) : Half(b, i * 8);
+            r[i] = Half(b, i * 8);
         return r;
     }
 

@@ -9,10 +9,9 @@ using RHI_Texture = Phalanx.Rendering.RHI.RHI_Texture;
 namespace Phalanx.Tests;
 
 // the precision of the taau history: a flat floor lit by a bright point light, the scene of --renderer-cube
-// --point-light without the cube. A half float history freezes each pixel within a few percent of the jittered mean
-// and draws contour lines along the shading (Renderer_Resources.cs, the taau_history deviation). A grazing view of the
-// same floor with the cube turning: r11g11b10 light buffers make taau leave stepped bands behind the moving shadows
-// (Renderer_Resources.cs, the light buffer deviation).
+// --point-light without the cube, where spartan's half float history freezes into contour lines (Renderer_Resources.cs,
+// the taau_history deviation). A grazing view of the same floor with the cube turning, where spartan's r11g11b10 light
+// buffers make taau leave stepped bands behind the moving shadows (Renderer_Resources.cs, the light buffer deviation).
 public partial class RendererSceneTests
 {
     private const uint FloorWidth = 480, FloorHeight = 270;
@@ -74,12 +73,11 @@ public partial class RendererSceneTests
     }
 
     // the mean of r, g and b per pixel: frame_render after an unjittered frame (aa off), or the taau history
-    private static float[] LitFloorLuminance(Renderer_AntiAliasing_Upsampling aa, int frames, bool half_history)
+    private static float[] LitFloorLuminance(Renderer_AntiAliasing_Upsampling aa, int frames)
     {
         Skip.IfNot(RenderDevice.IsVulkanAvailable(out string reason), reason);
         var luminance = new float[FloorWidth * FloorHeight];
         Renderer.AntiAliasingUpsampling = aa;
-        Renderer.TaauHistoryHalfPrecision = half_history;
         World.World.SetMainThread();
         World.World.ClearScene();
         Renderer.ShadowAtlasResolution = 2048;
@@ -106,7 +104,6 @@ public partial class RendererSceneTests
         finally
         {
             Renderer.AntiAliasingUpsampling = Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear;
-            Renderer.TaauHistoryHalfPrecision = false;
             Renderer.SkyFallbackNits     = new Vector3(1500.0f, 2200.0f, 3500.0f);
             Renderer.AmbientFallbackNits = new Vector3(150.0f, 220.0f, 350.0f);
             Renderer.ShadowAtlasResolution = 8192;
@@ -159,26 +156,22 @@ public partial class RendererSceneTests
     [SkippableFact]
     public void Taau_history_converges_on_a_smoothly_lit_floor_without_contour_lines()
     {
-        float[] reference = LitFloorLuminance(Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear, 2, half_history: false);
-        float[] history   = LitFloorLuminance(Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau, 64, half_history: false);
-        float[] half      = LitFloorLuminance(Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau, 64, half_history: true);
-        (float share, float mean)           = HistoryDeviation(reference, history);
-        (float share_half, float mean_half) = HistoryDeviation(reference, half);
-        // lavapipe: rgba32f 1.3% of the pixels, mean 0.10%; rgba16f (spartan's format) 13.8%, mean 0.81%
+        float[] reference = LitFloorLuminance(Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear, 2);
+        float[] history   = LitFloorLuminance(Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau, 64);
+        (float share, float mean) = HistoryDeviation(reference, history);
+        // lavapipe: rgba32f 1.3% of the pixels, mean 0.10%; spartan's rgba16f 13.8%, mean 0.81%
         Assert.True(share < 0.04f && mean < 0.003f, $"float history: {share:P2} of the floor more than 1.5% off, mean {mean:P3}");
-        Assert.True(share_half > share, $"the half float history should show the contours: {share_half:P2} (mean {mean_half:P3}) vs {share:P2}");
     }
 
     private const uint GrazingRenderWidth = 960, GrazingRenderHeight = 540, GrazingOutputWidth = 800, GrazingOutputHeight = 430;
 
     // frame_output (display encoded) as 8 bit codes, the mean of r, g and b, after the cube of the grazing scene has
     // turned for 96 frames at 60 fps (the demo's motion), rendering above the output size like the editor
-    private static float[] GrazingDisplay(Renderer_AntiAliasing_Upsampling aa, bool packed_light)
+    private static float[] GrazingDisplay(Renderer_AntiAliasing_Upsampling aa)
     {
         Skip.IfNot(RenderDevice.IsVulkanAvailable(out string reason), reason);
         var codes = new float[GrazingOutputWidth * GrazingOutputHeight];
         Renderer.AntiAliasingUpsampling = aa;
-        Renderer.LightBuffersPacked = packed_light;
         World.World.SetMainThread();
         World.World.ClearScene();
         Renderer.ShadowAtlasResolution = 2048;
@@ -208,7 +201,6 @@ public partial class RendererSceneTests
         finally
         {
             Renderer.AntiAliasingUpsampling = Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear;
-            Renderer.LightBuffersPacked = false;
             Renderer.SkyFallbackNits     = new Vector3(1500.0f, 2200.0f, 3500.0f);
             Renderer.AmbientFallbackNits = new Vector3(150.0f, 220.0f, 350.0f);
             Renderer.ShadowAtlasResolution = 8192;
@@ -292,15 +284,13 @@ public partial class RendererSceneTests
     public void Taau_leaves_no_bands_behind_moving_shadows_at_a_grazing_view()
     {
         int w = (int)GrazingOutputWidth, h = (int)GrazingOutputHeight;
-        float[] off    = GrazingDisplay(Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear, packed_light: false);
-        float[] taau   = GrazingDisplay(Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau, packed_light: false);
-        float[] packed = GrazingDisplay(Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau, packed_light: true);
+        float[] off  = GrazingDisplay(Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear);
+        float[] taau = GrazingDisplay(Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau);
         bool[] floor = SmoothFloor(off, w, h);
-        float share_off    = LineShare(off, floor, w, h);
-        float share_taau   = LineShare(taau, floor, w, h);
-        float share_packed = LineShare(packed, floor, w, h);
-        // lavapipe: off 0.4%, taau 0.7%; with r11g11b10 light buffers (spartan's, and 978e62e) taau 2.6%
-        Assert.True(share_taau < share_off + 0.01f, $"taau {share_taau:P2} of the floor in lines, aa off {share_off:P2}, r11g11b10 {share_packed:P2}");
-        Assert.True(share_packed > share_taau, $"r11g11b10 light buffers should show the bands: {share_packed:P2} vs {share_taau:P2}");
+        float share_off  = LineShare(off, floor, w, h);
+        float share_taau = LineShare(taau, floor, w, h);
+        // lavapipe: off 0.4%, taau 0.7%; with spartan's r11g11b10 light buffers taau 2.6%, with its rgba16f history
+        // 3.6% to 14.8%
+        Assert.True(share_taau < share_off + 0.01f, $"taau {share_taau:P2} of the floor in lines, aa off {share_off:P2}");
     }
 }

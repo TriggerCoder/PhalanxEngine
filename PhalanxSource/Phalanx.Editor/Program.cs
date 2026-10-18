@@ -72,13 +72,6 @@ public static class Program
                 Console.Error.WriteLine($"--aa: unknown mode '{args[aa_arg + 1]}', expected taau, off, fxaa, xess or dlss");
         }
 
-        // TEMPORARY: the taau history in half floats like spartan, to compare against the float history
-        if (args.Contains("--taau-history-fp16"))
-            Renderer.TaauHistoryHalfPrecision = true;
-        // TEMPORARY: the light buffers in r11g11b10 like spartan, to compare against rgba16f
-        if (args.Contains("--light-r11g11b10"))
-            Renderer.LightBuffersPacked = true;
-
         int renderer_cube = Array.IndexOf(args, "--renderer-cube");
         bool renderer_cube_offscreen = args.Contains("--renderer-cube-offscreen");
         if (renderer_cube >= 0 || renderer_cube_offscreen)

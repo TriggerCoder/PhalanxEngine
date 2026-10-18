@@ -21,27 +21,12 @@ public partial class RendererSceneTests
         return new Vector4(b[i] / 255f, b[i + 1] / 255f, b[i + 2] / 255f, b[i + 3] / 255f);
     }
 
-    // r11g11b10 unsigned floats: 6/6/5 mantissa bits, 5 exponent bits, bias 15
-    private static float UFloat(uint bits, int mantissa_bits)
-    {
-        uint m = bits & ((1u << mantissa_bits) - 1), e = bits >> mantissa_bits;
-        if (e == 0) return m / (float)(1 << mantissa_bits) * System.MathF.Pow(2, -14);
-        if (e == 31) return m == 0 ? float.PositiveInfinity : float.NaN;
-        return (1 + m / (float)(1 << mantissa_bits)) * System.MathF.Pow(2, (int)e - 15);
-    }
-
     private static Vector3 LightTarget(Renderer_RenderTarget target, uint x, uint y)
     {
         byte[] b = Read(target);
-        RHI_Format format = Renderer.GetRenderTargetTexture(target)!.GetFormat();
-        if (format == RHI_Format.R16G16B16A16_Float) // the default, Renderer_Resources.cs
-        {
-            int i = Index(x, y) * 8;
-            return new Vector3(Half(b, i), Half(b, i + 2), Half(b, i + 4));
-        }
-        Assert.Equal(RHI_Format.R11G11B10_Float, format); // Renderer.LightBuffersPacked, spartan's format
-        uint v = BitConverter.ToUInt32(b, Index(x, y) * 4);
-        return new Vector3(UFloat(v & 0x7FF, 6), UFloat((v >> 11) & 0x7FF, 6), UFloat(v >> 22, 5));
+        Assert.Equal(RHI_Format.R16G16B16A16_Float, Renderer.GetRenderTargetTexture(target)!.GetFormat()); // Renderer_Resources.cs
+        int i = Index(x, y) * 8;
+        return new Vector3(Half(b, i), Half(b, i + 2), Half(b, i + 4));
     }
 
     private static void NearRel(Vector3 expected, Vector3 actual, float tolerance)

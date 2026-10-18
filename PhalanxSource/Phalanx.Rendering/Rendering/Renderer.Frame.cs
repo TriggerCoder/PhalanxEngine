@@ -77,21 +77,9 @@ public static partial class Renderer
         }
     }
 
-    /// <summary>TEMPORARY, a diagnostic for the taau history precision: when set before Initialize, taau_history and
-    /// frame_output_2 are created as R16G16B16A16_Float like spartan instead of R32G32B32A32_Float (see
-    /// Renderer_Resources.cs). The editor sets it with --taau-history-fp16. Remove it once the float history is
-    /// confirmed on real gpus.</summary>
-    public static bool TaauHistoryHalfPrecision { get; set; }
-
-    internal static RHI_Format TaauHistoryFormat => TaauHistoryHalfPrecision ? RHI_Format.R16G16B16A16_Float : RHI_Format.R32G32B32A32_Float;
-
-    /// <summary>TEMPORARY, a diagnostic for the light buffer precision: when set before Initialize, light_diffuse and
-    /// light_specular are created as R11G11B10_Float like spartan instead of R16G16B16A16_Float (see
-    /// Renderer_Resources.cs). The editor sets it with --light-r11g11b10. Remove it once rgba16f is confirmed on real
-    /// gpus.</summary>
-    public static bool LightBuffersPacked { get; set; }
-
-    internal static RHI_Format LightBufferFormat => LightBuffersPacked ? RHI_Format.R11G11B10_Float : RHI_Format.R16G16B16A16_Float;
+    // the formats of the documented deviations in Renderer_Resources.cs
+    internal const RHI_Format TaauHistoryFormat = RHI_Format.R32G32B32A32_Float;
+    internal const RHI_Format LightBufferFormat = RHI_Format.R16G16B16A16_Float;
 
     /// <summary>spartan's r.dlss_reactivity (default 1, ConsoleVariables.cpp:190): how strongly disocclusion and
     /// motion edges in the upscaler reactivity mask reject the taau history, 0 to 1.</summary>
