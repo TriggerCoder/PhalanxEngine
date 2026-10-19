@@ -12,6 +12,8 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Phalanx.Tests.Rendering" />
+    <!-- the editor's material full demo lowers the material table capacity (Renderer.MaterialFallback.cs) -->
+    <InternalsVisibleTo Include="Phalanx.Editor" />
   </ItemGroup>
 
   <ItemGroup>
@@ -25,6 +27,8 @@
     <PackageReference Include="System.IO.Hashing" Version="8.0.0" />
     <!-- meshoptimizer bindings (namespace MeshOptimizer, class Meshopt); ships runtimes/win-x64/native/meshoptimizer.dll (+ win-arm64, linux, osx) -->
     <PackageReference Include="Alimer.Bindings.MeshOptimizer" Version="1.2.1" />
+    <!-- decodes the engine's own data/textures images (the illegal material texture); Phalanx.Assets uses it for user files -->
+    <PackageReference Include="StbImageSharp" Version="2.30.15" />
   </ItemGroup>
 
   <ItemGroup>
@@ -38,6 +42,8 @@
   <ItemGroup>
     <!-- GLSL sources are compiled at runtime by ShaderCompiler; ship them next to the binaries (and inside the nupkg as contentFiles) -->
     <None Include="Shaders/**/*.glsl;Shaders/**/*.vert;Shaders/**/*.frag;Shaders/**/*.comp" Exclude="Shaders/bin/**" CopyToOutputDirectory="PreserveNewest" Link="shaders/%(RecursiveDir)%(Filename)%(Extension)" Pack="true" PackagePath="contentFiles/any/any/shaders" PackageCopyToOutput="true" />
+    <!-- the engine's built-in textures (spartan: data/textures), read at Renderer.Initialize from data/textures next to the binaries -->
+    <None Include="Data/textures/**/*.png" CopyToOutputDirectory="PreserveNewest" Link="data/textures/%(RecursiveDir)%(Filename)%(Extension)" Pack="true" PackagePath="contentFiles/any/any/data/textures" PackageCopyToOutput="true" />
   </ItemGroup>
 
 </Project>

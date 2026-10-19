@@ -145,8 +145,8 @@ public static partial class Renderer
         {
             ViewState s = view.State;
             for (int i = 0; i < s.OverrideCount; i++)
-                if (s.Overrides[i].Material is Material material && !AddMaterial(material))
-                    return;
+                if (s.Overrides[i].Material is Material material)
+                    AddMaterial(material); // one that can't go in draws as the illegal material
         }
     }
 
@@ -182,14 +182,13 @@ public static partial class Renderer
             if (overrides.ChangesDraw)
             {
                 Entity entity       = render.GetEntity()!;
-                Material? material  = overrides.Material ?? GetRenderMaterial(render);
-                uint material_index = GetMaterialIndex(material);
+                uint material_index = GetMaterialIndex(overrides.Material ?? GetRenderMaterial(render));
                 uint draw_index     = WriteDrawData(entity.GetMatrix(), entity.GetMatrixPrevious(), material_index, 0, render, overrides);
                 if (draw_index != uint.MaxValue)
                 {
                     view_draw.draw_index     = draw_index;
                     view_draw.material_index = material_index;
-                    alpha_tested             = material != null && material.IsAlphaTested();
+                    alpha_tested             = IsMaterialIndexAlphaTested(material_index);
                 }
             }
             (alpha_tested ? s.DrawCallsAlpha : s.DrawCalls).Add(view_draw);

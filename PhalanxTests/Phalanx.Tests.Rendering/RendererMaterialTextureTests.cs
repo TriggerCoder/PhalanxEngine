@@ -111,12 +111,14 @@ public class RendererMaterialTextureTests
             albedo = Centre(Renderer_RenderTarget.gbuffer_color, 4);
             Assert.InRange(albedo[0], 187, 189);
 
-            // the material table carries the albedo slot index and the flags (albedo, srgb off for greyscale)
-            byte[] table = RHI_Device.ReadbackBuffer(Renderer.GetBuffer(Renderer_Buffer.MaterialParameters)!, 0, (ulong)Marshal.SizeOf<MaterialParameters>());
-            MaterialParameters p = MemoryMarshal.Read<MaterialParameters>(table);
+            // the material table carries the albedo slot index and the flags (albedo, srgb off for greyscale); the
+            // material is at index 2, after the default and illegal materials
+            Assert.Equal(2u, Renderer.GetMaterialIndex(material));
+            byte[] table = RHI_Device.ReadbackBuffer(Renderer.GetBuffer(Renderer_Buffer.MaterialParameters)!, 0, 3 * (ulong)Marshal.SizeOf<MaterialParameters>());
+            MaterialParameters p = MemoryMarshal.Read<MaterialParameters>(table.AsSpan(2 * Marshal.SizeOf<MaterialParameters>()));
             Assert.True(p.HasTextureAlbedo());
             Assert.Equal(0u, p.flags & (1u << 17));
-            Assert.Equal(0u, p.texture_indices[0]);
+            Assert.Equal(2u, p.texture_indices[0]); // after the reserved checkerboard (0) and illegal texture (1)
         });
     }
 

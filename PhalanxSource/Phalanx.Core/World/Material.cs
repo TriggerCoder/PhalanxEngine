@@ -145,6 +145,51 @@ public class Material : IResource
         Default(MaterialProperty.TerrainCoatingScale,   3.0f);
     }
 
+    // engine owned materials (the renderer's default and illegal materials, Renderer_Resources.cs) keep their properties
+    // and textures and can't be destroyed; Destroy is Phalanx's stand-in for spartan dropping the resource from
+    // ResourceCache, after which the renderer draws the material's renderables with the illegal material
+    private bool m_engine_owned;
+    private bool m_destroyed;
+    private bool m_edit_refusal_logged;
+    private bool m_creation_failed;
+
+    /// <summary>Whether the engine owns this material (its edits are ignored and it can't be destroyed).</summary>
+    public bool IsEngineOwned => m_engine_owned;
+    /// <summary>Whether <see cref="Destroy"/> was called; the renderer draws a destroyed material as the illegal one.</summary>
+    public bool IsDestroyed => m_destroyed;
+    /// <summary>Whether the last <see cref="PrepareForGpu"/> failed (its textures couldn't be packed); the renderer draws
+    /// the material as the illegal one until a later prepare succeeds.</summary>
+    public bool CreationFailed => m_creation_failed;
+    internal void SetEngineOwned() => m_engine_owned = true;
+    // a seam for the tests: the packing itself doesn't fail on any input it accepts (it resizes mismatched sources)
+    internal static Func<Material, bool>? PrepareFaultForTests;
+
+    /// <summary>Destroys the material: it drops its textures and the renderer stops using it (its renderables draw
+    /// with the illegal material). False, with a warning, for an engine owned material.</summary>
+    public bool Destroy()
+    {
+        if (m_engine_owned)
+        {
+            Log.LogWarning($"material '{GetObjectName()}' is owned by the engine and can't be destroyed");
+            return false;
+        }
+        m_destroyed = true;
+        Array.Clear(m_textures);
+        return true;
+    }
+
+    private bool RefuseEngineOwnedEdit()
+    {
+        if (!m_engine_owned)
+            return false;
+        if (!m_edit_refusal_logged)
+        {
+            Log.LogWarning($"material '{GetObjectName()}' is owned by the engine, its properties and textures can't be changed");
+            m_edit_refusal_logged = true;
+        }
+        return true;
+    }
+
     public const uint slots_per_texture = 4;
 
     private RHI_Texture?[] m_textures = new RHI_Texture?[(int)MaterialTextureType.Max * slots_per_texture];
@@ -184,6 +229,9 @@ public class Material : IResource
 
     private void SetPropertyInternal(MaterialProperty property_type, float value, bool save)
     {
+        // the mesh derived dimensions (save false) stay writable: every render that binds a material sets them
+        if (save && RefuseEngineOwnedEdit())
+            return;
         if (m_properties[(int)property_type] == value)
             return;
 
@@ -222,10 +270,23 @@ public class Material : IResource
                 return;
             m_resource_state = ResourceState.PreparingForGpu;
 
-            for (uint slot = 0; slot < GetUsedSlotCount(); slot++)
-                MaterialTexturePacking.PackTextures(this, slot);
-
-            m_needs_repack   = false;
+            // a failure (sources of different sizes) doesn't escape: the material is marked failed, which the renderer
+            // draws as the illegal material, and the next SetTexture tries again (spartan asserts in the packing)
+            try
+            {
+                if (PrepareFaultForTests?.Invoke(this) == true)
+                    throw new InvalidOperationException("injected preparation failure");
+                for (uint slot = 0; slot < GetUsedSlotCount(); slot++)
+                    MaterialTexturePacking.PackTextures(this, slot);
+                m_needs_repack    = false;
+                m_creation_failed = false;
+            }
+            catch (Exception e)
+            {
+                Log.LogError($"material '{GetObjectName()}' failed to prepare its textures: {e.Message}");
+                m_needs_repack    = true;
+                m_creation_failed = true;
+            }
             m_resource_state = ResourceState.PreparedForGpu;
         }
     }
@@ -269,6 +330,8 @@ public class Material : IResource
     public void SetTexture(MaterialTextureType texture_type, RHI_Texture? texture, uint slot = 0, bool auto_adjust_multipler = true)
     {
         Helpers.PLXAssert(slot < slots_per_texture);
+        if (RefuseEngineOwnedEdit())
+            return;
 
         // calculate the actual array index based on texture type and slot
         int array_index = (int)(((uint)texture_type * slots_per_texture) + slot);

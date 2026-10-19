@@ -8,7 +8,7 @@
 // - Materials upload colour, roughness, metalness, normal, height, the emissive scale, the texture flags and the
 //   Color/Normal/Emission/Packed texture indices (Renderer.cpp:2973-3122) into the deduped bindless texture table.
 //   Cpu textures are uploaded on first use. No terrain, vegetation, paint or clearcoat properties, no
-//   Material::SetIndex. Lights upload colour, intensity (the watt
+//   Material::SetIndex. Index 0 is the default material, 1 the illegal one, see Renderer.MaterialFallback.cs. Lights upload colour, intensity (the watt
 //   approximation, Phalanx has no radiometric conversion yet), position, direction, range, angle, the type flags, the
 //   shadow and screen space shadow bits with the atlas slices and the contact shadow slice; no ies.
 // - Material and light tables are rewritten only when their contents change, at offset 0 (spartan: the same).
@@ -63,12 +63,12 @@ public static partial class Renderer
             if (render.GetIndexCount() == 0)
                 continue;
             Matrix4x4 transform = entity.GetMatrix();
-            Material? material  = GetRenderMaterial(render);
-            uint material_index = GetMaterialIndex(material);
+            uint material_index = GetMaterialIndex(GetRenderMaterial(render));
             uint draw_index     = WriteDrawData(transform, entity.GetMatrixPrevious(), material_index, 0, render);
             if (draw_index == uint.MaxValue)
                 break;
-            (material != null && material.IsAlphaTested() ? s_draw_calls_alpha : s_draw_calls).Add(new DrawCall
+            // the material the entry draws with, the illegal one when the render's own couldn't go in the table
+            (IsMaterialIndexAlphaTested(material_index) ? s_draw_calls_alpha : s_draw_calls).Add(new DrawCall
             {
                 draw_index     = draw_index,
                 material_index = material_index,
@@ -90,7 +90,19 @@ public static partial class Renderer
     // the material a renderable draws with: its own, else the standard one (spartan: SetDefaultMaterial on load)
     internal static Material? GetRenderMaterial(Render render) => render.GetMaterial() ?? s_standard_material;
 
-    internal static uint GetMaterialIndex(Material? material) => material == null ? 0u : (uint)System.Math.Max(s_materials.IndexOf(material), 0);
+    // a material's index in this frame's table: the default material's (0) for none, the illegal material's (1) for one
+    // that isn't in the table (destroyed, failed, invalid, overflowing, Renderer.MaterialFallback.cs)
+    internal static uint GetMaterialIndex(Material? material)
+    {
+        if (material == null)
+            return default_material_index;
+        if (s_material_indices.TryGetValue(material, out uint index))
+            return index;
+        return s_materials.Count > illegal_material_index ? illegal_material_index : default_material_index;
+    }
+    // the material a table index draws with (null before the first UpdateMaterials)
+    internal static Material? GetTableMaterial(uint index) => index < s_materials.Count ? s_materials[(int)index] : null;
+    private static bool IsMaterialIndexAlphaTested(uint index) => GetTableMaterial(index)?.IsAlphaTested() ?? false;
     internal static uint GetLightCount() => s_light_count;
 
     // the world's render entities whose mesh is in the geometry buffer, uploading meshes on first sight (spartan
@@ -165,8 +177,9 @@ public static partial class Renderer
                format == RHI_Format.BC1_Unorm || format == RHI_Format.BC3_Unorm || format == RHI_Format.BC7_Unorm;
     }
 
-    // Renderer.cpp:3066-3093, the bits g_buffer.frag reads (the terrain/vegetation/paint/road bits come with them)
-    private static uint MaterialFlags(Material m)
+    // Renderer.cpp:3066-3093, the bits g_buffer.frag reads (the terrain/vegetation/paint/road bits come with them),
+    // then the bits of the textures that didn't bind cleared (MaterialFallback.cs) and the illegal material's point bit
+    private static uint MaterialFlags(Material m, ReadOnlySpan<RHI_Texture?> bound)
     {
         uint flags = 0;
         flags |= m.HasTextureOfType(MaterialTextureType.Height)             ? 1u << 0 : 0u;
@@ -179,8 +192,10 @@ public static partial class Renderer
         flags |= m.HasTextureOfType(MaterialTextureType.Occlusion)          ? 1u << 7 : 0u;
         flags |= m.GetProperty(MaterialProperty.EmissiveFromAlbedo) != 0.0f ? 1u << 15 : 0u;
         flags |= m.IsAlphaTested()                                          ? 1u << 16 : 0u;
-        flags |= ShouldDecodeAsSrgb(GetGpuTexture(m.GetTexture(MaterialTextureType.Color)))    ? 1u << 17 : 0u;
-        flags |= ShouldDecodeAsSrgb(GetGpuTexture(m.GetTexture(MaterialTextureType.Emission))) ? 1u << 18 : 0u;
+        flags |= ShouldDecodeAsSrgb(bound[BoundSlot(MaterialTextureType.Color)])    ? 1u << 17 : 0u;
+        flags |= ShouldDecodeAsSrgb(bound[BoundSlot(MaterialTextureType.Emission)]) ? 1u << 18 : 0u;
+        flags &= ~UnboundTextureFlags(m, bound);
+        flags |= ReferenceEquals(m, s_illegal_material) ? 1u << material_flag_point_sampled : 0u;
         return flags;
     }
 
@@ -220,28 +235,21 @@ public static partial class Renderer
         s_cpu_texture_uploads.Clear();
     }
 
-    // Renderer.cpp:3098-3122, textures dedupe into the bindless table, unset slots keep index 0 (the flags gate them)
-    private static void WriteMaterialTextureIndices(Material m, ref MaterialParameters p)
+    // Renderer.cpp:3098-3122, textures dedupe into the bindless table, unset slots keep index 0 (the flags gate them).
+    // The textures were gathered and counted against the table first (TryAddMaterial), they fit
+    private static void WriteMaterialTextureIndices(ReadOnlySpan<RHI_Texture?> bound, ref MaterialParameters p)
     {
-        for (int type = 0; type < s_gpu_texture_types.Length; type++)
+        for (int i = 0; i < bound.Length; i++)
         {
-            for (uint slot = 0; slot < Material.slots_per_texture; slot++)
+            if (bound[i] is not RHI_Texture texture)
+                continue;
+            if (!s_texture_indices.TryGetValue(texture, out uint index))
             {
-                if (GetGpuTexture(m.GetTexture(s_gpu_texture_types[type], slot)) is not RHI_Texture texture)
-                    continue; // unset, or a size-only texture without pixels
-                if (!s_texture_indices.TryGetValue(texture, out uint index))
-                {
-                    if (s_texture_indices.Count >= RHI_Definitions.rhi_max_array_size)
-                    {
-                        Log.LogError("material texture descriptor capacity exceeded");
-                        continue;
-                    }
-                    index = (uint)s_texture_indices.Count;
-                    s_texture_indices.Add(texture, index);
-                    s_bindless_textures[index] = texture;
-                }
-                p.texture_indices[type * (int)Material.slots_per_texture + (int)slot] = index;
+                index = (uint)s_texture_indices.Count;
+                s_texture_indices.Add(texture, index);
+                s_bindless_textures[index] = texture;
             }
+            p.texture_indices[i] = index;
         }
     }
 
@@ -259,36 +267,27 @@ public static partial class Renderer
     private static void UpdateMaterials(RHI_CommandList cmd)
     {
         s_materials.Clear();
+        s_material_indices.Clear();
+        s_material_failures.Clear();
         s_texture_indices.Clear();
         Array.Clear(s_bindless_textures);
-        // the world's materials, then the ones only a view's IPreDraw override draws with
-        bool full = false;
+        // the reserved materials first (0 default, 1 illegal) so they always fit, then the world's materials, then the
+        // ones only a view's IPreDraw override draws with; spartan stops at the first overflow, here every material
+        // that doesn't fit is told apart (logged once) and draws as the illegal material
+        AddReservedMaterials();
         foreach (Entity entity in Phalanx.World.World.GetEntitiesRenderables())
-        {
-            if (entity.GetComponent<Render>() is Render render && GetRenderMaterial(render) is Material material && !AddMaterial(material))
-            {
-                full = true;
-                break;
-            }
-        }
-        if (!full)
-            AddOverrideMaterials();
+            if (entity.GetComponent<Render>() is Render render && GetRenderMaterial(render) is Material material)
+                AddMaterial(material);
+        AddOverrideMaterials();
         UpdateBindlessMaterialTextures();
         UploadIfChanged(cmd, Renderer_Buffer.MaterialParameters, MemoryMarshal.AsBytes(s_material_parameters.AsSpan(0, System.Math.Max(s_materials.Count, 1))), ref s_material_bytes_uploaded);
     }
 
-    // false when the table is full
-    private static bool AddMaterial(Material m)
+    // the table entry of a material that can go in (MaterialFallback.cs decides), written at the next index
+    private static void WriteMaterialEntry(Material m, ReadOnlySpan<RHI_Texture?> bound)
     {
-        if (s_materials.Contains(m))
-            return true;
-        if (s_materials.Count >= RHI_Definitions.rhi_max_array_size)
-        {
-            Log.LogError("material bindless capacity exceeded, overflowing materials will use index 0");
-            return false;
-        }
         ref MaterialParameters p = ref s_material_parameters[s_materials.Count];
-        uint flags = MaterialFlags(m);
+        uint flags = MaterialFlags(m, bound);
         p = new MaterialParameters
         {
             local_width       = m.GetProperty(MaterialProperty.WorldWidth),
@@ -302,9 +301,7 @@ public static partial class Renderer
             height            = m.GetProperty(MaterialProperty.Height),
             flags             = flags,
         };
-        WriteMaterialTextureIndices(m, ref p);
-        s_materials.Add(m);
-        return true;
+        WriteMaterialTextureIndices(bound, ref p);
     }
 
     private static readonly List<Light> s_lights = new();
@@ -631,12 +628,19 @@ public static partial class Renderer
 
     private static void ResetSceneGpuState()
     {
+        // the cpu textures' gpu copies go with the device (they were never released before, and a renderer initialized
+        // again would have reused copies from the destroyed device)
+        ReleaseCpuTextureUploads();
         foreach (Mesh mesh in s_uploaded_meshes)
             mesh.ReleaseGpuBuffers();
         s_uploaded_meshes.Clear();
         s_draw_calls.Clear();
         s_draw_calls_alpha.Clear();
         s_materials.Clear();
+        s_material_indices.Clear();
+        s_material_failures.Clear();
+        s_logged_material_failures.Clear();
+        s_failed_texture_uploads.Clear();
         s_cull_candidates.Clear();
         s_prepared_views.Clear();
         s_rendered_views.Clear();

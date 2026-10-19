@@ -15,24 +15,30 @@ namespace Phalanx.Editor;
 // 0.75 sunset), without it the sun keeps its fixed afternoon angle. The sky is the atmospheric skysphere.
 // --layers <hide-cube|only-cube> exercises the render layers: the cube goes on layer 2 and the camera's cull mask
 // leaves layer 2 out (the cube disappears, its shadow stays: the shadow atlas draws every caster) or keeps only layer 2
-// (the ground disappears). --predraw <material|blink> puts a behaviour on the cube that logs its lifecycle and draws
-// it blue through OnPreDraw (material), or hides it in the view every other second and logs OnBecameVisible /
-// OnBecameInvisible (blink).
+// (the ground disappears). --predraw <material|blink|invalid> puts a behaviour on the cube that logs its lifecycle and draws
+// it blue through OnPreDraw (material), hides it in the view every other second and logs OnBecameVisible /
+// OnBecameInvisible (blink), or overrides it with a destroyed material (invalid: the cube shows the illegal material).
+// --material <none|destroyed|invalid|missing-texture|full> exercises the fallback materials: the cube has no material
+// (the default one, white with spartan's grey checkerboard), its material is destroyed or has a NaN roughness (the
+// illegal material, the sad face), its albedo texture has no pixels (the plain orange colour, one warning), or the
+// material table holds only one material besides the reserved two (the cube keeps its own, the ground goes illegal).
 internal static class RendererCubeDemo
 {
     private sealed record Scene(Entity Cube);
 
     public enum Layers { Default, HideCube, OnlyCube }
-    public enum PreDraw { None, Material, Blink }
+    public enum PreDraw { None, Material, Blink, Invalid }
+    public enum MaterialCase { Own, None, Destroyed, Invalid, MissingTexture, Full }
 
-    /// <summary>The render layer and behaviour switches of the demo (--layers, --predraw).</summary>
-    public sealed record ViewOptions(Layers Layers = Layers.Default, PreDraw PreDraw = PreDraw.None);
+    /// <summary>The render layer, behaviour and fallback material switches of the demo (--layers, --predraw, --material).</summary>
+    public sealed record ViewOptions(Layers Layers = Layers.Default, PreDraw PreDraw = PreDraw.None, MaterialCase Material = MaterialCase.Own);
 
     // the --predraw behaviour: a per view override in OnPreDraw and the lifecycle on the console
     private sealed class CubeBehaviour : Behaviour, IAwake, IOnEnable, IStart, IPreDraw, IOnBecameVisible, IOnDisable, IOnDestroy
     {
         private readonly PreDraw m_mode;
         private readonly Material m_blue = new();
+        private readonly Material m_destroyed = new();
         private readonly System.Diagnostics.Stopwatch m_clock = System.Diagnostics.Stopwatch.StartNew();
         private bool m_logged_pre_draw;
 
@@ -43,6 +49,8 @@ internal static class RendererCubeDemo
             m_blue.SetProperty(MaterialProperty.ColorG, 0.35f);
             m_blue.SetProperty(MaterialProperty.ColorB, 0.95f);
             m_blue.SetProperty(MaterialProperty.ColorA, 1.0f);
+            m_destroyed.SetResourceName("predraw_destroyed");
+            m_destroyed.Destroy();
         }
 
         public void Awake()     => Console.WriteLine("predraw: Awake");
@@ -62,6 +70,8 @@ internal static class RendererCubeDemo
             }
             if (m_mode == PreDraw.Material)
                 view.SetMaterial(m_blue);
+            else if (m_mode == PreDraw.Invalid)
+                view.SetMaterial(m_destroyed);
             else if (m_mode == PreDraw.Blink && (int)m_clock.Elapsed.TotalSeconds % 2 == 1)
                 view.SetVisible(false);
         }
@@ -121,12 +131,22 @@ internal static class RendererCubeDemo
                 Console.Error.WriteLine($"renderer-cube: couldn't load '{texture_path}', using the plain colour");
         }
 
+        options ??= new ViewOptions();
+        material.SetResourceName("cube");
+        if (options.Material == MaterialCase.MissingTexture)
+            material.SetTexture(MaterialTextureType.Color, new RHI_Texture(16, 16)); // a size, no pixels
         Entity cube = World.World.CreateEntity();
         cube.SetObjectName("cube");
         Render render = cube.AddComponent<Render>()!;
         render.SetMesh(MeshType.Cube);
-        render.SetMaterial(material);
-        options ??= new ViewOptions();
+        if (options.Material != MaterialCase.None)
+            render.SetMaterial(material);
+        if (options.Material == MaterialCase.Destroyed)
+            material.Destroy();
+        else if (options.Material == MaterialCase.Invalid)
+            material.SetProperty(MaterialProperty.Roughness, float.NaN);
+        else if (options.Material == MaterialCase.Full)
+            Renderer.s_material_capacity = 3; // the default, the illegal and the cube's, the ground's doesn't fit
         if (options.Layers != Layers.Default)
         {
             render.RenderLayers = 1u << 1; // layer 2
@@ -142,6 +162,7 @@ internal static class RendererCubeDemo
         ground_material.SetProperty(MaterialProperty.ColorB, 0.6f);
         ground_material.SetProperty(MaterialProperty.ColorA, 1.0f);
         ground_material.SetProperty(MaterialProperty.Roughness, 0.9f);
+        ground_material.SetResourceName("ground");
         Entity ground = World.World.CreateEntity();
         ground.SetObjectName("ground");
         ground.SetPosition(new Vector3(0, -1.0f, 0));

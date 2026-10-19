@@ -13,7 +13,7 @@ const uint material_texture_index_emission = 8u;
 const uint material_texture_index_packed   = 12u;
 
 // flag bits: 1 normal, 2 albedo, 3 roughness, 4 metalness, 6 emission, 7 occlusion, 15 emissive from albedo,
-// 16 alpha tested, 17/18 albedo/emission srgb decode
+// 16 alpha tested, 17/18 albedo/emission srgb decode; Phalanx adds 31, point sampled (the illegal material)
 bool has_flag(MaterialParameters m, uint bit) { return (m.flags & (1u << bit)) != 0u; }
 
 vec3 srgb_to_linear(vec3 color)
@@ -27,7 +27,9 @@ vec3 srgb_to_linear(vec3 color)
 vec4 sample_material_texture(MaterialParameters m, uint slot, vec2 uv)
 {
     uint index = m.texture_indices[slot];
-    return texture(sampler2D(material_textures[nonuniformEXT(index)], GET_SAMPLER(sampler_anisotropic_wrap)), uv);
+    // Phalanx's bit 31: the illegal material's texture is point sampled (Renderer.MaterialFallback.cs)
+    uint sampler_index = has_flag(m, 31u) ? sampler_point_wrap : sampler_anisotropic_wrap;
+    return texture(sampler2D(material_textures[nonuniformEXT(index)], GET_SAMPLER(sampler_index)), uv);
 }
 
 // rotate uv in 90 degree increments: 0 = 0, 1 = 90, 2 = 180, 3 = 270

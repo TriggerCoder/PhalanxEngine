@@ -24,8 +24,10 @@ namespace Phalanx.Editor;
 //     renders like off, xess and dlss aren't integrated and fall back to off)
 //   add --sss <on|off> to switch Renderer.ScreenSpaceShadows, the sun's contact shadows (default on)
 //   add --layers <hide-cube|only-cube> to put the cube on render layer 2 and leave layer 2 out of the camera's cull mask
-//     (hide-cube) or keep only layer 2 (only-cube); --predraw <material|blink> adds a cube behaviour that draws it blue
-//     through OnPreDraw (material) or hides it every other second (blink), logging its lifecycle callbacks
+//     (hide-cube) or keep only layer 2 (only-cube); --predraw <material|blink|invalid> adds a cube behaviour that draws it blue
+//     through OnPreDraw (material), hides it every other second (blink) or overrides it with a destroyed material
+//     (invalid, the illegal material), logging its lifecycle callbacks; --material <none|destroyed|invalid|
+//     missing-texture|full> shows the default and illegal materials (RendererCubeDemo.cs)
 public static class Program
 {
     public static int Main(string[] args)
@@ -134,13 +136,30 @@ public static class Program
                 string? value = pre_draw_arg + 1 < args.Length ? args[pre_draw_arg + 1].ToLowerInvariant() : null;
                 if (value == "material") pre_draw = RendererCubeDemo.PreDraw.Material;
                 else if (value == "blink") pre_draw = RendererCubeDemo.PreDraw.Blink;
+                else if (value == "invalid") pre_draw = RendererCubeDemo.PreDraw.Invalid;
                 else
                 {
-                    Console.Error.WriteLine("--predraw: expected material or blink");
+                    Console.Error.WriteLine("--predraw: expected material, blink or invalid");
                     return 1;
                 }
             }
-            var options = new RendererCubeDemo.ViewOptions(layers, pre_draw);
+            var material_case = RendererCubeDemo.MaterialCase.Own;
+            int material_arg = Array.IndexOf(args, "--material");
+            if (material_arg >= 0)
+            {
+                string? value = material_arg + 1 < args.Length ? args[material_arg + 1].ToLowerInvariant() : null;
+                if (value == "none") material_case = RendererCubeDemo.MaterialCase.None;
+                else if (value == "destroyed") material_case = RendererCubeDemo.MaterialCase.Destroyed;
+                else if (value == "invalid") material_case = RendererCubeDemo.MaterialCase.Invalid;
+                else if (value == "missing-texture") material_case = RendererCubeDemo.MaterialCase.MissingTexture;
+                else if (value == "full") material_case = RendererCubeDemo.MaterialCase.Full;
+                else
+                {
+                    Console.Error.WriteLine("--material: expected none, destroyed, invalid, missing-texture or full");
+                    return 1;
+                }
+            }
+            var options = new RendererCubeDemo.ViewOptions(layers, pre_draw, material_case);
             int png_arg = Array.IndexOf(args, "--png");
             if (renderer_cube_offscreen && png_arg >= 0 && png_arg + 1 < args.Length)
             {

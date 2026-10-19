@@ -5,7 +5,8 @@
 // CreateStandardTextures (:1422, the noise, checkerboard, black and white textures),
 // DestroyResources (:1616) and the getters (:1775).
 // Deviations:
-// - The standard textures are generated (StandardTextures.cs) instead of loaded from data/textures.
+// - The standard textures are generated (StandardTextures.cs) instead of loaded from data/textures. The one file
+//   Phalanx ships there is illegal_material.png, the illegal material's texture (Renderer.MaterialFallback.cs).
 //   The gizmo icons and the night sky textures are not created yet (no editor, no sky pass); GetStandardTexture
 //   returns null for them.
 // - CreateSamplers keeps spartan's static "created once" guard as a field reset by DestroyResources, so a renderer
@@ -215,7 +216,8 @@ public static partial class Renderer
         Create(Phalanx.Geometry.MeshType.Quad, Phalanx.Geometry.GeometryGeneration.generate_quad, "standard_quad");
     }
 
-    // Renderer_Resources.cpp:1598. Not ported: SetPersistent and the data directory (no material files yet).
+    // Renderer_Resources.cpp:1598, the default material (index 0), engine owned, then the illegal one (index 1,
+    // Renderer.MaterialFallback.cs). Not ported: SetPersistent and the data directory (no material files yet).
     private static Material? s_standard_material;
     public static Material? GetStandardMaterial() => s_standard_material;
     private static void CreateStandardMaterials()
@@ -230,8 +232,10 @@ public static partial class Renderer
         material.SetProperty(MaterialProperty.ColorA,         1.0f);
         material.SetProperty(MaterialProperty.WorldSpaceUv,   1.0f);
         material.SetTexture(MaterialTextureType.Color,        GetStandardTexture(Renderer_StandardTexture.Checkerboard));
+        material.SetEngineOwned();
         s_standard_material = material;
         RenderView.SetStandardMaterial(material);
+        CreateIllegalMaterial();
     }
 
     /// <summary>A cpu texture for <see cref="Phalanx.World.Material.SetTexture"/> from <paramref name="rgba8"/>
@@ -286,6 +290,7 @@ public static partial class Renderer
             RenderView.SetStandardMesh((Phalanx.Geometry.MeshType)i, null);
         s_standard_material = null;
         RenderView.SetStandardMaterial(null);
+        ResetMaterialFallbackState();
         s_samplers_created = false;
         s_mip_bias         = float.MaxValue;
         ResetSkyState();

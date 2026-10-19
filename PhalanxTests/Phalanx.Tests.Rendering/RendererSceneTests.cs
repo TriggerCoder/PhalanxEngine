@@ -189,13 +189,14 @@ public partial class RendererSceneTests
             Assert.Equal(new byte[] { 255, 128, 0, 255 }, albedo[c..(c + 4)]);
             Assert.Equal(new byte[] { 0, 0, 0, 0 }, albedo[0..4]);
 
-            // normal (rgba16f): the front face faces the camera (-z), w carries the packed material index 0
+            // normal (rgba16f): the front face faces the camera (-z), w carries the packed material index 2 (0 and 1
+            // are the reserved default and illegal materials)
             byte[] normal = Read(Renderer_RenderTarget.gbuffer_normal);
             int n = Index(Width / 2, Height / 2) * 8;
             Assert.Equal(0.0f, Half(normal, n), 3);
             Assert.Equal(0.0f, Half(normal, n + 2), 3);
             Assert.Equal(-1.0f, Half(normal, n + 4), 3);
-            Assert.Equal((float)BitConverter.UInt16BitsToHalf(0x0400), Half(normal, n + 6));
+            Assert.Equal((float)BitConverter.UInt16BitsToHalf(0x0402), Half(normal, n + 6));
 
             // material (rgba8): roughness, metalness, 0, occlusion
             byte[] material = Read(Renderer_RenderTarget.gbuffer_material);
@@ -269,9 +270,9 @@ public partial class RendererSceneTests
             Assert.Equal(light_entity.GetForward(), uploaded.direction);
             Assert.Equal(light.GetIntensityRadiometric(), uploaded.intensity);
 
-            // and the material table the material
-            byte[] materials = RHI_Device.ReadbackBuffer(Renderer.GetBuffer(Renderer_Buffer.MaterialParameters)!, 0, (ulong)Marshal.SizeOf<MaterialParameters>());
-            MaterialParameters m = MemoryMarshal.Read<MaterialParameters>(materials);
+            // and the material table the material, after the default and illegal materials
+            byte[] materials = RHI_Device.ReadbackBuffer(Renderer.GetBuffer(Renderer_Buffer.MaterialParameters)!, 0, 3 * (ulong)Marshal.SizeOf<MaterialParameters>());
+            MaterialParameters m = MemoryMarshal.Read<MaterialParameters>(materials.AsSpan(2 * Marshal.SizeOf<MaterialParameters>()));
             Assert.Equal(new Vector4(0.5f, 0.25f, 1.0f, 1.0f), m.color);
             Assert.Equal(0.5f, m.roughness);
         });
