@@ -60,6 +60,9 @@ public struct Frustum
         m_planes[5].Normalize();
     }
 
+    /// <summary>Plane <paramref name="index"/>: near, far, left, right, top, bottom.</summary>
+    public readonly Plane GetPlane(int index) => m_planes[index];
+
     public readonly bool IsVisible(Vector3 center, Vector3 extent, bool ignore_depth = false) { return CheckCube(center, extent, ignore_depth) != MathEx.Intersection.Outside; }
 
     internal readonly MathEx.Intersection CheckCube(Vector3 center, Vector3 extent, bool ignore_depth)

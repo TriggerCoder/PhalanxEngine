@@ -22,48 +22,66 @@ namespace Phalanx.Editor;
 // (the default one, white with spartan's grey checkerboard), its material is destroyed or has a NaN roughness (the
 // illegal material, the sad face), its albedo texture has no pixels (the plain orange colour, one warning), or the
 // material table holds only one material besides the reserved two (the cube keeps its own, the ground goes illegal).
+// --entities N adds N batched, instanced store entities (EntitiesDemo.cs) and steps back the camera to see them.
 internal static class RendererCubeDemo
 {
-    private sealed record Scene(Entity Cube);
+    private sealed record Scene(Entity Cube, int Entities);
 
     public enum Layers { Default, HideCube, OnlyCube }
     public enum PreDraw { None, Material, Blink, Invalid }
     public enum MaterialCase { Own, None, Destroyed, Invalid, MissingTexture, Full }
 
     /// <summary>The render layer, behaviour and fallback material switches of the demo (--layers, --predraw, --material).</summary>
-    public sealed record ViewOptions(Layers Layers = Layers.Default, PreDraw PreDraw = PreDraw.None, MaterialCase Material = MaterialCase.Own);
+    public sealed record ViewOptions(Layers Layers = Layers.Default, PreDraw PreDraw = PreDraw.None, MaterialCase Material = MaterialCase.Own, int Entities = 0);
 
     // the --predraw behaviour: a per view override in OnPreDraw and the lifecycle on the console
     private sealed class CubeBehaviour : Behaviour, IAwake, IOnEnable, IStart, IPreDraw, IOnBecameVisible, IOnDisable, IOnDestroy
     {
         private readonly PreDraw m_mode;
-        private readonly Material m_blue = new();
-        private readonly Material m_destroyed = new();
+        private readonly bool m_quiet;
+        // shared by every instance (--entities gives ~200 store entities this behaviour): one table entry, one warning
+        private static Material? s_blue, s_destroyed;
+        private readonly Material m_blue;
+        private readonly Material m_destroyed;
         private readonly System.Diagnostics.Stopwatch m_clock = System.Diagnostics.Stopwatch.StartNew();
         private bool m_logged_pre_draw;
 
-        public CubeBehaviour(PreDraw mode)
+        public CubeBehaviour(PreDraw mode, bool quiet = false)
         {
-            m_mode = mode;
-            m_blue.SetProperty(MaterialProperty.ColorR, 0.15f);
-            m_blue.SetProperty(MaterialProperty.ColorG, 0.35f);
-            m_blue.SetProperty(MaterialProperty.ColorB, 0.95f);
-            m_blue.SetProperty(MaterialProperty.ColorA, 1.0f);
-            m_destroyed.SetResourceName("predraw_destroyed");
-            m_destroyed.Destroy();
+            m_mode  = mode;
+            m_quiet = quiet;
+            if (s_blue == null || s_destroyed == null)
+            {
+                s_blue = new Material();
+                s_blue.SetProperty(MaterialProperty.ColorR, 0.15f);
+                s_blue.SetProperty(MaterialProperty.ColorG, 0.35f);
+                s_blue.SetProperty(MaterialProperty.ColorB, 0.95f);
+                s_blue.SetProperty(MaterialProperty.ColorA, 1.0f);
+                s_destroyed = new Material();
+                s_destroyed.SetResourceName("predraw_destroyed");
+                s_destroyed.Destroy();
+            }
+            m_blue      = s_blue;
+            m_destroyed = s_destroyed;
         }
 
-        public void Awake()     => Console.WriteLine("predraw: Awake");
-        public void OnEnable()  => Console.WriteLine("predraw: OnEnable");
-        public void Start()     => Console.WriteLine("predraw: Start");
-        public void OnDisable() => Console.WriteLine("predraw: OnDisable");
-        public void OnDestroy() => Console.WriteLine("predraw: OnDestroy");
-        public void OnBecameVisible()   => Console.WriteLine("predraw: OnBecameVisible");
-        public void OnBecameInvisible() => Console.WriteLine("predraw: OnBecameInvisible");
+        private void Log(string message)
+        {
+            if (!m_quiet)
+                Console.WriteLine(message);
+        }
+
+        public void Awake()     => Log("predraw: Awake");
+        public void OnEnable()  => Log("predraw: OnEnable");
+        public void Start()     => Log("predraw: Start");
+        public void OnDisable() => Log("predraw: OnDisable");
+        public void OnDestroy() => Log("predraw: OnDestroy");
+        public void OnBecameVisible()   => Log("predraw: OnBecameVisible");
+        public void OnBecameInvisible() => Log("predraw: OnBecameInvisible");
 
         public void OnPreDraw(in ViewContext view)
         {
-            if (!m_logged_pre_draw)
+            if (!m_logged_pre_draw && !m_quiet)
             {
                 Console.WriteLine($"predraw: OnPreDraw in view '{view.View.Name}'");
                 m_logged_pre_draw = true;
@@ -90,8 +108,15 @@ internal static class RendererCubeDemo
         camera.SetAperture(16.0f);
         camera.SetShutterSpeed(1.0f / 125.0f);
         camera.SetIso(100.0f);
+        options ??= new ViewOptions();
         camera_entity.SetPosition(new Vector3(0, 0.8f, -3));
         camera_entity.SetRotation(Quaternion.CreateFromYawPitchRoll(0.0f, 0.3f, 0.0f)); // looking slightly down at the ground
+        if (options.Entities > 0)
+        {
+            // higher and further back, over the field that starts 10 m in front of the cube
+            camera_entity.SetPosition(new Vector3(0, 6.0f, -20.0f));
+            camera_entity.SetRotation(Quaternion.CreateFromYawPitchRoll(0.0f, 0.32f, 0.0f));
+        }
 
         Entity light_entity = World.World.CreateEntity();
         light_entity.SetObjectName("light_directional");
@@ -131,7 +156,6 @@ internal static class RendererCubeDemo
                 Console.Error.WriteLine($"renderer-cube: couldn't load '{texture_path}', using the plain colour");
         }
 
-        options ??= new ViewOptions();
         material.SetResourceName("cube");
         if (options.Material == MaterialCase.MissingTexture)
             material.SetTexture(MaterialTextureType.Color, new RHI_Texture(16, 16)); // a size, no pixels
@@ -167,19 +191,35 @@ internal static class RendererCubeDemo
         ground.SetObjectName("ground");
         ground.SetPosition(new Vector3(0, -1.0f, 0));
         ground.SetScale(new Vector3(20.0f, 1.0f, 20.0f));
+        if (options.Entities > 0)
+        {
+            float field = EntitiesDemo.FieldSize(options.Entities) + 40.0f;
+            ground.SetPosition(new Vector3(0, -1.0f, field * 0.5f - 30.0f));
+            ground.SetScale(new Vector3(field, 1.0f, field));
+        }
         Render ground_render = ground.AddComponent<Render>()!;
         ground_render.SetMesh(MeshType.Quad);
         ground_render.SetMaterial(ground_material);
 
+        if (options.Entities > 0)
+        {
+            PreDraw mode = options.PreDraw;
+            EntitiesDemo.Populate(options.Entities, options.Layers != Layers.Default, mode == PreDraw.None ? null : () => new CubeBehaviour(mode, quiet: true));
+        }
+
         World.World.Tick(); // publish the entities (spartan: the world load commits them before the first frame)
-        return new Scene(cube);
+        return new Scene(cube, options.Entities);
     }
 
-    // Engine::Tick order: World::Tick (entities, camera) then Renderer::Tick
-    private static void Animate(Scene scene, float time)
+    // Engine::Tick order: World::Tick (entities, camera) then Renderer::Tick; the batched behaviours of --entities
+    // move by delta_seconds (the engine clock doesn't run here)
+    private static void Animate(Scene scene, float time, double delta_seconds = 0.0)
     {
         scene.Cube.SetRotation(Quaternion.CreateFromYawPitchRoll(0.6f + time * 0.8f, 0.45f + time * 0.3f, 0.0f));
-        World.World.Tick();
+        if (scene.Entities > 0)
+            World.World.Tick(delta_seconds);
+        else
+            World.World.Tick();
     }
 
     public static int Run(IWindow window, int frames, bool validation, string? texture_path = null, bool point_light = false, float? time_of_day = null, ViewOptions? options = null)
@@ -189,13 +229,18 @@ internal static class RendererCubeDemo
         {
             Scene scene = CreateScene(texture_path, point_light, time_of_day, options);
             var clock = System.Diagnostics.Stopwatch.StartNew();
+            EntitiesDemo.Report? report = scene.Entities > 0 ? new EntitiesDemo.Report(scene.Entities) : null;
+            double last = 0.0;
             int presented = 0;
             while (!window.IsClosing && (frames <= 0 || presented < frames))
             {
                 window.DoEvents();
-                Animate(scene, (float)clock.Elapsed.TotalSeconds);
+                double now = clock.Elapsed.TotalSeconds;
+                Animate(scene, (float)now, now - last);
                 if (Renderer.Tick())
                     presented++;
+                report?.AddFrame((now - last) * 1000.0);
+                last = now;
             }
             return presented;
         }
@@ -231,10 +276,13 @@ internal static class RendererCubeDemo
         try
         {
             Scene scene = CreateScene(texture_path, point_light, time_of_day, options);
+            EntitiesDemo.Report? report = scene.Entities > 0 ? new EntitiesDemo.Report(scene.Entities) : null;
             for (int i = 0; i < 4; i++) // temporal history settles
             {
-                Animate(scene, time);
+                long start = System.Diagnostics.Stopwatch.GetTimestamp();
+                Animate(scene, time, 1.0 / 60.0);
                 Renderer.Tick();
+                report?.AddFrame(System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds);
             }
             byte[] rgba = Renderer.ReadOutputRgba8();
             PngWriter.Write(path, width, height, rgba);

@@ -54,6 +54,9 @@ internal sealed class DirectionalCascades
         Array.Fill(m_atlas_scales, Vector2.Zero);
     }
 
+    // the cascade's frustum (the store's shadow culling, Renderer.Instancing.cs)
+    public Frustum GetFrustum(uint cascade) => m_frustums[cascade];
+
     // Light::IsInViewFrustum for a directional light: orthographic, the depth is ignored
     public bool IsInViewFrustum(Render renderable, uint cascade)
     {

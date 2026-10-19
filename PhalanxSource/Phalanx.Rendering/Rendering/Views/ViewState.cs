@@ -48,6 +48,12 @@ internal sealed class ViewState
     // what this view draws: the frame's draws it culled in, with its overrides
     public readonly List<Renderer.DrawCall> DrawCalls      = new();
     public readonly List<Renderer.DrawCall> DrawCallsAlpha = new();
+    // what the passes draw: DrawCalls grouped by mesh and material, and the store's batches (Renderer.Instancing.cs)
+    public readonly List<Renderer.InstancedDraw> Draws      = new();
+    public readonly List<Renderer.InstancedDraw> DrawsAlpha = new();
+    // the store's culling for the view and the per view OnPreDraw overrides of store entities
+    public readonly InstanceCullRequest Instances = new();
+    public readonly List<Renderer.PackedOverride> PackedOverrides = new();
 
     // the light table as this view sees it: the shared entries with this view's directional cascades and contact
     // shadow slices

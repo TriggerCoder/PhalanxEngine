@@ -229,6 +229,8 @@ internal static class RHI_Implementation
     // spartan: SP_ASSERT_VK
     public static void Check(Result result, string what)
     {
+        if (result == Result.ErrorDeviceLost)
+            RHI_Device.MarkDeviceLost();
         if (result != Result.Success)
             throw new RHI_Exception(result, what);
     }
@@ -237,5 +239,6 @@ internal static class RHI_Implementation
 internal sealed class RHI_Exception : Exception
 {
     public Result Result { get; }
+    public bool IsDeviceLost => Result == Result.ErrorDeviceLost;
     public RHI_Exception(Result result, string what) : base($"{what} failed: {result}") { Result = result; }
 }

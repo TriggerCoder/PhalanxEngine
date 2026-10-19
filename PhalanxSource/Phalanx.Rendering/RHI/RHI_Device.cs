@@ -30,7 +30,10 @@ internal static unsafe partial class RHI_Device
     private static readonly List<string> s_validation_messages = new();
 
     public static bool IsInitialized => RHI_Context.Device.Handle != 0;
+    // the validation layer's extra checks when validation is on, robust buffer access, gpu breadcrumbs (RenderDevice.Validation)
+    public static RenderValidation ValidationFeatures { get; set; }
     public static IReadOnlyList<string> ValidationMessages { get { lock (s_validation_messages) return s_validation_messages.ToArray(); } }
+    internal static void ClearValidationMessages() { lock (s_validation_messages) s_validation_messages.Clear(); }
 
     // properties (spartan: Property*)
     public static float  PropertyTimestampPeriod { get; private set; }
@@ -80,6 +83,27 @@ internal static unsafe partial class RHI_Device
             }
             if (available_extensions.Contains(ExtDebugUtils.ExtensionName))
                 extensions.Add(ExtDebugUtils.ExtensionName);
+            // synchronization and gpu-assisted validation (RenderDevice.Validation), through the layer's own extension
+            ValidationFeatureEnableEXT* validation_enables = stackalloc ValidationFeatureEnableEXT[3];
+            uint validation_enable_count = 0;
+            const RenderValidation layer_features = RenderValidation.Synchronization | RenderValidation.GpuAssisted;
+            if (validation && (ValidationFeatures & layer_features) != 0 && available_extensions.Contains("VK_EXT_validation_features"))
+            {
+                extensions.Add("VK_EXT_validation_features");
+                if ((ValidationFeatures & RenderValidation.Synchronization) != 0)
+                    validation_enables[validation_enable_count++] = ValidationFeatureEnableEXT.SynchronizationValidationExt;
+                // no reserved binding slot: on a device with 8 sets (llvmpipe) the pipelines that bind all of them would not
+                // build, the layer skips instrumenting those instead
+                if ((ValidationFeatures & RenderValidation.GpuAssisted) != 0)
+                    validation_enables[validation_enable_count++] = ValidationFeatureEnableEXT.GpuAssistedExt;
+                Log.LogInfo($"validation layer features: {ValidationFeatures & layer_features}");
+            }
+            ValidationFeaturesEXT validation_features = new()
+            {
+                SType                         = StructureType.ValidationFeaturesExt,
+                EnabledValidationFeatureCount = validation_enable_count,
+                PEnabledValidationFeatures    = validation_enables
+            };
             if (available_extensions.Contains("VK_EXT_swapchain_colorspace") && instance_extensions.Count > 0)
                 extensions.Add("VK_EXT_swapchain_colorspace");
 
@@ -104,6 +128,7 @@ internal static unsafe partial class RHI_Device
                 InstanceCreateInfo create_info = new()
                 {
                     SType                   = StructureType.InstanceCreateInfo,
+                    PNext                   = validation_enable_count > 0 ? &validation_features : null,
                     PApplicationInfo        = &app_info,
                     EnabledExtensionCount   = (uint)RHI_Context.ExtensionsInstance.Length,
                     PpEnabledExtensionNames = (byte**)ext_ptr,
@@ -146,6 +171,10 @@ internal static unsafe partial class RHI_Device
 
         // pipeline cache
         PipelinesInitialize();
+
+        // device lost checkpoints, device fault and the optional gpu breadcrumbs
+        DiagnosticsInitialize();
+        RHI_Breadcrumbs.Initialize();
     }
 
     // true when a loader exists and some device reports vulkan 1.3; creates and destroys a bare instance
@@ -191,6 +220,7 @@ internal static unsafe partial class RHI_Device
         if (RHI_Context.Device.Handle != 0)
         {
             vk.DeviceWaitIdle(RHI_Context.Device);
+            DiagnosticsDestroy();
             DestroySwapChain();
             DeletionQueueFlush();
             PipelinesDestroy();
@@ -529,6 +559,9 @@ internal static unsafe partial class RHI_Device
         features.Features.DepthClamp        = true; // rasterizer states without depth clip
         features.Features.FillModeNonSolid  = true; // wireframe
         features.Features.WideLines         = true; // the default rasterizer state draws 3 pixel lines
+        features.Features.RobustBufferAccess = (ValidationFeatures & RenderValidation.RobustBufferAccess) != 0 && support.Features.RobustBufferAccess;
+        if ((ValidationFeatures & RenderValidation.RobustBufferAccess) != 0)
+            Log.LogInfo($"robust buffer access: {(features.Features.RobustBufferAccess ? "on" : "not supported")}");
 
         // extensions
         HashSet<string> available = GetDeviceExtensions(physical);
@@ -560,6 +593,11 @@ internal static unsafe partial class RHI_Device
         bool calibrated_timestamps = available.Contains(CalibratedTimestampsExtensionName);
         if (calibrated_timestamps)
             extensions.Add(CalibratedTimestampsExtensionName);
+        // device lost diagnostics when the driver has them (RHI_Device.Diagnostics.cs)
+        PhysicalDeviceFaultFeaturesEXT features_fault = new() { SType = StructureType.PhysicalDeviceFaultFeaturesExt };
+        DiagnosticsSelectExtensions(available, extensions, physical, &features_fault);
+        if (features_fault.DeviceFault)
+            features_robustness.PNext = &features_fault;
         RHI_Context.ExtensionsDevice = extensions.ToArray();
 
         // one queue per unique family

@@ -91,6 +91,25 @@ public class SharedBufferLayoutTests
     }
 
     [Fact]
+    public void The_store_packed_transform_is_the_gpu_packed_instance()
+    {
+        // EntityStore.Instances is uploaded as is into the PackedInstance buffers (Renderer.Instancing.cs)
+        Assert.Equal(Unsafe.SizeOf<PackedInstance>(), Unsafe.SizeOf<Phalanx.World.PackedTransform>());
+        foreach (string field in new[] { "pos_x", "pos_y", "pos_z", "rotation_xy", "rotation_zw", "scale_x", "scale_y", "scale_z" })
+            Assert.Equal(Marshal.OffsetOf<PackedInstance>(field), Marshal.OffsetOf<Phalanx.World.PackedTransform>(field));
+        var position = new System.Numerics.Vector3(1, -2, 3);
+        var rotation = System.Numerics.Quaternion.CreateFromYawPitchRoll(0.3f, 1.1f, -0.4f);
+        var scale = new System.Numerics.Vector3(2, 0.5f, 1);
+        Phalanx.World.PackedTransform packed = Phalanx.World.PackedTransform.Pack(position, rotation, scale);
+        PackedInstance instance = Unsafe.As<Phalanx.World.PackedTransform, PackedInstance>(ref packed);
+        Assert.Equal(packed.GetMatrix(), instance.GetMatrix());
+        var reference = new PackedInstance();
+        reference.SetMatrix(System.Numerics.Matrix4x4.CreateScale(scale) * System.Numerics.Matrix4x4.CreateFromQuaternion(rotation) * System.Numerics.Matrix4x4.CreateTranslation(position));
+        Assert.Equal(reference.rotation_xy, instance.rotation_xy);
+        Assert.Equal(reference.rotation_zw, instance.rotation_zw);
+    }
+
+    [Fact]
     public void Matrix_bytes_read_column_major_equal_row_vector_math()
     {
         // upload Matrix4x4 unchanged; GLSL reads column-major, i.e. column j = 4 consecutive floats j*4..j*4+3

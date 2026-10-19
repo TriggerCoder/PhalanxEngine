@@ -19,7 +19,10 @@ namespace Phalanx.Editor;
 //     with --png <file> [--size w h] [--time t] it writes the whole frame (default 1920x1080) as a png instead
 //   add --texture <image file> to either to texture the cube; --point-light adds a bright point light; --time-of-day
 //     <0..1> moves the sun (0.25 sunrise, 0.5 noon, 0.75 sunset)
-//   add --validation to enable VK_LAYER_KHRONOS_validation (Debug builds enable it by default)
+//   add --validation to enable VK_LAYER_KHRONOS_validation (Debug builds enable it by default); --validation-sync and
+//     --validation-gpu add the layer's synchronization and gpu-assisted validation (either turns validation on);
+//     --robust-buffer-access enables robustBufferAccess on the device; --gpu-breadcrumbs records which passes the gpu
+//     began and completed, reported if the device is lost (exit code 3, the report also goes to log.txt)
 //   add --aa <taau|off|fxaa|xess|dlss> to pick Renderer.AntiAliasingUpsampling (default taau; fxaa isn't ported and
 //     renders like off, xess and dlss aren't integrated and fall back to off)
 //   add --sss <on|off> to switch Renderer.ScreenSpaceShadows, the sun's contact shadows (default on)
@@ -28,6 +31,9 @@ namespace Phalanx.Editor;
 //     through OnPreDraw (material), hides it every other second (blink) or overrides it with a destroyed material
 //     (invalid, the illegal material), logging its lifecycle callbacks; --material <none|destroyed|invalid|
 //     missing-texture|full> shows the default and illegal materials (RendererCubeDemo.cs)
+//   add --entities <N> to --renderer-cube for the stress mode: N turning, circling store entity cubes moved by batched
+//     behaviours and drawn instanced, timings on the console once a second (EntitiesDemo.cs); --layers puts every
+//     other one on layer 2 and --predraw gives about 200 of them the OnPreDraw behaviour
 public static class Program
 {
     public static int Main(string[] args)
@@ -39,6 +45,14 @@ public static class Program
 #else
         bool validation = args.Contains("--validation");
 #endif
+        // the layer's synchronization / gpu-assisted checks (they turn validation on) and robustBufferAccess
+        RenderValidation extra = RenderValidation.None;
+        if (args.Contains("--validation-sync")) extra |= RenderValidation.Synchronization;
+        if (args.Contains("--validation-gpu"))  extra |= RenderValidation.GpuAssisted;
+        if (extra != RenderValidation.None)     validation = true;
+        if (args.Contains("--robust-buffer-access")) extra |= RenderValidation.RobustBufferAccess;
+        if (args.Contains("--gpu-breadcrumbs"))      extra |= RenderValidation.GpuBreadcrumbs;
+        RenderDevice.Validation = extra;
 
         int clear = Array.IndexOf(args, "--rhi-clear");
         int resize_every = 0;
@@ -159,7 +173,14 @@ public static class Program
                     return 1;
                 }
             }
-            var options = new RendererCubeDemo.ViewOptions(layers, pre_draw, material_case);
+            int entities = 0;
+            int entities_arg = Array.IndexOf(args, "--entities");
+            if (entities_arg >= 0 && (entities_arg + 1 >= args.Length || !int.TryParse(args[entities_arg + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out entities) || entities < 0))
+            {
+                Console.Error.WriteLine("--entities: expected a number of entities, such as 100000");
+                return 1;
+            }
+            var options = new RendererCubeDemo.ViewOptions(layers, pre_draw, material_case, entities);
             int png_arg = Array.IndexOf(args, "--png");
             if (renderer_cube_offscreen && png_arg >= 0 && png_arg + 1 < args.Length)
             {
@@ -183,7 +204,17 @@ public static class Program
             if (renderer_cube + 1 < args.Length)
                 int.TryParse(args[renderer_cube + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out frames);
             Window.Initialize();
-            int presented = RendererCubeDemo.Run(Window.GetWindow()!, frames, validation, texture_path, Array.IndexOf(args, "--point-light") >= 0, time_of_day, options);
+            int presented;
+            try
+            {
+                presented = RendererCubeDemo.Run(Window.GetWindow()!, frames, validation, texture_path, Array.IndexOf(args, "--point-light") >= 0, time_of_day, options);
+            }
+            catch (RendererDeviceLostException e)
+            {
+                // the report is in the log above and in log.txt; the renderer was shut down cleanly
+                Console.Error.WriteLine($"renderer-cube: {e.Message} (the report is above and in log.txt)");
+                return 3;
+            }
             Console.WriteLine($"renderer-cube: presented {presented} frames");
             return 0;
         }

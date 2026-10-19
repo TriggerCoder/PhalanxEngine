@@ -669,6 +669,9 @@ public class Light : Component
     public Matrix4x4 GetViewProjectionMatrix(uint index) { return m_matrix_view[index] * m_matrix_projection[index]; } // Light.h:183
 
     // frustum (point, spot and area lights; a directional light's cascades are tested per view)
+    // the slice's frustum (the renderer's culling of store entities)
+    internal Frustum GetFrustum(uint array_index) => m_frustums[array_index];
+
     public bool IsInViewFrustum(Render renderable, uint array_index)
     {
         BoundingBox bounding_box = renderable.GetBoundingBox();

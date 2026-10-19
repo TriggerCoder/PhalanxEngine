@@ -46,6 +46,7 @@ public static partial class Renderer
     {
         GatherCullCandidates();
         s_prepared_views.Clear();
+        CullStoreForViews(views); // the store's instanced entities, every view at once (Renderer.Instancing.cs)
         Phalanx.World.World.BeginRenderCallbacks();
         try
         {
@@ -54,6 +55,7 @@ public static partial class Renderer
                 SceneView view = views[i];
                 CullView(view);
                 RunPreDraw(view, i);
+                RunStorePreDraw(view, i);
                 s_prepared_views.Add(view);
             }
 
@@ -161,6 +163,7 @@ public static partial class Renderer
         s.DrawCallsAlpha.Clear();
         AddViewDraws(s, s_draw_calls);
         AddViewDraws(s, s_draw_calls_alpha);
+        AddPackedOverrideDraws(s);
     }
 
     private static void AddViewDraws(ViewState s, List<DrawCall> draws)

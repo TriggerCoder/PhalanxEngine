@@ -8,29 +8,53 @@ namespace Phalanx.World;
 public static partial class World
 {
     // a callback list that tolerates adds and removes while it is being walked: an add made during the walk is called
-    // from the next walk, a remove takes effect at once
+    // from the next walk, a remove takes effect at once. Each behaviour keeps its index in the list it is in, so a
+    // remove is O(1): it leaves a hole, and the holes are squeezed out (keeping the order) after a walk or once they are
+    // half the list. The first port searched the list (IndexOf) on every remove: 27 s to disable 1000 behaviours at 2M.
     private sealed class DispatchList<T> where T : class
     {
         private readonly List<T?> m_items = new();
+        private readonly int m_slot; // which of the behaviour's dispatch indices is this list's
         private int m_walking;
-        private bool m_has_holes;
+        private int m_holes;
 
-        public int Count => m_items.Count;
+        public DispatchList(int slot) { m_slot = slot; }
 
-        public void Add(T item) => m_items.Add(item);
+        public int Count => m_items.Count - m_holes;
+
+        private ref int IndexOf(T item) => ref ((Behaviour)(object)item).m_dispatch_index[m_slot];
+
+        public void Add(T item)
+        {
+            IndexOf(item) = m_items.Count;
+            m_items.Add(item);
+        }
 
         public void Remove(T item)
         {
-            int index = m_items.IndexOf(item);
-            if (index < 0)
+            ref int index = ref IndexOf(item);
+            if (index < 0 || index >= m_items.Count || !ReferenceEquals(m_items[index], item))
                 return;
-            if (m_walking > 0)
+            m_items[index] = null;
+            index = -1;
+            m_holes++;
+            if (m_walking == 0 && m_holes > 16 && m_holes * 2 > m_items.Count)
+                Compact();
+        }
+
+        private void Compact()
+        {
+            int write = 0;
+            for (int read = 0; read < m_items.Count; read++)
             {
-                m_items[index] = null;
-                m_has_holes    = true;
+                if (m_items[read] is not T item)
+                    continue;
+                m_items[write] = item;
+                IndexOf(item) = write;
+                write++;
             }
-            else
-                m_items.RemoveAt(index);
+            m_items.RemoveRange(write, m_items.Count - write);
+            m_holes = 0;
         }
 
         public void Invoke(Action<T> call)
@@ -47,24 +71,24 @@ public static partial class World
             }
             finally
             {
-                if (--m_walking == 0 && m_has_holes)
-                {
-                    m_items.RemoveAll(static item => item == null);
-                    m_has_holes = false;
-                }
+                if (--m_walking == 0 && m_holes > 0)
+                    Compact();
             }
         }
 
         public void Clear()
         {
+            foreach (T? item in m_items)
+                if (item != null)
+                    IndexOf(item) = -1;
             m_items.Clear();
-            m_has_holes = false;
+            m_holes = 0;
         }
     }
 
-    private static readonly DispatchList<IFixedUpdate> s_fixed_updates = new();
-    private static readonly DispatchList<IUpdate>      s_updates       = new();
-    private static readonly DispatchList<ILateUpdate>  s_late_updates  = new();
+    private static readonly DispatchList<IFixedUpdate> s_fixed_updates = new(0);
+    private static readonly DispatchList<IUpdate>      s_updates       = new(1);
+    private static readonly DispatchList<ILateUpdate>  s_late_updates  = new(2);
     private static readonly List<Behaviour> s_pending_start = new();
     private static readonly List<Action> s_deferred = new();
     private static readonly List<Action> s_deferred_running = new();
@@ -228,6 +252,8 @@ public static partial class World
         if ((c & BehaviourCallbacks.LateUpdate) != 0)  s_late_updates.Add((ILateUpdate)b);
         if ((c & BehaviourCallbacks.PreDraw) != 0)     b.Entity.m_pre_draw.Add((IPreDraw)b);
         if ((c & BehaviourCallbacks.OnBecameVisible) != 0) b.Entity.m_visibility.Add((IOnBecameVisible)b);
+        if ((c & (BehaviourCallbacks.PreDraw | BehaviourCallbacks.OnBecameVisible)) != 0)
+            b.Entity.OnRenderCallbacksChanged();
     }
 
     private static void Unregister(Behaviour b)
@@ -238,6 +264,8 @@ public static partial class World
         if ((c & BehaviourCallbacks.LateUpdate) != 0)  s_late_updates.Remove((ILateUpdate)b);
         if ((c & BehaviourCallbacks.PreDraw) != 0)     b.Entity.m_pre_draw.Remove((IPreDraw)b);
         if ((c & BehaviourCallbacks.OnBecameVisible) != 0) b.Entity.m_visibility.Remove((IOnBecameVisible)b);
+        if ((c & (BehaviourCallbacks.PreDraw | BehaviourCallbacks.OnBecameVisible)) != 0)
+            b.Entity.OnRenderCallbacksChanged();
     }
 
     // the deferred actions of the previous frame, then what they defer runs next tick
@@ -279,9 +307,11 @@ public static partial class World
         s_pending_start.Clear();
     }
 
+    // each phase: the batched behaviours of the store (World.Batched.cs), then the class behaviours
     private static void RunUpdates(double delta_seconds)
     {
         DeltaTime = delta_seconds;
+        Stats.FixedUpdateMs = Stats.UpdateMs = Stats.LateUpdateMs = Stats.ClassBehavioursMs = Stats.PlaybackMs = 0.0;
         RunStart();
 
         if (FixedTimeStep > 0.0)
@@ -292,14 +322,30 @@ public static partial class World
             {
                 s_fixed_accumulator -= FixedTimeStep;
                 steps++;
+                long fixed_start = Stopwatch.GetTimestamp();
+                RunBatched(BatchPhase.FixedUpdate, (float)FixedTimeStep);
+                long fixed_class = Stopwatch.GetTimestamp();
                 s_fixed_updates.Invoke(static x => x.FixedUpdate());
+                Stats.FixedUpdateMs     += Stopwatch.GetElapsedTime(fixed_start, fixed_class).TotalMilliseconds;
+                Stats.ClassBehavioursMs += Stopwatch.GetElapsedTime(fixed_class).TotalMilliseconds;
             }
             if (s_fixed_accumulator >= FixedTimeStep)
                 s_fixed_accumulator %= FixedTimeStep;
         }
 
+        long start = Stopwatch.GetTimestamp();
+        RunBatched(BatchPhase.Update, (float)delta_seconds);
+        long class_start = Stopwatch.GetTimestamp();
         s_updates.Invoke(static x => x.Update());
+        long late_start = Stopwatch.GetTimestamp();
+        RunBatched(BatchPhase.LateUpdate, (float)delta_seconds);
+        long late_class = Stopwatch.GetTimestamp();
         s_late_updates.Invoke(static x => x.LateUpdate());
+        Stats.UpdateMs           = Stopwatch.GetElapsedTime(start, class_start).TotalMilliseconds;
+        Stats.LateUpdateMs       = Stopwatch.GetElapsedTime(late_start, late_class).TotalMilliseconds;
+        Stats.ClassBehavioursMs += Stopwatch.GetElapsedTime(class_start, late_start).TotalMilliseconds + Stopwatch.GetElapsedTime(late_class).TotalMilliseconds;
+        s_batched_time += delta_seconds;
+        s_tick_count++;
     }
 
     private static void ClearBehaviourState()

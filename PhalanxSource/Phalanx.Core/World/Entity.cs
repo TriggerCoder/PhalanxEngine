@@ -26,6 +26,13 @@ public class Entity : SpartanObject
     internal readonly List<IPreDraw> m_pre_draw = new();
     internal readonly List<IOnBecameVisible> m_visibility = new();
 
+    // the entity store (Entities/EntityStore.cs): the world order (World.Resolve), the entity's store row (made on first
+    // Id request for a world entity, whose world matrix is then mirrored there) and whether this is a facade of a store
+    // entity, whose transform, activity, parent and Render are the store row's
+    internal long m_world_order;
+    internal EntityId m_store_id;
+    internal readonly bool m_store_bound;
+
     // local
     Vector3 m_position_local = Vector3.Zero;
     Quaternion m_rotation_local = Quaternion.Identity;
@@ -69,6 +76,45 @@ public class Entity : SpartanObject
         m_is_active = true;
 
         Array.Fill(m_components, null);
+    }
+
+    // the facade of store entity id (World.GetEntity), in the world as long as the store entity lives
+    internal Entity(EntityStore store, EntityId id, bool renderable) : this()
+    {
+        m_store_bound = true;
+        m_store_id    = id;
+        m_in_world    = true;
+        if (renderable)
+        {
+            var render = new Render(this, id);
+            m_components[(int)ComponentType.Render] = render;
+            render.SetComponentType(ComponentType.Render);
+            render.Initialize();
+        }
+    }
+
+    /// <summary>The entity's id in the world's <see cref="EntityStore"/>: the store entity a facade stands for, or for a
+    /// world entity a store row made on first request (Null before the entity is in the world), so store entities can
+    /// be parented to it (<see cref="EntitySpawn.Parent"/>).</summary>
+    public EntityId Id
+    {
+        get
+        {
+            if (m_store_bound || !m_store_id.IsNull || !m_in_world)
+                return m_store_id;
+            m_store_id = World.Store.SpawnManaged(this);
+            return m_store_id;
+        }
+    }
+
+    /// <summary>Whether this entity is the facade of a store entity (<see cref="World.GetEntity"/>).</summary>
+    public bool IsStoreEntity => m_store_bound;
+
+    // the IPreDraw / IOnBecameVisible behaviours changed: a store entity is then culled through its callbacks
+    internal void OnRenderCallbacksChanged()
+    {
+        if (m_store_bound && !m_store_id.IsNull)
+            World.Store.SetCallbacks(m_store_id, m_pre_draw.Count > 0 || m_visibility.Count > 0);
     }
 
     ~Entity()
@@ -133,6 +179,10 @@ public class Entity : SpartanObject
         // mark update
         m_time_since_last_transform_sec = 0.0f;
 
+        // the store row of a world entity follows (its store children are recomputed in the store's transform pass)
+        if (!m_store_id.IsNull)
+            World.Store.MirrorManaged(m_store_id, m_matrix);
+
         // update children
         foreach (Entity child in m_children)
             child.UpdateTransform();
@@ -143,24 +193,37 @@ public class Entity : SpartanObject
     }
     public bool GetActive()
     {
+        if (m_store_bound)
+            return !m_store_id.IsNull && World.Store.IsEnabled(m_store_id);
         if (GetParent() is Entity parent)
             return m_is_active && parent.GetActive();
         return m_is_active;
     }
     public void SetActive(bool active)
     {
+        if (m_store_bound)
+        {
+            if (!m_store_id.IsNull)
+                World.Store.SetEnabled(m_store_id, active);
+            return;
+        }
         if (active == m_is_active)
             return;
         if (World.DeferIfRendering(this, active, static (e, v) => e.SetActive(v)))
             return;
         m_is_active = active;
+        World.MarkResolveDirty(this);
         World.RefreshBehaviours(this);
     }
 
-    public Matrix4x4 GetMatrix() { return m_matrix; }
-    public Matrix4x4 GetLocalMatrix() { return m_matrix_local; }
+    public Matrix4x4 GetMatrix() { return m_store_bound ? (m_store_id.IsNull ? m_matrix : World.Store.GetWorldMatrix(m_store_id)) : m_matrix; }
+    public Matrix4x4 GetLocalMatrix() { return m_store_bound ? Matrix4x4Extensions.CreateTRS(GetPositionLocal(), GetRotationLocal(), GetScaleLocal()) : m_matrix_local; }
+    /// <summary>The matrix of the last rendered frame (the current one for a store entity's facade: the store keeps the
+    /// previous transforms on the gpu only).</summary>
     public Matrix4x4 GetMatrixPrevious()
     {
+        if (m_store_bound)
+            return GetMatrix();
         return m_transform_history_epoch == Interlocked.Read(ref s_transform_history_epoch) ? m_matrix_previous : m_matrix;
     }
     public void SetMatrixPrevious(Matrix4x4 matrix)
@@ -192,11 +255,11 @@ public class Entity : SpartanObject
             rotation = ancestor.GetRotationLocal() * rotation;
         return rotation;
     }
-    public bool IsActive() { return m_is_active; }
+    public bool IsActive() { return m_store_bound ? GetActive() : m_is_active; }
 
 #region POSITION ======================================================================
-    public Vector3 GetPosition() { return m_matrix.GetTranslation(); }
-    public Vector3 GetPositionLocal() { return m_position_local; }
+    public Vector3 GetPosition() { return GetMatrix().GetTranslation(); }
+    public Vector3 GetPositionLocal() { return m_store_bound && !m_store_id.IsNull ? World.Store.GetLocalPosition(m_store_id) : m_position_local; }
     public void SetPosition(Vector3 position)
     {
         if (World.DeferIfRendering(this, position, static (e, v) => e.SetPosition(v)))
@@ -210,6 +273,11 @@ public class Entity : SpartanObject
     {
         if (World.DeferIfRendering(this, position, static (e, v) => e.SetPositionLocal(v)))
             return;
+        if (m_store_bound)
+        {
+            if (!m_store_id.IsNull) World.Store.SetLocalPosition(m_store_id, position);
+            return;
+        }
         if (m_position_local == position)
             return;
 
@@ -219,8 +287,8 @@ public class Entity : SpartanObject
 #endregion
 
 #region ROTATION ======================================================================
-    public Quaternion GetRotation() { return m_matrix.GetRotation(); }
-    public Quaternion GetRotationLocal() { return m_rotation_local; }
+    public Quaternion GetRotation() { return GetMatrix().GetRotation(); }
+    public Quaternion GetRotationLocal() { return m_store_bound && !m_store_id.IsNull ? World.Store.GetLocalRotation(m_store_id) : m_rotation_local; }
     public void SetRotation(Quaternion rotation)
     {
         if (World.DeferIfRendering(this, rotation, static (e, v) => e.SetRotation(v)))
@@ -241,6 +309,11 @@ public class Entity : SpartanObject
     {
         if (World.DeferIfRendering(this, rotation, static (e, v) => e.SetRotationLocal(v)))
             return;
+        if (m_store_bound)
+        {
+            if (!m_store_id.IsNull) World.Store.SetLocalRotation(m_store_id, rotation);
+            return;
+        }
         if (m_rotation_local == rotation)
             return;
 
@@ -250,8 +323,8 @@ public class Entity : SpartanObject
 #endregion
 
 #region SCALE =========================================================================
-    public Vector3 GetScale() { return m_matrix.GetScale(); }
-    public Vector3 GetScaleLocal() { return m_scale_local; }
+    public Vector3 GetScale() { return GetMatrix().GetScale(); }
+    public Vector3 GetScaleLocal() { return m_store_bound && !m_store_id.IsNull ? World.Store.GetLocalScale(m_store_id) : m_scale_local; }
     public void SetScale(Vector3 scale)
     {
         if (World.DeferIfRendering(this, scale, static (e, v) => e.SetScale(v)))
@@ -265,6 +338,11 @@ public class Entity : SpartanObject
     {
         if (World.DeferIfRendering(this, scale, static (e, v) => e.SetScaleLocal(v)))
             return;
+        if (m_store_bound)
+        {
+            if (!m_store_id.IsNull) World.Store.SetLocalScale(m_store_id, scale);
+            return;
+        }
         if (m_scale_local == scale)
             return;
 
@@ -283,7 +361,7 @@ public class Entity : SpartanObject
     public void Translate(Vector3 delta)
     {
         if (GetParent() == null)
-            SetPositionLocal(m_position_local + delta);
+            SetPositionLocal(GetPositionLocal() + delta);
         else
         {
             // go through SetPosition so the world-space point (not direction) is correctly
@@ -295,19 +373,24 @@ public class Entity : SpartanObject
     public void Rotate(Quaternion delta)
     {
         if (GetParent() == null)
-            SetRotationLocal((delta * m_rotation_local).Normalized());
+            SetRotationLocal((delta * GetRotationLocal()).Normalized());
         else
-            SetRotationLocal(GetParent().GetRotation().Inverse() * delta * GetParent().GetRotation() * m_rotation_local);
+            SetRotationLocal(GetParent().GetRotation().Inverse() * delta * GetParent().GetRotation() * GetRotationLocal());
     }
 #endregion
 
 #region DIRECTIONS ================================================
-    public Vector3 GetUp() { return m_up; }
-    public Vector3 GetDown() { return m_down; }
-    public Vector3 GetForward() { return m_forward; }
-    public Vector3 GetBackward() { return m_backward; }
-    public Vector3 GetRight() { return m_right; }
-    public Vector3 GetLeft() { return m_left; }
+    public Vector3 GetUp() { return m_store_bound ? StoreDirection(1) : m_up; }
+    public Vector3 GetDown() { return m_store_bound ? -StoreDirection(1) : m_down; }
+    public Vector3 GetForward() { return m_store_bound ? StoreDirection(2) : m_forward; }
+    public Vector3 GetBackward() { return m_store_bound ? -StoreDirection(2) : m_backward; }
+    public Vector3 GetRight() { return m_store_bound ? StoreDirection(0) : m_right; }
+    public Vector3 GetLeft() { return m_store_bound ? -StoreDirection(0) : m_left; }
+    private Vector3 StoreDirection(int row)
+    {
+        Matrix4x4 m = GetMatrix();
+        return Vector3.Normalize(row switch { 0 => new Vector3(m.M11, m.M12, m.M13), 1 => new Vector3(m.M21, m.M22, m.M23), _ => new Vector3(m.M31, m.M32, m.M33) });
+    }
 #endregion
 
 #region HIERARCHY ===================================================================================
@@ -316,6 +399,18 @@ public class Entity : SpartanObject
         World.AssertMainThread();
         if (World.DeferIfRendering(this, new_parent, static (e, v) => e.SetParent(v)))
             return;
+        if (m_store_bound)
+        {
+            // a store entity's parent is a store row: another store entity or a world entity's Id
+            if (!m_store_id.IsNull)
+                World.Store.SetParent(m_store_id, new_parent?.Id ?? EntityId.Null);
+            return;
+        }
+        if (new_parent != null && new_parent.m_store_bound)
+        {
+            Log.LogWarning("A world entity can't be the child of a store entity");
+            return;
+        }
 
         if (new_parent != null)
         {
@@ -355,7 +450,8 @@ public class Entity : SpartanObject
 
         m_parent = new_parent;
         UpdateTransform();
-        World.RefreshBehaviours(this); // the activity is inherited
+        World.MarkResolveDirty(this);  // the activity is inherited
+        World.RefreshBehaviours(this);
     }
     public Entity? GetChildByIndex(int index)
     {
@@ -498,7 +594,12 @@ public class Entity : SpartanObject
     public bool HasChildren() { return m_children.Count > 0; }
     public int GetChildrenCount() { return m_children.Count; }
     public Entity GetRoot() { return (m_parent != null) ? GetParent().GetRoot() : this; }
-    public Entity GetParent() { return m_parent; }
+    public Entity GetParent()
+    {
+        if (m_store_bound && !m_store_id.IsNull && World.Store.GetParent(m_store_id) is EntityId parent && !parent.IsNull)
+            return World.GetEntity(parent)!;
+        return m_parent!;
+    }
     public IReadOnlyList<Entity> GetChildren() { return m_children; }
     #endregion
     public void SetTransient(bool transient) { m_transient = transient; }
@@ -618,6 +719,7 @@ public class Entity : SpartanObject
         // initialize
         component.SetComponentType(type);
         component.Initialize();
+        World.MarkResolveDirty(this);
 
         return component;
     }
@@ -676,6 +778,7 @@ public class Entity : SpartanObject
         // Initialize
         component.SetComponentType(type);
         component.Initialize();
+        World.MarkResolveDirty(this);
 
         return component;
     }
@@ -689,6 +792,7 @@ public class Entity : SpartanObject
                 RemoveBehaviour(behaviour);
         }
         m_components[(int)type] = null;
+        World.MarkResolveDirty(this);
     }
     public void RemoveComponent<T>() where T : Component { RemoveComponentByType(Component.TypeToEnum<T>()); }
     public void RemoveComponentById(ulong id)

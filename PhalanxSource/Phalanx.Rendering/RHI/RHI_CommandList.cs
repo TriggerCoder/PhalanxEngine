@@ -7,6 +7,9 @@ using static Phalanx.Rendering.RHI.RHI_Implementation;
 
 namespace Phalanx.Rendering.RHI;
 
+// one region of RHI_CommandList.CopyBuffer, in bytes
+internal readonly record struct RHI_BufferCopy(ulong SourceOffset, ulong DestinationOffset, ulong Size);
+
 // a timeline semaphore and the value a submission signals (spartan: RHI_Work)
 internal readonly record struct RHI_Work(RHI_SyncPrimitive? Semaphore, ulong Value)
 {
@@ -33,6 +36,8 @@ internal sealed class RHI_PendingWork
 internal sealed unsafe partial class RHI_CommandList : IDisposable
 {
     private static readonly List<RHI_CommandList> s_lists = new();
+    internal static object ListsLock => s_lists;
+    internal static IReadOnlyList<RHI_CommandList> AllLists => s_lists;
 
     private CommandBuffer m_rhi_resource;
     private readonly RHI_SyncPrimitive m_rendering_complete_semaphore_timeline;
@@ -348,6 +353,47 @@ internal sealed unsafe partial class RHI_CommandList : IDisposable
         RHI_CommandList cmd_list = ImmediateExecutionBegin(RHI_Queue_Type.Copy);
         cmd_list.CopyBuffer(source.GetRhiResource(), 0, destination.GetRhiResource(), 0, size);
         ImmediateExecutionEnd(cmd_list);
+    }
+
+    // copies regions of source into destination on this list (the renderer's per frame uploads into device local buffers)
+    public void CopyBuffer(RHI_Buffer source, RHI_Buffer destination, ReadOnlySpan<RHI_BufferCopy> regions)
+    {
+        RequireRecording();
+        if (regions.IsEmpty)
+            return;
+        var copies = new BufferCopy[regions.Length];
+        for (int i = 0; i < regions.Length; i++)
+        {
+            RHI_BufferCopy r = regions[i];
+            if (r.SourceOffset + r.Size > source.GetObjectSize() || r.DestinationOffset + r.Size > destination.GetObjectSize())
+                throw new ArgumentOutOfRangeException(nameof(regions), $"{source.Name} -> {destination.Name}: region {r} is out of bounds");
+            copies[i] = new BufferCopy(r.SourceOffset, r.DestinationOffset, r.Size);
+        }
+        SuspendRenderPass();
+        fixed (BufferCopy* p = copies)
+            RHI_Context.Vk.CmdCopyBuffer(m_rhi_resource, source.GetRhiResource(), destination.GetRhiResource(), (uint)copies.Length, p);
+    }
+
+    // around the uploads of buffers only vertex shaders read: before, the copies wait for the earlier frames' vertex
+    // shaders (write after read); after, this frame's vertex shaders see the copies
+    public void InsertBarrierVertexReadUpload(bool before_copies)
+    {
+        SuspendRenderPass();
+        MemoryBarrier2 barrier = before_copies
+            ? new MemoryBarrier2
+            {
+                SType = StructureType.MemoryBarrier2,
+                SrcStageMask = PipelineStageFlags2.VertexShaderBit, SrcAccessMask = AccessFlags2.None,
+                DstStageMask = PipelineStageFlags2.CopyBit,         DstAccessMask = AccessFlags2.TransferWriteBit
+            }
+            : new MemoryBarrier2
+            {
+                SType = StructureType.MemoryBarrier2,
+                SrcStageMask = PipelineStageFlags2.CopyBit,         SrcAccessMask = AccessFlags2.TransferWriteBit,
+                DstStageMask = PipelineStageFlags2.VertexShaderBit, DstAccessMask = AccessFlags2.ShaderStorageReadBit
+            };
+        DependencyInfo dependency = new() { SType = StructureType.DependencyInfo, MemoryBarrierCount = 1, PMemoryBarriers = &barrier };
+        RHI_Context.Vk.CmdPipelineBarrier2(m_rhi_resource, in dependency);
     }
 
     public void CopyBuffer(Silk.NET.Vulkan.Buffer source, ulong source_offset, Silk.NET.Vulkan.Buffer destination, ulong destination_offset, ulong size)

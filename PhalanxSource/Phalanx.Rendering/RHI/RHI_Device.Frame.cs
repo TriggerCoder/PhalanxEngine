@@ -90,6 +90,8 @@ internal static unsafe partial class RHI_Device
         RHI_CommandList graphics = GetQueue(RHI_Queue_Type.Graphics).NextCommandList();
         graphics.Begin();
         s_frame_lists[(int)RHI_Frame_List.Graphics] = graphics;
+        RHI_Breadcrumbs.BeginFrame(graphics, s_frame_index);
+        SetCheckpoint(graphics, "frame", end: false);
         if (acquire_compute)
         {
             RHI_Queue compute = GetQueue(RHI_Queue_Type.Compute);
@@ -144,6 +146,8 @@ internal static unsafe partial class RHI_Device
             semaphore_wait   = s_swapchain!.GetImageAcquiredSemaphore();
             semaphore_signal = s_swapchain.GetRenderingCompleteSemaphore();
         }
+        SetCheckpoint(cmd, "frame", end: true);
+        RHI_Breadcrumbs.EndFrame();
         cmd.End();
         RHI_Work work = GetQueue(RHI_Queue_Type.Graphics).Submit(cmd, semaphore_wait, semaphore_signal, null, 0, timeline_wait, timeline_wait_value);
         if (present)

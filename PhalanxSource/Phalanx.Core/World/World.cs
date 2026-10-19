@@ -71,6 +71,7 @@ public static partial class World
     private static string world_description = string.Empty;
     private static object entity_access_mutex = new object();
 
+    private static readonly Dictionary<ulong, Entity> entities_by_id = new Dictionary<ulong, Entity>();
     private static List<Entity> pending_add = new List<Entity>();
     private static HashSet<ulong> pending_remove = new HashSet<ulong>();
 
@@ -168,15 +169,7 @@ public static partial class World
     public static Entity? GetEntityById(ulong id)
     {
         lock (entity_access_mutex)
-        {
-            for (int i = 0; i < entities.Count; i++)
-            {
-                Entity? entity = entities[i];
-                if ((entity != null) && (entity.GetObjectId() == id))
-                    return entity;
-            }
-        }
-        return null;
+            return entities_by_id.TryGetValue(id, out Entity? entity) ? entity : null;
     }
     // threading model:
     // - entities/entities_lights/entities_renderables and the entity hierarchy are owned by the main thread
@@ -210,6 +203,7 @@ public static partial class World
     public static void Tick(double delta_seconds)
     {
         AssertMainThread();
+        long tick_start = System.Diagnostics.Stopwatch.GetTimestamp();
         RunDeferred();
         ProcessPendingRemovals();
         RunUpdates(delta_seconds);
@@ -224,44 +218,166 @@ public static partial class World
         ProcessPendingAdditions();
 
         if (resolve)
+            Resolve();
+        SyncStoreTransforms();
+        Stats.TickMs = System.Diagnostics.Stopwatch.GetElapsedTime(tick_start).TotalMilliseconds;
+    }
+
+    // the resolve (World.cpp:1122): the tracked lists, the camera, the directional light and the bounds. Spartan and
+    // the first port rebuilt everything from every entity whenever one was added or removed (0.45 s at 2M entities);
+    // this one keeps the lists sorted by world order and only places the arrivals and the entities whose activity or
+    // components changed (MarkResolveDirty), with the same result as the rebuild.
+    private static readonly List<Entity> s_resolve_arrivals = new();
+    private static readonly HashSet<Entity> s_resolve_dirty = new();
+    private static readonly List<Entity> s_resolve_dirty_sorted = new();
+    private static bool s_resolve_removed;
+    private static bool s_camera_scan_needed; // the camera was taken away (RemoveEntity), every camera is a candidate
+    private static long s_world_order;
+
+    // an entity's activity or components changed (it and its descendants are placed again at the next resolve)
+    internal static void MarkResolveDirty(Entity entity)
+    {
+        if (!entity.m_in_world || entity.m_store_bound)
+            return;
+        lock (entity_access_mutex)
+            s_resolve_dirty.Add(entity);
+        IReadOnlyList<Entity> children = entity.GetChildren();
+        for (int i = 0; i < children.Count; i++)
+            MarkResolveDirty(children[i]);
+        resolve = true;
+    }
+
+    private static int OrderIndex(List<Entity> list, long order)
+    {
+        int lo = 0, hi = list.Count - 1;
+        while (lo <= hi)
         {
-            // the incumbent camera keeps the seat unless it is gone or went inactive
-            Entity? camera_incumbent   = camera;
-            bool camera_incumbent_live = false;
-            camera = null;
-            light  = null;
-            entities_lights.Clear();
-            entities_renderables.Clear();
-            entities_logic.Clear();
-            foreach (Entity entity in entities)
-            {
-                if (pending_remove.Contains(entity.GetObjectId()) || !entity.GetActive())
-                    continue;
+            int mid = (lo + hi) >> 1;
+            long value = list[mid].m_world_order;
+            if (value == order) return mid;
+            if (value < order) lo = mid + 1; else hi = mid - 1;
+        }
+        return ~lo;
+    }
+    private static void RemoveSorted(List<Entity> list, Entity entity)
+    {
+        int index = OrderIndex(list, entity.m_world_order);
+        if (index >= 0)
+            list.RemoveAt(index);
+    }
+    private static void InsertSorted(List<Entity> list, Entity entity)
+    {
+        int index = OrderIndex(list, entity.m_world_order);
+        if (index < 0)
+            list.Insert(~index, entity);
+    }
 
-                if (camera == null && entity.GetComponent<Camera>() != null)
-                    camera = entity;
-                camera_incumbent_live |= entity == camera_incumbent;
+    private static bool IsTracked(Entity entity) => entity.m_in_world && entity.GetActive() && !pending_remove.Contains(entity.GetObjectId());
 
-                if (entity.GetComponent<Light>() is Light light_comp)
-                {
-                    if (light == null && light_comp.GetLightType() == LightType.Directional)
-                        light = entity;
-                    entities_lights.Add(entity);
-                }
-
-                if (entity.GetComponent<Render>() != null)
-                    entities_renderables.Add(entity);
-                else if (entity.GetComponentCount() > 0)
-                    entities_logic.Add(entity); // lights, scripts, audio, etc without a mesh still need Entity::Tick
-            }
-            if (camera_incumbent_live)
-                camera = camera_incumbent;
-
-            ComputeBoundingBox();
-            resolve = false;
+    // which lists the entity belongs in (the rebuild's rules)
+    private static void Place(Entity entity, bool append)
+    {
+        if (!IsTracked(entity))
+            return;
+        if (entity.GetComponent<Light>() != null)
+        {
+            if (append) entities_lights.Add(entity); else InsertSorted(entities_lights, entity);
+        }
+        if (entity.GetComponent<Render>() != null)
+        {
+            if (append) entities_renderables.Add(entity); else InsertSorted(entities_renderables, entity);
+        }
+        else if (entity.GetComponentCount() > 0)
+        {
+            // lights, scripts, audio, etc without a mesh still need Entity::Tick
+            if (append) entities_logic.Add(entity); else InsertSorted(entities_logic, entity);
         }
     }
 
+    private static void Resolve()
+    {
+        bool full_bounds = false;
+        if (s_resolve_removed)
+        {
+            entities_lights.RemoveAll(static e => !e.m_in_world);
+            entities_renderables.RemoveAll(static e => !e.m_in_world);
+            entities_logic.RemoveAll(static e => !e.m_in_world);
+            s_resolve_removed = false;
+            full_bounds = true;
+        }
+
+        // the entities that changed, in world order, out of their lists and placed again
+        s_resolve_dirty_sorted.Clear();
+        lock (entity_access_mutex)
+        {
+            foreach (Entity entity in s_resolve_dirty)
+                if (entity.m_in_world && entity.m_world_order > 0)
+                    s_resolve_dirty_sorted.Add(entity);
+            s_resolve_dirty.Clear();
+        }
+        if (s_resolve_arrivals.Count > 0 && s_resolve_dirty_sorted.Count > 0)
+        {
+            var arrivals = new HashSet<Entity>(s_resolve_arrivals);
+            s_resolve_dirty_sorted.RemoveAll(arrivals.Contains);
+        }
+        s_resolve_dirty_sorted.Sort(static (a, b) => a.m_world_order.CompareTo(b.m_world_order));
+        foreach (Entity entity in s_resolve_dirty_sorted)
+        {
+            RemoveSorted(entities_lights, entity);
+            RemoveSorted(entities_renderables, entity);
+            RemoveSorted(entities_logic, entity);
+            Place(entity, append: false);
+            full_bounds = true;
+        }
+        // the arrivals are the newest, they go at the ends
+        foreach (Entity entity in s_resolve_arrivals)
+            Place(entity, append: true);
+
+        // the incumbent camera keeps the seat unless it is gone or went inactive; else the first camera in world order
+        Entity? camera_incumbent = camera;
+        if (camera_incumbent == null || !IsTracked(camera_incumbent) || camera_incumbent.GetComponent<Camera>() == null)
+        {
+            camera = null;
+            if (camera_incumbent != null || s_camera_scan_needed)
+            {
+                foreach (Entity entity in entities)
+                    if (entity.GetComponent<Camera>() != null && IsTracked(entity)) { camera = entity; break; }
+            }
+            else
+            {
+                // nothing qualified before, so only an arrival or a changed entity can
+                foreach (Entity entity in s_resolve_dirty_sorted)
+                    if (entity.GetComponent<Camera>() != null && IsTracked(entity) && (camera == null || entity.m_world_order < camera.m_world_order)) camera = entity;
+                foreach (Entity entity in s_resolve_arrivals)
+                    if (entity.GetComponent<Camera>() != null && IsTracked(entity) && (camera == null || entity.m_world_order < camera.m_world_order)) camera = entity;
+            }
+        }
+
+        s_camera_scan_needed = false;
+
+        // the first directional light in world order
+        light = null;
+        foreach (Entity entity in entities_lights)
+            if (entity.GetComponent<Light>() is Light light_comp && light_comp.GetLightType() == LightType.Directional) { light = entity; break; }
+
+        if (full_bounds)
+            ComputeBoundingBox();
+        else
+        {
+            foreach (Entity entity in s_resolve_arrivals)
+            {
+                if (!IsTracked(entity) || entity.GetComponent<Render>() is not Render render)
+                    continue;
+                if (!s_bounding_box_set) { bounding_box = render.GetBoundingBox(); s_bounding_box_set = true; }
+                else bounding_box.Merge(render.GetBoundingBox());
+            }
+        }
+        s_resolve_arrivals.Clear();
+        s_resolve_dirty_sorted.Clear();
+        resolve = false;
+    }
+
+    private static bool s_bounding_box_set;
     private static void ComputeBoundingBox()
     {
         bounding_box = BoundingBox.Unit;
@@ -272,6 +388,7 @@ public static partial class World
             if (first) { bounding_box = box; first = false; }
             else bounding_box.Merge(box);
         }
+        s_bounding_box_set = !first;
     }
 
     // World::ProcessPendingRemovals
@@ -286,18 +403,23 @@ public static partial class World
                 if (pending_remove.Contains(entity.GetObjectId()))
                     s_entities_leaving.Add(entity);
             entities.RemoveAll(e => pending_remove.Contains(e.GetObjectId()));
+            foreach (Entity entity in s_entities_leaving)
+                entities_by_id.Remove(entity.GetObjectId());
             pending_add.RemoveAll(e => pending_remove.Contains(e.GetObjectId()));
             foreach (ulong id in pending_remove)
                 entity_states.Remove(id);
             pending_remove.Clear();
             // the tracked lists still point at the removed entities
             resolve = true;
+            s_resolve_removed = true;
         }
         // their behaviours are disabled and destroyed outside the lock (the callbacks may create or remove entities)
         foreach (Entity entity in s_entities_leaving)
         {
             entity.m_in_world = false;
             DestroyBehaviours(entity);
+            if (!entity.m_store_id.IsNull)
+                Store.DestroyTree(entity.m_store_id); // its row and the store entities parented to it
         }
         s_entities_leaving.Clear();
     }
@@ -311,7 +433,13 @@ public static partial class World
             if (pending_add.Count == 0)
                 return;
             entities.AddRange(pending_add);
+            foreach (Entity entity in pending_add)
+            {
+                entity.m_world_order = ++s_world_order;
+                entities_by_id[entity.GetObjectId()] = entity;
+            }
             s_entities_arriving.AddRange(pending_add);
+            s_resolve_arrivals.AddRange(pending_add);
             pending_add.Clear();
             resolve = true;
         }
@@ -342,10 +470,17 @@ public static partial class World
             entities_lights.Clear();
             entities_renderables.Clear();
             entities_logic.Clear();
+            entities_by_id.Clear();
             entity_states.Clear();
             bounding_box = BoundingBox.Unit;
+            s_bounding_box_set = false;
+            s_resolve_arrivals.Clear();
+            s_resolve_dirty.Clear();
+            s_resolve_removed = false;
+            s_camera_scan_needed = false;
             resolve = false;
         }
+        Store.Clear();
         ClearBehaviourState();
     }
 
@@ -378,7 +513,10 @@ public static partial class World
         {
             // keep track of the local camera pointer so we don't have a dangling pointer
             if (camera == entity_to_remove)
+            {
                 camera = null;
+                s_camera_scan_needed = true;
+            }
 
             // remove the entity and all of its children
 
@@ -389,7 +527,11 @@ public static partial class World
             // create a set containing the object ids of entities to remove
             // defer removal
             for (int i = 0; i < entities_to_remove.Count; i++)
+            {
                 pending_remove.Add(entities_to_remove[i].GetObjectId());
+                if (entities_to_remove[i].m_in_world)
+                    s_resolve_dirty.Add(entities_to_remove[i]); // out of the tracked lists at the next resolve
+            }
 
             // detach from parent so it won't hold a dangling pointer after deferred deletion
             if (entity_to_remove.GetParent() is Entity parent)

@@ -27,6 +27,9 @@
 // - The output resolution follows the swapchain when the window is resized (spartan: OnResize from the window event).
 // - Frames in flight are throttled by RHI_Device.BeginFrame (FramesInFlight timeline values), which is what
 //   RotateFrameBuffers' slot wait does in spartan; the per-slot gpu-driven buffers it rotates don't exist yet.
+// - A lost device (spartan: SP_ERROR_WINDOW and the breadcrumbs report, Vulkan_Queue.cpp:340-351) makes Tick throw
+//   RendererDeviceLostException with the diagnostics report (RHI_Device.Diagnostics.cs); Shutdown then releases
+//   everything without waiting on the gpu.
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Phalanx.Rendering.RHI;
@@ -176,6 +179,7 @@ public static partial class Renderer
 
         s_frame_num          = 0;
         s_frame_cb_ring_slot = 0;
+        s_device_lost_report = null;
         s_main_view.State.ResetFrameState();
         s_clock.Restart();
         s_initialized = true;
@@ -205,7 +209,25 @@ public static partial class Renderer
     {
         if (!s_initialized)
             throw new InvalidOperationException("The renderer is not initialized");
+        if (RHI_Device.IsDeviceLost)
+            throw new RendererDeviceLostException("The GPU device was lost earlier, the renderer can only be shut down", s_device_lost_report ?? "");
+        try
+        {
+            return TickFrame();
+        }
+        catch (RHI_Exception e) when (e.IsDeviceLost)
+        {
+            // the frame and pass the gpu was in (checkpoints, device fault, breadcrumbs), logged and in the exception;
+            // Shutdown still runs, it no longer waits on the lost device
+            s_device_lost_report = RHI_Device.ReportDeviceLost(e.Message);
+            throw new RendererDeviceLostException($"GPU device lost at frame {s_frame_num}: {e.Message}", s_device_lost_report, e);
+        }
+    }
 
+    private static string? s_device_lost_report;
+
+    private static bool TickFrame()
+    {
         ViewState main = s_main_view.State;
         RHI_SwapChain? swapchain = RHI_Device.GetSwapChain();
         bool resolution_valid = main.RenderWidth >= renderer_min_render_dimension && main.RenderHeight >= renderer_min_render_dimension;
@@ -234,6 +256,7 @@ public static partial class Renderer
         RHI_Device.EndFrame(); // with an acquired image: prepare for present, submit, present
 
         s_frame_num++;
+        Phalanx.World.World.Store.OnRenderFrame(); // freed instance slots age by one frame in flight
         return true;
     }
 
@@ -436,4 +459,15 @@ public static partial class Renderer
         RHI_Device.UpdateBindlessSamplers(Array.ConvertAll(s_samplers, s => s!));
         s_bindless_samplers_dirty = false;
     }
+}
+
+/// <summary>
+/// The GPU device was lost (VK_ERROR_DEVICE_LOST: a gpu fault, a hang the driver reset, or the driver itself). The
+/// renderer can only be shut down after this. <see cref="Report"/> is the diagnostics report: the frame, the passes
+/// the gpu last reached (checkpoints and breadcrumbs, where the driver has them) and the device fault.
+/// </summary>
+public sealed class RendererDeviceLostException : Exception
+{
+    public string Report { get; }
+    public RendererDeviceLostException(string message, string report, Exception? inner = null) : base(message, inner) => Report = report;
 }

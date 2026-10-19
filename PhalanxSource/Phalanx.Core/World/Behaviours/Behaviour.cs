@@ -10,6 +10,8 @@ public abstract class Behaviour
     // lifecycle state, owned by World (World.Behaviours.cs)
     internal BehaviourCallbacks m_callbacks;
     internal bool m_awoken, m_started, m_active, m_destroyed, m_pending_start;
+    // the behaviour's index in the fixed update, update and late update lists (-1: not in it), World.Behaviours.cs
+    internal readonly int[] m_dispatch_index = { -1, -1, -1 };
 
     /// <summary>The entity the behaviour is on; set when it is added (<see cref="Entity.AddBehaviour{T}()"/>).</summary>
     public Entity Entity { get; internal set; } = null!;

@@ -56,6 +56,8 @@ public static partial class Renderer
     {
         s_draw_calls.Clear();
         s_draw_calls_alpha.Clear();
+        EnsureDrawDataCapacity(DrawDataNeeded());
+        WriteBatchDrawData();
         foreach (Entity entity in Phalanx.World.World.GetEntitiesRenderables())
         {
             if (entity.GetComponent<Render>() is not Render render || render.GetMesh() is not Mesh mesh || !mesh.HasGpuBuffers())
@@ -78,9 +80,14 @@ public static partial class Renderer
                 render         = render,
             });
         }
+        // the store's instances first: the views' overrides of store entities read the previous frame's copy
+        UploadInstances();
         // what each view culled in, Renderer.Culling.cs
         foreach (SceneView view in s_prepared_views)
             BuildViewDrawLists(view.State);
+        // the shadow slices' culling and every instanced draw, Renderer.Instancing.cs
+        CullStoreForShadows();
+        BuildInstancedDraws();
     }
 
     /// <summary>The camera the view being rendered renders from (Renderer::GetCamera), the main view's outside a frame:
@@ -109,6 +116,7 @@ public static partial class Renderer
     // uploads in Mesh::PostProcess / CreateGpuBuffers when the model loads)
     private static void UploadWorldMeshes()
     {
+        UploadBatchMeshes();
         foreach (Entity entity in Phalanx.World.World.GetEntitiesRenderables())
         {
             if (entity.GetComponent<Render>()?.GetMesh() is Mesh mesh && !mesh.HasGpuBuffers())
@@ -129,6 +137,7 @@ public static partial class Renderer
         UpdateLights(cmd);
         s_draw_data_count = 0;
         UpdateDrawCalls();
+        RecordInstanceUploads(cmd); // the instances and slot lists into their device local buffers, Renderer.Instancing.cs
     }
 
     // Renderer.cpp:1413-1438, the descriptors follow the buffer identity, the instances fall back to the dummy buffer
@@ -278,6 +287,7 @@ public static partial class Renderer
         foreach (Entity entity in Phalanx.World.World.GetEntitiesRenderables())
             if (entity.GetComponent<Render>() is Render render && GetRenderMaterial(render) is Material material)
                 AddMaterial(material);
+        AddBatchMaterials(); // the store's instancing batches (Renderer.Instancing.cs)
         AddOverrideMaterials();
         UpdateBindlessMaterialTextures();
         UploadIfChanged(cmd, Renderer_Buffer.MaterialParameters, MemoryMarshal.AsBytes(s_material_parameters.AsSpan(0, System.Math.Max(s_materials.Count, 1))), ref s_material_bytes_uploaded);
@@ -461,6 +471,8 @@ public static partial class Renderer
         public Phalanx.Math.Rectangle rect;
         // the view a directional cascade belongs to, null for the other lights
         public ViewState? view { get; init; }
+        // what the slice draws this frame (Renderer.Instancing.cs)
+        public readonly List<InstancedDraw> draws = new(), draws_alpha = new();
     }
     private static readonly List<ShadowSlice> s_shadow_slices = new();
     internal static IReadOnlyList<ShadowSlice> GetShadowSlices() => s_shadow_slices;
@@ -592,12 +604,6 @@ public static partial class Renderer
     // WriteDrawData: the draw data buffer is partitioned into per-frame regions, each frame writes its own
     internal static uint WriteDrawData(Matrix4x4 transform, Matrix4x4 transform_previous, uint material_index, uint is_transparent, Render? render = null, ViewDrawOverrides? overrides = null)
     {
-        if (s_draw_data_count >= renderer_max_draw_calls)
-        {
-            Log.LogWarning($"draw data budget exhausted ({renderer_max_draw_calls}), dropping further draws this frame");
-            return uint.MaxValue;
-        }
-        uint index = s_draw_data_count++;
         var entry = new DrawData
         {
             transform          = transform,
@@ -620,7 +626,20 @@ public static partial class Renderer
             entry.uv_tiling = tiling;
             entry.uv_offset = overrides.UvOffset ?? Vector2.Zero;
         }
-        uint global_index = s_frame_cb_ring_slot * renderer_max_draw_calls + index;
+        return WriteDrawDataEntry(in entry);
+    }
+
+    // the frame's next DrawData entry; the buffer has room for the frame (EnsureDrawDataCapacity), a draw past it is
+    // dropped with a warning
+    private static uint WriteDrawDataEntry(in DrawData entry)
+    {
+        if (s_draw_data_count >= s_draw_data_capacity)
+        {
+            Log.LogWarning($"draw data budget exhausted ({s_draw_data_capacity}), dropping further draws this frame");
+            return uint.MaxValue;
+        }
+        uint index = s_draw_data_count++;
+        uint global_index = s_frame_cb_ring_slot * s_draw_data_capacity + index;
         RHI_Buffer buffer = GetBuffer(Renderer_Buffer.DrawData)!;
         buffer.UploadSubRegion(MemoryMarshal.AsBytes(new ReadOnlySpan<DrawData>(in entry)), (ulong)global_index * (ulong)System.Runtime.CompilerServices.Unsafe.SizeOf<DrawData>());
         return global_index;

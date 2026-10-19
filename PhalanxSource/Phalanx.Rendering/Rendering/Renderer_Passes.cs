@@ -127,9 +127,9 @@ public static partial class Renderer
             cmd.SetPipelineState(pso);
             cmd.SetCullMode(RHI_CullMode.Back);
             SetStandardResources(cmd);
-            Draw(cmd, view.DrawCalls);
+            DrawInstanced(cmd, view.Draws);
 
-            if (view.DrawCallsAlpha.Count > 0)
+            if (view.DrawsAlpha.Count > 0)
             {
                 var pso_alpha = new RHI_PipelineState { name = "depth_prepass_alpha" };
                 pso_alpha.SetShader(RHI_Shader_Type.Vertex, GetShader(Renderer_Shader.gbuffer_v)!);
@@ -142,27 +142,10 @@ public static partial class Renderer
                 cmd.SetPipelineState(pso_alpha);
                 cmd.SetCullMode(RHI_CullMode.None);
                 SetStandardResources(cmd);
-                Draw(cmd, view.DrawCallsAlpha);
+                DrawInstanced(cmd, view.DrawsAlpha);
             }
         }
         cmd.EndMarker();
-    }
-
-    // the cpu draw loop both passes share
-    private static void Draw(RHI_CommandList cmd, List<DrawCall> draw_calls)
-    {
-        RHI_Buffer? vertices = GeometryBuffer.GetVertexBuffer();
-        RHI_Buffer? indices  = GeometryBuffer.GetIndexBuffer();
-        if (vertices == null || indices == null || draw_calls.Count == 0)
-            return;
-        cmd.SetBufferVertex(vertices);
-        cmd.SetBufferIndex(indices);
-        foreach (DrawCall draw_call in draw_calls)
-        {
-            var pass = new PassBufferData { draw_index = draw_call.draw_index, material_index = draw_call.material_index };
-            cmd.PushConstants(pass);
-            cmd.DrawIndexed(draw_call.index_count, draw_call.index_offset, (int)draw_call.vertex_offset);
-        }
     }
 
     private static void Pass_GBuffer(RHI_CommandList cmd, ViewState view)
@@ -196,10 +179,10 @@ public static partial class Renderer
             cmd.SetPipelineState(pso);
             cmd.SetCullMode(RHI_CullMode.Back);
             SetStandardResources(cmd);
-            Draw(cmd, view.DrawCalls);
+            DrawInstanced(cmd, view.Draws);
 
             // the alpha half loads what the opaque half wrote and shades the cutout survivors
-            if (view.DrawCallsAlpha.Count > 0)
+            if (view.DrawsAlpha.Count > 0)
             {
                 for (int i = 0; i < 5; i++)
                     pso.clear_color[i] = RHI_Definitions.rhi_color_load;
@@ -207,7 +190,7 @@ public static partial class Renderer
                 cmd.SetPipelineState(pso);
                 cmd.SetCullMode(RHI_CullMode.None);
                 SetStandardResources(cmd);
-                Draw(cmd, view.DrawCallsAlpha);
+                DrawInstanced(cmd, view.DrawsAlpha);
             }
         }
         cmd.EndMarker();
@@ -264,39 +247,27 @@ public static partial class Renderer
 
                 foreach (bool alpha in new[] { false, true })
                 {
-                    List<DrawCall> draws = alpha ? s_draw_calls_alpha : s_draw_calls;
-                    bool pso_set = false;
-                    foreach (DrawCall draw_call in draws)
+                    List<InstancedDraw> draws = alpha ? slice.draws_alpha : slice.draws;
+                    if (draws.Count == 0)
+                        continue;
+                    // the casters in the slice's frustum, grouped by mesh and material (BuildInstancedDraws)
+                    cmd.SetPipelineState(Pso(rasterizer, alpha));
+                    cmd.SetCullMode(alpha ? RHI_CullMode.None : RHI_CullMode.Back);
+                    SetStandardResources(cmd);
+                    SetInstancingResources(cmd);
+                    cmd.SetViewport(new RHI_Viewport(slice.rect.X, slice.rect.Y, slice.rect.Width, slice.rect.Height));
+                    cmd.SetScissorRectangle(slice.rect);
+                    cmd.SetBufferVertex(vertices);
+                    cmd.SetBufferIndex(indices);
+                    foreach (InstancedDraw draw in draws)
                     {
-                        Render render = draw_call.render!;
-                        if (!render.HasFlag(RenderFlags.CastsShadows))
-                            continue;
-                        Material? material = GetRenderMaterial(render);
-                        if (material == null || material.IsTransparent())
-                            continue;
-                        bool in_frustum = slice.view != null ? slice.view.GetCascades(light).IsInViewFrustum(render, slice.slice_index)
-                                                             : light.IsInViewFrustum(render, slice.slice_index);
-                        if (!in_frustum)
-                            continue;
-
-                        if (!pso_set)
-                        {
-                            cmd.SetPipelineState(Pso(rasterizer, alpha));
-                            cmd.SetCullMode(alpha ? RHI_CullMode.None : RHI_CullMode.Back);
-                            SetStandardResources(cmd);
-                            cmd.SetViewport(new RHI_Viewport(slice.rect.X, slice.rect.Y, slice.rect.Width, slice.rect.Height));
-                            cmd.SetScissorRectangle(slice.rect);
-                            cmd.SetBufferVertex(vertices);
-                            cmd.SetBufferIndex(indices);
-                            pso_set = true;
-                        }
-
-                        var pass = new PassBufferData { draw_index = draw_call.draw_index, material_index = draw_call.material_index };
-                        pass.Set(0, material.HasTextureOfType(MaterialTextureType.Color)); // pass_depth_light::has_albedo
-                        pass.Set(1, light.GetIndex());                                    // pass_depth_light::light_index
-                        pass.Set(2, slice.slice_index);                                   // pass_depth_light::array_index
+                        var pass = new PassBufferData { draw_index = draw.draw_index, material_index = draw.material_index };
+                        pass.Set(0, draw.has_albedo);      // pass_depth_light::has_albedo
+                        pass.Set(1, light.GetIndex());     // pass_depth_light::light_index
+                        pass.Set(2, slice.slice_index);    // pass_depth_light::array_index
+                        pass.Set(16, draw.mode);           // pass_instancing::mode
                         cmd.PushConstants(pass);
-                        cmd.DrawIndexed(draw_call.index_count, draw_call.index_offset, (int)draw_call.vertex_offset);
+                        cmd.DrawIndexed(draw.index_count, draw.index_offset, (int)draw.vertex_offset, draw.first_instance, draw.instance_count);
                     }
                 }
             }

@@ -8,6 +8,8 @@
 //   cvar_debug_breadcrumbs half of begin/end_marker) isn't ported, only the gpu write it is built on.
 // - write_gpu_breadcrumb suspends the render pass instead of ending it (vkCmdFillBuffer can't run inside one).
 // - Timeblocks (begin_timeblock/end_timeblock) need the profiler, which isn't ported yet.
+// - Every marker also sets a device diagnostic checkpoint and, with RenderValidation.GpuBreadcrumbs, writes the gpu
+//   breadcrumbs (RHI_Device.Diagnostics.cs, RHI_Breadcrumbs.cs), whether or not the debug utils labels are recorded.
 using Silk.NET.Vulkan;
 using static Phalanx.Rendering.RHI.RHI_Implementation;
 
@@ -15,7 +17,7 @@ namespace Phalanx.Rendering.RHI;
 
 internal sealed unsafe partial class RHI_CommandList
 {
-    private readonly Stack<bool> m_markers = new();
+    private readonly Stack<(bool recorded, string name)> m_markers = new();
 
     public int GetMarkerDepth() => m_markers.Count;
 
@@ -25,7 +27,9 @@ internal sealed unsafe partial class RHI_CommandList
         bool record = RHI_Device.IsGpuMarkingEnabled;
         if (record)
             RHI_Device.MarkerBegin(this, name, color);
-        m_markers.Push(record);
+        m_markers.Push((record, name));
+        RHI_Device.SetCheckpoint(this, name, end: false); // device lost diagnostics, RHI_Device.Diagnostics.cs
+        RHI_Breadcrumbs.Begin(this, name);
     }
 
     public void EndMarker()
@@ -33,7 +37,10 @@ internal sealed unsafe partial class RHI_CommandList
         RequireRecording();
         if (m_markers.Count == 0)
             throw new InvalidOperationException($"{Name}: EndMarker without a BeginMarker");
-        if (m_markers.Pop())
+        (bool recorded, string name) = m_markers.Pop();
+        RHI_Breadcrumbs.End(this);
+        RHI_Device.SetCheckpoint(this, name, end: true);
+        if (recorded)
             RHI_Device.MarkerEnd(this);
     }
 

@@ -68,8 +68,9 @@ internal sealed unsafe class RHI_Queue : IDisposable
     // spartan: queue Wait(flush). waits for every list of this queue on its timeline value
     public void Wait()
     {
-        lock (m_mutex)
-            Check(RHI_Context.Vk.QueueWaitIdle(NativeQueue), "vkQueueWaitIdle");
+        if (!RHI_Device.IsDeviceLost) // a lost device never goes idle, the lists count as complete
+            lock (m_mutex)
+                Check(RHI_Context.Vk.QueueWaitIdle(NativeQueue), "vkQueueWaitIdle");
         foreach (RHI_CommandList cmd_list in m_cmd_lists)
             cmd_list.WaitForExecution();
     }
@@ -108,7 +109,14 @@ internal sealed unsafe class RHI_Queue : IDisposable
         };
 
         lock (m_mutex)
+        {
+            if (RHI_Device.SimulateDeviceLostOnSubmit) // test seam: the device lost path without a gpu fault
+            {
+                RHI_Device.SimulateDeviceLostOnSubmit = false;
+                Check(Result.ErrorDeviceLost, "vkQueueSubmit2");
+            }
             Check(RHI_Context.Vk.QueueSubmit2(NativeQueue, 1, in submit, default), "vkQueueSubmit2");
+        }
         cmd_list.OnSubmitted(value);
         return cmd_list.GetWork();
     }

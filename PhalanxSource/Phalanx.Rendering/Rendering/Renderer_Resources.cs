@@ -96,6 +96,7 @@ public static partial class Renderer
                                                                       System.Runtime.InteropServices.MemoryMarshal.AsBytes(identity.AsSpan()), mappable: true, "dummy_instance_buffer");
         // one buffer for every frame, each writes its own offset region so the bindless descriptors never change under in-flight commands
         s_buffers[(int)Renderer_Buffer.DrawData] = Storage<DrawData>(renderer_max_draw_calls * renderer_draw_data_buffer_count, "draw_data");
+        CreateInstancingBuffers();
     }
 
     private static void CreateSamplers()
@@ -284,6 +285,7 @@ public static partial class Renderer
         DisposeAll(s_standard_textures);
         DisposeAll(s_samplers);
         DisposeAll(s_buffers);
+        DestroyInstancingBuffers();
         DisposeAll(s_shaders);
         DisposeAll(s_standard_meshes);
         for (int i = 0; i < (int)Phalanx.Geometry.MeshType.Max; i++)

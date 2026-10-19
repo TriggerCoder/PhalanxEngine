@@ -51,6 +51,8 @@ internal sealed unsafe class RHI_SyncPrimitive : IDisposable
     // what the gpu (or host) has signaled so far
     public ulong GetCompletedValue()
     {
+        if (RHI_Device.IsDeviceLost)
+            return ulong.MaxValue; // nothing will signal any more, everything counts as done
         ulong current = 0;
         Check(RHI_Context.Vk.GetSemaphoreCounterValue(RHI_Context.Device, m_semaphore, &current), "vkGetSemaphoreCounterValue");
         return current;
@@ -58,6 +60,8 @@ internal sealed unsafe class RHI_SyncPrimitive : IDisposable
 
     public void Wait(ulong timeout_nanoseconds)
     {
+        if (RHI_Device.IsDeviceLost)
+            return;
         if (m_type == RHI_SyncPrimitive_Type.Fence)
         {
             Fence fence = m_fence;
@@ -71,6 +75,8 @@ internal sealed unsafe class RHI_SyncPrimitive : IDisposable
 
     public void Wait(ulong timeout_nanoseconds, ulong value)
     {
+        if (RHI_Device.IsDeviceLost)
+            return;
         Semaphore semaphore = m_semaphore;
         SemaphoreWaitInfo info = new() { SType = StructureType.SemaphoreWaitInfo, SemaphoreCount = 1, PSemaphores = &semaphore, PValues = &value };
         Check(RHI_Context.Vk.WaitSemaphores(RHI_Context.Device, in info, timeout_nanoseconds), "vkWaitSemaphores");
@@ -84,6 +90,8 @@ internal sealed unsafe class RHI_SyncPrimitive : IDisposable
 
     public bool IsSignaled()
     {
+        if (RHI_Device.IsDeviceLost)
+            return true;
         if (m_type == RHI_SyncPrimitive_Type.Fence)
             return RHI_Context.Vk.GetFenceStatus(RHI_Context.Device, m_fence) == Result.Success;
         return IsSignaled(GetValue());

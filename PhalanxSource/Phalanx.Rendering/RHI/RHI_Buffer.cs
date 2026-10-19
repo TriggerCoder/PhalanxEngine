@@ -186,6 +186,14 @@ internal sealed unsafe class RHI_Buffer : IDisposable
         RHI_Device.StageBuffer(m_rhi_resource, offset_bytes, data);
     }
 
+    // reads back a sub-region of a mappable buffer (a few bytes the cpu wrote earlier)
+    public void ReadSubRegion(Span<byte> data, ulong offset_bytes)
+    {
+        if (offset_bytes + (ulong)data.Length > m_object_size) throw new ArgumentOutOfRangeException(nameof(offset_bytes));
+        if (m_data_gpu == 0) throw new InvalidOperationException("Only mappable buffers can be read back");
+        new ReadOnlySpan<byte>((byte*)m_data_gpu + offset_bytes, data.Length).CopyTo(data);
+    }
+
     public uint GetStrideUnaligned() => m_stride_unaligned;
     public uint GetStride() => m_stride;
     public uint GetElementCount() => m_element_count;

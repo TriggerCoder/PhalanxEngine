@@ -3,12 +3,35 @@ using Silk.NET.Windowing;
 
 namespace Phalanx.Rendering;
 
+/// <summary>Extra checks of the validation layer (when validation is on) and device robustness, see <see cref="RenderDevice.Validation"/>.</summary>
+[Flags]
+public enum RenderValidation
+{
+    None = 0,
+    /// <summary>The layer's synchronization validation: missing barriers and cpu/gpu hazards.</summary>
+    Synchronization = 1,
+    /// <summary>The layer's gpu-assisted validation: out of bounds descriptor indexing and buffer reads in shaders.</summary>
+    GpuAssisted = 2,
+    /// <summary>robustBufferAccess on the device (out of bounds buffer reads return zero or in-bounds data), with or without validation.</summary>
+    RobustBufferAccess = 4,
+    /// <summary>The gpu writes begun/completed per pass marker into a host buffer, read back when the device is lost
+    /// (spartan: debug.breadcrumbs). Startup only, with or without validation.</summary>
+    GpuBreadcrumbs = 8,
+}
+
 /// <summary>
 /// The public face of the internal Vulkan RHI.
 /// No Vulkan types or unsafe code here: those stay in Rendering/RHI
 /// </summary>
 public static class RenderDevice
 {
+    /// <summary>What the next device creation enables on top of plain validation (set before Renderer.Initialize).</summary>
+    public static RenderValidation Validation
+    {
+        get => RHI_Device.ValidationFeatures;
+        set => RHI_Device.ValidationFeatures = value;
+    }
+
     /// <summary>Whether a Vulkan loader is present and reports at least one 1.3 capable device (creates a throwaway instance).</summary>
     public static bool IsVulkanAvailable() => RHI_Device.Probe(out _);
 

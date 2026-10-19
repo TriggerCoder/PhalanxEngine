@@ -25,8 +25,23 @@ public enum RenderFlags : uint
 public class Render : Component
 {
     private RenderFlags m_flags = RenderFlags.CastsShadows; // Render.h:66
-    public bool HasFlag(RenderFlags flag) => (m_flags & flag) != 0;
-    public void SetFlag(RenderFlags flag, bool enable = true) { m_flags = enable ? m_flags | flag : m_flags & ~flag; }
+    public bool HasFlag(RenderFlags flag)
+    {
+        if (IsStoreBound && flag == RenderFlags.CastsShadows)
+            return World.Store.IsAlive(m_store_id) && World.Store.GetCastsShadows(m_store_id);
+        return (m_flags & flag) != 0;
+    }
+    public void SetFlag(RenderFlags flag, bool enable = true)
+    {
+        m_flags = enable ? m_flags | flag : m_flags & ~flag;
+        if (IsStoreBound && flag == RenderFlags.CastsShadows && World.Store.IsAlive(m_store_id))
+            World.Store.SetCastsShadows(m_store_id, enable);
+    }
+
+    // the Render of a store entity's facade (World.GetEntity): mesh, material, layers, shadows and bounds are the store
+    // row's (its RenderBatch), and the entity is drawn instanced with its batch (Renderer.Instancing.cs)
+    internal readonly EntityId m_store_id;
+    internal bool IsStoreBound => !m_store_id.IsNull;
 
     private IMesh? m_mesh;
     private int m_sub_mesh_index;
@@ -41,9 +56,37 @@ public class Render : Component
     /// <summary>The layers the renderable is on (Godot's VisualInstance3D.layers), one bit each, any number of them:
     /// a view draws it when this and the view's cull mask share a bit (<see cref="Camera.CullMask"/>). Layer 1 by
     /// default. The shadow maps are shared by the views and draw every caster whatever its layers.</summary>
-    public uint RenderLayers { get; set; } = 1u;
+    public uint RenderLayers
+    {
+        get => IsStoreBound ? (World.Store.IsAlive(m_store_id) ? World.Store.GetLayers(m_store_id) : 0u) : m_render_layers;
+        set
+        {
+            m_render_layers = value;
+            if (IsStoreBound && World.Store.IsAlive(m_store_id))
+                World.Store.SetLayers(m_store_id, value);
+        }
+    }
+    private uint m_render_layers = 1u;
 
     public Render(Entity entity) : base(entity) { }
+
+    internal Render(Entity entity, EntityId store_id) : base(entity)
+    {
+        m_store_id = store_id;
+        RenderBatch batch = World.Store.GetRenderBatch(store_id);
+        m_mesh           = batch.Mesh;
+        m_sub_mesh_index = batch.SubMeshIndex;
+        m_material       = batch.Material;
+        if (GetLodCount() > 0)
+            m_bounding_box_mesh = GetLodAabb(0);
+    }
+
+    // a store entity's mesh or material changed: it moves to the batch of the new pair
+    private void RebatchStore()
+    {
+        if (IsStoreBound && World.Store.IsAlive(m_store_id) && m_mesh != null)
+            World.Store.SetRenderBatch(m_store_id, RenderBatches.Get(m_mesh, m_material, m_sub_mesh_index));
+    }
 
     public override void Tick()
     {
@@ -72,6 +115,7 @@ public class Render : Component
             m_bounding_box_dirty = true;
         }
         Tick(); // update bounding boxes
+        RebatchStore();
     }
     public void SetMesh(MeshType type) { SetMesh(RenderView.GetStandardMesh(type)); }
     public void ClearMesh()
@@ -98,7 +142,7 @@ public class Render : Component
     public BoundingBox GetLodAabb(int lod = 0) { return GetMeshLod(lod) is MeshLod l ? l.aabb : BoundingBox.Unit; }
 
     // bounding box
-    public BoundingBox GetBoundingBox() { return m_bounding_box; }
+    public BoundingBox GetBoundingBox() { return IsStoreBound && World.Store.IsAlive(m_store_id) ? World.Store.GetBounds(m_store_id) : m_bounding_box; }
     public BoundingBox GetBoundingBoxMesh() { return m_bounding_box_mesh; }
 
     private void UpdateAabb()
@@ -131,6 +175,7 @@ public class Render : Component
             material.SetProperty(MaterialProperty.WorldWidth, size.X);
             material.SetProperty(MaterialProperty.WorldHeight, size.Y);
         }
+        RebatchStore();
     }
     public void SetDefaultMaterial()
     {
