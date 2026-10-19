@@ -99,7 +99,6 @@ public static partial class Renderer
     {
         RHI_Texture rt_render = GetRenderTargetTexture(RenderTarget.frame_render)!;
 
-        CullView(view);
         SwapDepthHistory(view);
         ClearDepthHistoryIfNeeded(cmd, view);
         Pass_Depth_Prepass(cmd, view);

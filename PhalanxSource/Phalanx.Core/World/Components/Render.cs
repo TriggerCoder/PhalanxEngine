@@ -6,8 +6,9 @@
 // - The mesh is an IMesh (Phalanx.Geometry): Mesh lives in Phalanx.Rendering (see IMesh.cs). The standard meshes and
 //   the standard material come from RenderView, where the renderer publishes them (spartan: Renderer::GetStandardMesh
 //   / GetStandardMaterial).
-// - No instancing, decals, material overrides, uv overrides, acceleration structures, lod selection, frustum or
-//   distance culling (every renderable is visible, lod 0), serialization or owned meshes yet.
+// - No instancing, decals, material overrides, uv overrides, acceleration structures, lod selection, distance
+//   culling (lod 0), serialization or owned meshes yet. The renderer culls every view against the frustum and
+//   RenderLayers (Godot's render layers, not in spartan), see Renderer.Culling.cs.
 using System.Numerics;
 using Phalanx.Geometry;
 using Phalanx.Math;
@@ -36,6 +37,11 @@ public class Render : Component
     private BoundingBox m_bounding_box_mesh = BoundingBox.Unit;
     private bool m_bounding_box_dirty       = true;
     private Matrix4x4 m_transform_previous  = Matrix4x4.Identity;
+
+    /// <summary>The layers the renderable is on (Godot's VisualInstance3D.layers), one bit each, any number of them:
+    /// a view draws it when this and the view's cull mask share a bit (<see cref="Camera.CullMask"/>). Layer 1 by
+    /// default. The shadow maps are shared by the views and draw every caster whatever its layers.</summary>
+    public uint RenderLayers { get; set; } = 1u;
 
     public Render(Entity entity) : base(entity) { }
 

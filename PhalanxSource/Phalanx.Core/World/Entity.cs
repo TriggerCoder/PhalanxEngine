@@ -20,6 +20,12 @@ public class Entity : SpartanObject
     private bool m_transient = false; // transient entities are not serialized
     private readonly Component?[] m_components = new Component?[(int)ComponentType.Max];
 
+    // behaviours (World.Behaviours.cs): whether the world holds the entity, and its enabled per view and visibility
+    // listeners
+    internal bool m_in_world;
+    internal readonly List<IPreDraw> m_pre_draw = new();
+    internal readonly List<IOnBecameVisible> m_visibility = new();
+
     // local
     Vector3 m_position_local = Vector3.Zero;
     Quaternion m_rotation_local = Quaternion.Identity;
@@ -145,7 +151,10 @@ public class Entity : SpartanObject
     {
         if (active == m_is_active)
             return;
+        if (World.DeferIfRendering(this, active, static (e, v) => e.SetActive(v)))
+            return;
         m_is_active = active;
+        World.RefreshBehaviours(this);
     }
 
     public Matrix4x4 GetMatrix() { return m_matrix; }
@@ -190,6 +199,8 @@ public class Entity : SpartanObject
     public Vector3 GetPositionLocal() { return m_position_local; }
     public void SetPosition(Vector3 position)
     {
+        if (World.DeferIfRendering(this, position, static (e, v) => e.SetPosition(v)))
+            return;
         if (GetPosition() == position)
             return;
 
@@ -197,6 +208,8 @@ public class Entity : SpartanObject
     }
     public void SetPositionLocal(Vector3 position)
     {
+        if (World.DeferIfRendering(this, position, static (e, v) => e.SetPositionLocal(v)))
+            return;
         if (m_position_local == position)
             return;
 
@@ -210,6 +223,8 @@ public class Entity : SpartanObject
     public Quaternion GetRotationLocal() { return m_rotation_local; }
     public void SetRotation(Quaternion rotation)
     {
+        if (World.DeferIfRendering(this, rotation, static (e, v) => e.SetRotation(v)))
+            return;
         // compute local rotation without using unstable GetRotation() decomposition
         Quaternion local_rotation;
         if (GetParent() == null)
@@ -224,6 +239,8 @@ public class Entity : SpartanObject
     }
     public void SetRotationLocal(Quaternion rotation)
     {
+        if (World.DeferIfRendering(this, rotation, static (e, v) => e.SetRotationLocal(v)))
+            return;
         if (m_rotation_local == rotation)
             return;
 
@@ -237,6 +254,8 @@ public class Entity : SpartanObject
     public Vector3 GetScaleLocal() { return m_scale_local; }
     public void SetScale(Vector3 scale)
     {
+        if (World.DeferIfRendering(this, scale, static (e, v) => e.SetScale(v)))
+            return;
         if (GetScale() == scale)
             return;
 
@@ -244,6 +263,8 @@ public class Entity : SpartanObject
     }
     public void SetScaleLocal(Vector3 scale)
     {
+        if (World.DeferIfRendering(this, scale, static (e, v) => e.SetScaleLocal(v)))
+            return;
         if (m_scale_local == scale)
             return;
 
@@ -293,6 +314,8 @@ public class Entity : SpartanObject
     public void SetParent(Entity? new_parent)
     {
         World.AssertMainThread();
+        if (World.DeferIfRendering(this, new_parent, static (e, v) => e.SetParent(v)))
+            return;
 
         if (new_parent != null)
         {
@@ -332,6 +355,7 @@ public class Entity : SpartanObject
 
         m_parent = new_parent;
         UpdateTransform();
+        World.RefreshBehaviours(this); // the activity is inherited
     }
     public Entity? GetChildByIndex(int index)
     {
@@ -656,8 +680,16 @@ public class Entity : SpartanObject
         return component;
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void RemoveComponentByType(ComponentType type) { m_components[(int)type] = null; }
+    public void RemoveComponentByType(ComponentType type)
+    {
+        // the Script slot holds the behaviours, they go with it
+        if (type == ComponentType.Script && m_components[(int)type] is Script script)
+        {
+            foreach (Behaviour behaviour in script.m_behaviours.ToArray())
+                RemoveBehaviour(behaviour);
+        }
+        m_components[(int)type] = null;
+    }
     public void RemoveComponent<T>() where T : Component { RemoveComponentByType(Component.TypeToEnum<T>()); }
     public void RemoveComponentById(ulong id)
     {
@@ -683,6 +715,72 @@ public class Entity : SpartanObject
         ComponentType type = Component.TypeToEnum<T>();
         return GetComponentByType(type) as T;
     }
+
+#region BEHAVIOURS ==================================================================================
+    private static readonly Behaviour[] s_no_behaviours = Array.Empty<Behaviour>();
+
+    /// <summary>The entity's behaviours in the order they were added.</summary>
+    public IReadOnlyList<Behaviour> Behaviours => GetComponentByType(ComponentType.Script) is Script script ? script.m_behaviours : s_no_behaviours;
+
+    /// <summary>Adds a new <typeparamref name="T"/> (an entity can have several of the same type). It is awoken and
+    /// enabled at once if the entity is in the world and active, else when it gets there; it starts at the next
+    /// <see cref="World.Tick()"/>.</summary>
+    public T AddBehaviour<T>() where T : Behaviour, new() => AddBehaviour(new T());
+
+    /// <summary>Adds <paramref name="behaviour"/>, which must not be on an entity yet (see <see cref="AddBehaviour{T}()"/>).
+    /// Inside a render callback it is attached at the start of the next world tick.</summary>
+    public T AddBehaviour<T>(T behaviour) where T : Behaviour
+    {
+        ArgumentNullException.ThrowIfNull(behaviour);
+        if (behaviour.Entity != null)
+            throw new InvalidOperationException("The behaviour is already on an entity");
+        World.AssertMainThread();
+        behaviour.Entity = this;
+        if (World.DeferIfRendering(this, (Behaviour)behaviour, static (e, b) => e.AttachBehaviour(b)))
+            return behaviour;
+        AttachBehaviour(behaviour);
+        return behaviour;
+    }
+
+    private void AttachBehaviour(Behaviour behaviour)
+    {
+        Script script = AddComponent<Script>()!;
+        script.m_behaviours.Add(behaviour);
+        World.AttachBehaviour(behaviour);
+    }
+
+    /// <summary>The first behaviour that is a <typeparamref name="T"/> (a class or an interface), or null.</summary>
+    public T? GetBehaviour<T>() where T : class
+    {
+        IReadOnlyList<Behaviour> behaviours = Behaviours;
+        for (int i = 0; i < behaviours.Count; i++)
+            if (behaviours[i] is T match)
+                return match;
+        return null;
+    }
+
+    /// <summary>Adds every behaviour that is a <typeparamref name="T"/> to <paramref name="results"/>.</summary>
+    public void GetBehaviours<T>(List<T> results) where T : class
+    {
+        IReadOnlyList<Behaviour> behaviours = Behaviours;
+        for (int i = 0; i < behaviours.Count; i++)
+            if (behaviours[i] is T match)
+                results.Add(match);
+    }
+
+    /// <summary>Removes <paramref name="behaviour"/> from the entity: it is disabled and destroyed (OnDisable, OnDestroy).
+    /// Inside a render callback that happens at the start of the next world tick.</summary>
+    public bool RemoveBehaviour(Behaviour behaviour)
+    {
+        if (behaviour.Entity != this || GetComponentByType(ComponentType.Script) is not Script script || !script.m_behaviours.Contains(behaviour))
+            return false;
+        if (World.DeferIfRendering(this, behaviour, static (e, b) => e.RemoveBehaviour(b)))
+            return true;
+        World.DestroyBehaviour(behaviour);
+        script.m_behaviours.Remove(behaviour);
+        return true;
+    }
+#endregion
 
     public void Start()
     {

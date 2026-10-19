@@ -7,7 +7,7 @@ using Phalanx.Caching;
 
 namespace Phalanx.World;
 
-public static class World
+public static partial class World
 {
     public struct EntitySnapshot
     {
@@ -196,15 +196,23 @@ public static class World
     public static Entity? GetDirectionalLight() { return light; }
     public static BoundingBox GetBoundingBox() { return bounding_box; }
 
-    // World::Tick (World.cpp:833), the part that exists in Phalanx: removals, render then logic entity ticks,
-    // additions, then the resolve (World.cpp:1122) rebuilding the camera, the directional light and the views.
+    // World::Tick (World.cpp:833), the part that exists in Phalanx: the actions deferred by the last frame's render
+    // callbacks, removals, the behaviours (Start, FixedUpdate, Update, LateUpdate; World.Behaviours.cs, not in
+    // spartan), render then logic entity ticks, additions (whose behaviours awake and enable), then the resolve
+    // (World.cpp:1122) rebuilding the camera, the directional light and the views.
     // Not ported: world io/loading, play mode snapshots, physics/scripts pretick, parallel render ticks, weather,
     // volumes/ragdolls/particles/icons views, the player-camera preference of pick_default_camera (no Physics yet).
     private static readonly List<Entity> entities_logic = new List<Entity>();
-    public static void Tick()
+    public static void Tick() => Tick(Time.GetDeltaTimeSec());
+
+    /// <summary>A world tick that advances the behaviours by <paramref name="delta_seconds"/> (FixedUpdate steps and
+    /// <see cref="DeltaTime"/>); <see cref="Tick()"/> uses the engine's frame time.</summary>
+    public static void Tick(double delta_seconds)
     {
         AssertMainThread();
+        RunDeferred();
         ProcessPendingRemovals();
+        RunUpdates(delta_seconds);
 
         for (int i = 0; i < entities_renderables.Count; i++)
             if (entities_renderables[i].GetActive())
@@ -267,12 +275,16 @@ public static class World
     }
 
     // World::ProcessPendingRemovals
+    private static readonly List<Entity> s_entities_leaving = new();
     private static void ProcessPendingRemovals()
     {
         lock (entity_access_mutex)
         {
             if (pending_remove.Count == 0)
                 return;
+            foreach (Entity entity in entities)
+                if (pending_remove.Contains(entity.GetObjectId()))
+                    s_entities_leaving.Add(entity);
             entities.RemoveAll(e => pending_remove.Contains(e.GetObjectId()));
             pending_add.RemoveAll(e => pending_remove.Contains(e.GetObjectId()));
             foreach (ulong id in pending_remove)
@@ -281,9 +293,17 @@ public static class World
             // the tracked lists still point at the removed entities
             resolve = true;
         }
+        // their behaviours are disabled and destroyed outside the lock (the callbacks may create or remove entities)
+        foreach (Entity entity in s_entities_leaving)
+        {
+            entity.m_in_world = false;
+            DestroyBehaviours(entity);
+        }
+        s_entities_leaving.Clear();
     }
 
     // World::ProcessPendingAdditions (World.cpp:634)
+    private static readonly List<Entity> s_entities_arriving = new();
     private static void ProcessPendingAdditions()
     {
         lock (entity_access_mutex)
@@ -291,14 +311,27 @@ public static class World
             if (pending_add.Count == 0)
                 return;
             entities.AddRange(pending_add);
+            s_entities_arriving.AddRange(pending_add);
             pending_add.Clear();
             resolve = true;
         }
+        // in the world now: their behaviours awake and enable, in creation order
+        foreach (Entity entity in s_entities_arriving)
+            entity.m_in_world = true;
+        foreach (Entity entity in s_entities_arriving)
+            RefreshBehaviours(entity, recursive: false);
+        s_entities_arriving.Clear();
     }
 
     // World::ClearScene (World.cpp:657), the entity part
     public static void ClearScene()
     {
+        // the behaviours of the world go first (OnDisable, OnDestroy)
+        foreach (Entity entity in entities.ToArray())
+        {
+            entity.m_in_world = false;
+            DestroyBehaviours(entity);
+        }
         lock (entity_access_mutex)
         {
             camera = null;
@@ -313,6 +346,7 @@ public static class World
             bounding_box = BoundingBox.Unit;
             resolve = false;
         }
+        ClearBehaviourState();
     }
 
     public static Camera? GetCamera() { return (camera != null) ? camera.GetComponent<Camera>() : null; }

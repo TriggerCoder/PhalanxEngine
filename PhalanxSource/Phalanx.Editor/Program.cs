@@ -23,6 +23,9 @@ namespace Phalanx.Editor;
 //   add --aa <taau|off|fxaa|xess|dlss> to pick Renderer.AntiAliasingUpsampling (default taau; fxaa isn't ported and
 //     renders like off, xess and dlss aren't integrated and fall back to off)
 //   add --sss <on|off> to switch Renderer.ScreenSpaceShadows, the sun's contact shadows (default on)
+//   add --layers <hide-cube|only-cube> to put the cube on render layer 2 and leave layer 2 out of the camera's cull mask
+//     (hide-cube) or keep only layer 2 (only-cube); --predraw <material|blink> adds a cube behaviour that draws it blue
+//     through OnPreDraw (material) or hides it every other second (blink), logging its lifecycle callbacks
 public static class Program
 {
     public static int Main(string[] args)
@@ -111,6 +114,33 @@ public static class Program
                 }
                 time_of_day = tod;
             }
+            var layers = RendererCubeDemo.Layers.Default;
+            int layers_arg = Array.IndexOf(args, "--layers");
+            if (layers_arg >= 0)
+            {
+                string? value = layers_arg + 1 < args.Length ? args[layers_arg + 1].ToLowerInvariant() : null;
+                if (value == "hide-cube") layers = RendererCubeDemo.Layers.HideCube;
+                else if (value == "only-cube") layers = RendererCubeDemo.Layers.OnlyCube;
+                else
+                {
+                    Console.Error.WriteLine("--layers: expected hide-cube or only-cube");
+                    return 1;
+                }
+            }
+            var pre_draw = RendererCubeDemo.PreDraw.None;
+            int pre_draw_arg = Array.IndexOf(args, "--predraw");
+            if (pre_draw_arg >= 0)
+            {
+                string? value = pre_draw_arg + 1 < args.Length ? args[pre_draw_arg + 1].ToLowerInvariant() : null;
+                if (value == "material") pre_draw = RendererCubeDemo.PreDraw.Material;
+                else if (value == "blink") pre_draw = RendererCubeDemo.PreDraw.Blink;
+                else
+                {
+                    Console.Error.WriteLine("--predraw: expected material or blink");
+                    return 1;
+                }
+            }
+            var options = new RendererCubeDemo.ViewOptions(layers, pre_draw);
             int png_arg = Array.IndexOf(args, "--png");
             if (renderer_cube_offscreen && png_arg >= 0 && png_arg + 1 < args.Length)
             {
@@ -120,13 +150,13 @@ public static class Program
                 if (size_arg >= 0 && size_arg + 2 < args.Length) { w = uint.Parse(args[size_arg + 1], CultureInfo.InvariantCulture); h = uint.Parse(args[size_arg + 2], CultureInfo.InvariantCulture); }
                 int time_arg = Array.IndexOf(args, "--time");
                 if (time_arg >= 0 && time_arg + 1 < args.Length) t = float.Parse(args[time_arg + 1], CultureInfo.InvariantCulture);
-                RendererCubeDemo.RunOffscreenPng(args[png_arg + 1], w, h, t, validation, texture_path, Array.IndexOf(args, "--point-light") >= 0, time_of_day);
+                RendererCubeDemo.RunOffscreenPng(args[png_arg + 1], w, h, t, validation, texture_path, Array.IndexOf(args, "--point-light") >= 0, time_of_day, options);
                 Console.WriteLine($"renderer-cube-offscreen: wrote {args[png_arg + 1]} ({w}x{h})");
                 return 0;
             }
             if (renderer_cube_offscreen)
             {
-                System.Numerics.Vector4 c = RendererCubeDemo.RunOffscreen(128, validation, texture_path, Array.IndexOf(args, "--point-light") >= 0, time_of_day);
+                System.Numerics.Vector4 c = RendererCubeDemo.RunOffscreen(128, validation, texture_path, Array.IndexOf(args, "--point-light") >= 0, time_of_day, options);
                 Console.WriteLine(FormattableString.Invariant($"renderer-cube-offscreen: center pixel = {c.X:0.###}, {c.Y:0.###}, {c.Z:0.###}, {c.W:0.###}"));
                 return 0;
             }
@@ -134,7 +164,7 @@ public static class Program
             if (renderer_cube + 1 < args.Length)
                 int.TryParse(args[renderer_cube + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out frames);
             Window.Initialize();
-            int presented = RendererCubeDemo.Run(Window.GetWindow()!, frames, validation, texture_path, Array.IndexOf(args, "--point-light") >= 0, time_of_day);
+            int presented = RendererCubeDemo.Run(Window.GetWindow()!, frames, validation, texture_path, Array.IndexOf(args, "--point-light") >= 0, time_of_day, options);
             Console.WriteLine($"renderer-cube: presented {presented} frames");
             return 0;
         }

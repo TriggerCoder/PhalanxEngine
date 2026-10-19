@@ -14,7 +14,7 @@
 // - Material and light tables are rewritten only when their contents change, at offset 0 (spartan: the same).
 // - The light table is shared entries plus per view parts: a directional light's cascades and contact shadow slice
 //   come from the view (Renderer.Views.cs), the main view's table is uploaded.
-// - Every renderable draws lod 0 of each sub-mesh, there is no culling or lod selection yet.
+// - Every renderable draws lod 0 of each sub-mesh, there is no lod selection yet. Every view culls, see Renderer.Culling.cs.
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -51,7 +51,7 @@ public static partial class Renderer
     private static readonly List<DrawCall> s_draw_calls_alpha = new();
 
     // UpdateDrawCalls, the part that exists: every active render entity with gpu geometry, lod 0, one draw data
-    // entry each (no culling, sorting, instancing or lod selection)
+    // entry each (no sorting, instancing or lod selection), then the views' lists of what they culled in
     private static void UpdateDrawCalls()
     {
         s_draw_calls.Clear();
@@ -78,20 +78,14 @@ public static partial class Renderer
                 render         = render,
             });
         }
+        // what each view culled in, Renderer.Culling.cs
+        foreach (SceneView view in s_prepared_views)
+            BuildViewDrawLists(view.State);
     }
 
     /// <summary>The camera the view being rendered renders from (Renderer::GetCamera), the main view's outside a frame:
     /// the world's unless the view has its own.</summary>
     public static Camera? GetViewCamera() => ActiveViewState.View.GetCamera();
-
-    // what a view draws: there is no culling yet, every view draws every draw of the frame in the same order
-    private static void CullView(ViewState view)
-    {
-        view.DrawCalls.Clear();
-        view.DrawCallsAlpha.Clear();
-        view.DrawCalls.AddRange(s_draw_calls);
-        view.DrawCallsAlpha.AddRange(s_draw_calls_alpha);
-    }
 
     // the material a renderable draws with: its own, else the standard one (spartan: SetDefaultMaterial on load)
     internal static Material? GetRenderMaterial(Render render) => render.GetMaterial() ?? s_standard_material;
@@ -267,38 +261,50 @@ public static partial class Renderer
         s_materials.Clear();
         s_texture_indices.Clear();
         Array.Clear(s_bindless_textures);
+        // the world's materials, then the ones only a view's IPreDraw override draws with
+        bool full = false;
         foreach (Entity entity in Phalanx.World.World.GetEntitiesRenderables())
         {
-            if (entity.GetComponent<Render>() is not Render render || GetRenderMaterial(render) is not Material material)
-                continue;
-            if (s_materials.Contains(material))
-                continue;
-            if (s_materials.Count >= RHI_Definitions.rhi_max_array_size)
+            if (entity.GetComponent<Render>() is Render render && GetRenderMaterial(render) is Material material && !AddMaterial(material))
             {
-                Log.LogError("material bindless capacity exceeded, overflowing materials will use index 0");
+                full = true;
                 break;
             }
-            Material m = material;
-            ref MaterialParameters p = ref s_material_parameters[s_materials.Count];
-            uint flags = MaterialFlags(m);
-            p = new MaterialParameters
-            {
-                local_width       = m.GetProperty(MaterialProperty.WorldWidth),
-                local_height      = m.GetProperty(MaterialProperty.WorldHeight),
-                emissive_strength = m.GetProperty(MaterialProperty.EmissiveFromAlbedo),
-                color             = new Vector4(m.GetProperty(MaterialProperty.ColorR), m.GetProperty(MaterialProperty.ColorG),
-                                                m.GetProperty(MaterialProperty.ColorB), m.GetProperty(MaterialProperty.ColorA)),
-                roughness         = m.GetProperty(MaterialProperty.Roughness),
-                metalness         = m.GetProperty(MaterialProperty.Metalness),
-                normal            = m.GetProperty(MaterialProperty.Normal),
-                height            = m.GetProperty(MaterialProperty.Height),
-                flags             = flags,
-            };
-            WriteMaterialTextureIndices(m, ref p);
-            s_materials.Add(m);
         }
+        if (!full)
+            AddOverrideMaterials();
         UpdateBindlessMaterialTextures();
         UploadIfChanged(cmd, Renderer_Buffer.MaterialParameters, MemoryMarshal.AsBytes(s_material_parameters.AsSpan(0, System.Math.Max(s_materials.Count, 1))), ref s_material_bytes_uploaded);
+    }
+
+    // false when the table is full
+    private static bool AddMaterial(Material m)
+    {
+        if (s_materials.Contains(m))
+            return true;
+        if (s_materials.Count >= RHI_Definitions.rhi_max_array_size)
+        {
+            Log.LogError("material bindless capacity exceeded, overflowing materials will use index 0");
+            return false;
+        }
+        ref MaterialParameters p = ref s_material_parameters[s_materials.Count];
+        uint flags = MaterialFlags(m);
+        p = new MaterialParameters
+        {
+            local_width       = m.GetProperty(MaterialProperty.WorldWidth),
+            local_height      = m.GetProperty(MaterialProperty.WorldHeight),
+            emissive_strength = m.GetProperty(MaterialProperty.EmissiveFromAlbedo),
+            color             = new Vector4(m.GetProperty(MaterialProperty.ColorR), m.GetProperty(MaterialProperty.ColorG),
+                                            m.GetProperty(MaterialProperty.ColorB), m.GetProperty(MaterialProperty.ColorA)),
+            roughness         = m.GetProperty(MaterialProperty.Roughness),
+            metalness         = m.GetProperty(MaterialProperty.Metalness),
+            normal            = m.GetProperty(MaterialProperty.Normal),
+            height            = m.GetProperty(MaterialProperty.Height),
+            flags             = flags,
+        };
+        WriteMaterialTextureIndices(m, ref p);
+        s_materials.Add(m);
+        return true;
     }
 
     private static readonly List<Light> s_lights = new();
@@ -587,7 +593,7 @@ public static partial class Renderer
     }
 
     // WriteDrawData: the draw data buffer is partitioned into per-frame regions, each frame writes its own
-    internal static uint WriteDrawData(Matrix4x4 transform, Matrix4x4 transform_previous, uint material_index, uint is_transparent, Render? render = null)
+    internal static uint WriteDrawData(Matrix4x4 transform, Matrix4x4 transform_previous, uint material_index, uint is_transparent, Render? render = null, ViewDrawOverrides? overrides = null)
     {
         if (s_draw_data_count >= renderer_max_draw_calls)
         {
@@ -611,6 +617,12 @@ public static partial class Renderer
             entry.uv_rotation    = render.ResolveUvRotation();
             entry.uv_world_space = render.ResolveUvWorldSpace();
         }
+        // a view's own uv transform (IPreDraw)
+        if (overrides is { UvTiling: Vector2 tiling })
+        {
+            entry.uv_tiling = tiling;
+            entry.uv_offset = overrides.UvOffset ?? Vector2.Zero;
+        }
         uint global_index = s_frame_cb_ring_slot * renderer_max_draw_calls + index;
         RHI_Buffer buffer = GetBuffer(Renderer_Buffer.DrawData)!;
         buffer.UploadSubRegion(MemoryMarshal.AsBytes(new ReadOnlySpan<DrawData>(in entry)), (ulong)global_index * (ulong)System.Runtime.CompilerServices.Unsafe.SizeOf<DrawData>());
@@ -625,6 +637,9 @@ public static partial class Renderer
         s_draw_calls.Clear();
         s_draw_calls_alpha.Clear();
         s_materials.Clear();
+        s_cull_candidates.Clear();
+        s_prepared_views.Clear();
+        s_rendered_views.Clear();
         s_material_bytes_uploaded = s_light_bytes_uploaded = null;
         s_bound_vertex_id = s_bound_index_id = s_bound_instance_id = 0;
         s_draw_data_count = 0;

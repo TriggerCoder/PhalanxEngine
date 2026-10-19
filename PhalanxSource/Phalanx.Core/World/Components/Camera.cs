@@ -378,6 +378,13 @@ public class Camera : Component
     }
     public float GetAspectRatio() { return RenderView.GetViewport().GetAspectRatio(); }
 
+    /// <summary>The render layers this camera draws (Godot's Camera3D.cull_mask): a renderable is drawn when its
+    /// <see cref="Render.RenderLayers"/> share a bit with this and with the view's own mask. Every layer by default.</summary>
+    public uint CullMask { get; set; } = uint.MaxValue;
+
+    /// <summary>Whether a renderable on <paramref name="render_layers"/> passes the cull mask.</summary>
+    public bool SeesLayers(uint render_layers) => (render_layers & CullMask) != 0;
+
     // frustum
     public bool IsInViewFrustum(BoundingBox bounding_box)
     {

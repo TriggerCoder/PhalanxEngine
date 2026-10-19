@@ -13,12 +13,62 @@ namespace Phalanx.Editor;
 // --texture <file> loads an image (ResourceCache / ImageImporter) as the cube's albedo; --point-light adds a bright
 // point light at the camera; --time-of-day <0..1> puts the sun there (Light.SetTimeOfDay: 0.25 sunrise, 0.5 noon,
 // 0.75 sunset), without it the sun keeps its fixed afternoon angle. The sky is the atmospheric skysphere.
+// --layers <hide-cube|only-cube> exercises the render layers: the cube goes on layer 2 and the camera's cull mask
+// leaves layer 2 out (the cube disappears, its shadow stays: the shadow atlas draws every caster) or keeps only layer 2
+// (the ground disappears). --predraw <material|blink> puts a behaviour on the cube that logs its lifecycle and draws
+// it blue through OnPreDraw (material), or hides it in the view every other second and logs OnBecameVisible /
+// OnBecameInvisible (blink).
 internal static class RendererCubeDemo
 {
     private sealed record Scene(Entity Cube);
 
+    public enum Layers { Default, HideCube, OnlyCube }
+    public enum PreDraw { None, Material, Blink }
+
+    /// <summary>The render layer and behaviour switches of the demo (--layers, --predraw).</summary>
+    public sealed record ViewOptions(Layers Layers = Layers.Default, PreDraw PreDraw = PreDraw.None);
+
+    // the --predraw behaviour: a per view override in OnPreDraw and the lifecycle on the console
+    private sealed class CubeBehaviour : Behaviour, IAwake, IOnEnable, IStart, IPreDraw, IOnBecameVisible, IOnDisable, IOnDestroy
+    {
+        private readonly PreDraw m_mode;
+        private readonly Material m_blue = new();
+        private readonly System.Diagnostics.Stopwatch m_clock = System.Diagnostics.Stopwatch.StartNew();
+        private bool m_logged_pre_draw;
+
+        public CubeBehaviour(PreDraw mode)
+        {
+            m_mode = mode;
+            m_blue.SetProperty(MaterialProperty.ColorR, 0.15f);
+            m_blue.SetProperty(MaterialProperty.ColorG, 0.35f);
+            m_blue.SetProperty(MaterialProperty.ColorB, 0.95f);
+            m_blue.SetProperty(MaterialProperty.ColorA, 1.0f);
+        }
+
+        public void Awake()     => Console.WriteLine("predraw: Awake");
+        public void OnEnable()  => Console.WriteLine("predraw: OnEnable");
+        public void Start()     => Console.WriteLine("predraw: Start");
+        public void OnDisable() => Console.WriteLine("predraw: OnDisable");
+        public void OnDestroy() => Console.WriteLine("predraw: OnDestroy");
+        public void OnBecameVisible()   => Console.WriteLine("predraw: OnBecameVisible");
+        public void OnBecameInvisible() => Console.WriteLine("predraw: OnBecameInvisible");
+
+        public void OnPreDraw(in ViewContext view)
+        {
+            if (!m_logged_pre_draw)
+            {
+                Console.WriteLine($"predraw: OnPreDraw in view '{view.View.Name}'");
+                m_logged_pre_draw = true;
+            }
+            if (m_mode == PreDraw.Material)
+                view.SetMaterial(m_blue);
+            else if (m_mode == PreDraw.Blink && (int)m_clock.Elapsed.TotalSeconds % 2 == 1)
+                view.SetVisible(false);
+        }
+    }
+
     // the scene is World entities: a camera, a directional light and the standard cube with a Render component
-    private static Scene CreateScene(string? texture_path, bool point_light = false, float? time_of_day = null)
+    private static Scene CreateScene(string? texture_path, bool point_light = false, float? time_of_day = null, ViewOptions? options = null)
     {
         World.World.SetMainThread();
         World.World.ClearScene();
@@ -76,6 +126,14 @@ internal static class RendererCubeDemo
         Render render = cube.AddComponent<Render>()!;
         render.SetMesh(MeshType.Cube);
         render.SetMaterial(material);
+        options ??= new ViewOptions();
+        if (options.Layers != Layers.Default)
+        {
+            render.RenderLayers = 1u << 1; // layer 2
+            camera.CullMask     = options.Layers == Layers.HideCube ? ~(1u << 1) : 1u << 1;
+        }
+        if (options.PreDraw != PreDraw.None)
+            cube.AddBehaviour(new CubeBehaviour(options.PreDraw));
 
         // the ground: spartan's standard quad, a light grey material, under the turning cube's reach (half diagonal 0.87 m)
         var ground_material = new Material();
@@ -103,12 +161,12 @@ internal static class RendererCubeDemo
         World.World.Tick();
     }
 
-    public static int Run(IWindow window, int frames, bool validation, string? texture_path = null, bool point_light = false, float? time_of_day = null)
+    public static int Run(IWindow window, int frames, bool validation, string? texture_path = null, bool point_light = false, float? time_of_day = null, ViewOptions? options = null)
     {
         Renderer.Initialize(window, validation);
         try
         {
-            Scene scene = CreateScene(texture_path, point_light, time_of_day);
+            Scene scene = CreateScene(texture_path, point_light, time_of_day, options);
             var clock = System.Diagnostics.Stopwatch.StartNew();
             int presented = 0;
             while (!window.IsClosing && (frames <= 0 || presented < frames))
@@ -128,12 +186,12 @@ internal static class RendererCubeDemo
     }
 
     // no window: one frame at size x size, returns frame_output's centre pixel (rgba16f)
-    public static Vector4 RunOffscreen(uint size, bool validation, string? texture_path = null, bool point_light = false, float? time_of_day = null)
+    public static Vector4 RunOffscreen(uint size, bool validation, string? texture_path = null, bool point_light = false, float? time_of_day = null, ViewOptions? options = null)
     {
         Renderer.Initialize(size, size, validation);
         try
         {
-            Scene scene = CreateScene(texture_path, point_light, time_of_day);
+            Scene scene = CreateScene(texture_path, point_light, time_of_day, options);
             Animate(scene, 0.0f);
             Renderer.Tick();
             return Renderer.ReadOutputPixel(size / 2, size / 2);
@@ -146,12 +204,12 @@ internal static class RendererCubeDemo
     }
 
     // no window: settles a few frames at w x h and writes frame_output (display encoded rgba16f) as an 8 bit png
-    public static void RunOffscreenPng(string path, uint width, uint height, float time, bool validation, string? texture_path = null, bool point_light = false, float? time_of_day = null)
+    public static void RunOffscreenPng(string path, uint width, uint height, float time, bool validation, string? texture_path = null, bool point_light = false, float? time_of_day = null, ViewOptions? options = null)
     {
         Renderer.Initialize(width, height, validation);
         try
         {
-            Scene scene = CreateScene(texture_path, point_light, time_of_day);
+            Scene scene = CreateScene(texture_path, point_light, time_of_day, options);
             for (int i = 0; i < 4; i++) // temporal history settles
             {
                 Animate(scene, time);

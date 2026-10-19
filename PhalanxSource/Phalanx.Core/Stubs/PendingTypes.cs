@@ -50,5 +50,4 @@ public class Physics        : Component { public Physics(Entity e) : base(e) { }
 public class SplineFollower : Component { public SplineFollower(Entity e) : base(e) { } }
 public class Terrain        : Component { public Terrain(Entity e) : base(e) { } }
 public class Volume         : Component { public Volume(Entity e) : base(e) { } }
-public class Script         : Component { public Script(Entity e) : base(e) { } }
 public class ParticleSystem : Component { public ParticleSystem(Entity e) : base(e) { } }

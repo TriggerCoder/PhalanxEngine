@@ -24,7 +24,7 @@ public enum ViewFeatures
 /// views come with split-screen and editor viewports. A view keeps its own camera history, taau history, exposure and
 /// render targets, so a camera cut or a resize of one view leaves the others alone.
 /// </summary>
-public sealed class SceneView : IDisposable
+public sealed class SceneView : ISceneView, IDisposable
 {
     internal SceneView(string name, bool is_main)
     {
@@ -49,8 +49,10 @@ public sealed class SceneView : IDisposable
     /// <summary>The order views render and composite in, lowest first.</summary>
     public int Order { get; set; }
 
-    /// <summary>The entity layers the view sees (no layers or culling yet, every renderable is drawn).</summary>
-    public uint LayerMask { get; set; } = uint.MaxValue;
+    /// <summary>The render layers the view draws (Godot's cull mask): a renderable is drawn when its
+    /// <see cref="Render.RenderLayers"/> share a bit with this and with the camera's <see cref="Phalanx.World.Camera.CullMask"/>.
+    /// Every layer by default.</summary>
+    public uint CullMask { get; set; } = uint.MaxValue;
 
     /// <summary>False once the view was removed or the renderer shut down (the main view comes back with Initialize).</summary>
     public bool IsAlive => State.HasTargets;

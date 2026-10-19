@@ -39,7 +39,13 @@ internal sealed class ViewState
     // directional shadow cascades, per light (spartan computes them in the light from the one camera)
     public readonly Dictionary<Light, DirectionalCascades> Cascades = new(ReferenceEqualityComparer.Instance);
 
-    // what this view draws (no culling yet: every draw of the frame)
+    // what this view culled in this frame (Renderer.Culling.cs): its visible renderables, each with the index of its
+    // per view overrides or -1, in the order of the world's renderables
+    public readonly Dictionary<Render, int> Visible = new(ReferenceEqualityComparer.Instance);
+    public readonly List<ViewDrawOverrides> Overrides = new();
+    public int OverrideCount;
+
+    // what this view draws: the frame's draws it culled in, with its overrides
     public readonly List<Renderer.DrawCall> DrawCalls      = new();
     public readonly List<Renderer.DrawCall> DrawCallsAlpha = new();
 
@@ -87,6 +93,8 @@ internal sealed class ViewState
         SssLights.Clear();
         SssSliceWarned = false;
         Cascades.Clear();
+        Visible.Clear();
+        OverrideCount = 0;
         DrawCalls.Clear();
         DrawCallsAlpha.Clear();
         LightParameters = Array.Empty<LightParameters>();

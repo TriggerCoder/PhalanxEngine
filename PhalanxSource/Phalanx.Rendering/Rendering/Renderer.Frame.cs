@@ -225,6 +225,7 @@ public static partial class Renderer
             UpdateBindlessResources();
 
         TickAdvanceFrameConstantBufferRing();
+        PrepareViews(); // every view culls and runs its OnPreDraw callbacks before the uploads and the draws
         TickUploadBindlessDependencies(cmd);
         ProduceFrame(cmd);
 
