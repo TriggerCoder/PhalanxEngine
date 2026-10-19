@@ -31,6 +31,7 @@
 //   at 1/(n+1) per frame. When a soft shadow or a light moves over a static floor, every pixel lags by a different
 //   amount depending on when it last crossed a step, and the lags show as stepped contour bands behind the shadow.
 //   rgba16f has 11 significant bits, the steps fall to 0.05%.
+// - sss (the screen space shadows, :812; upstream :873) has no RHI_Texture_ConcurrentSharing either.
 // - frame_output has one mip (spartan: a full chain with per-mip views, for the bloom and auto exposure
 //   downsamples); RHI_Texture_ConcurrentSharing is dropped, there is no async compute yet.
 using Phalanx.Rendering.RHI;
@@ -50,6 +51,7 @@ internal enum Renderer_Shader
     gbuffer_v, gbuffer_p, depth_prepass_alpha_p, light_c, light_composition_c, light_image_based_c, output_c, blit_c, depth_light_v, depth_light_alpha_p, taau_c, dlss_reactivity_c,
     light_integration_brdf_specular_lut_c, light_integration_environment_filter_c, ffx_spd_average_one_c,
     skysphere_c, skysphere_transmittance_lut_c, skysphere_multiscatter_lut_c, skysphere_sky_view_lut_c, skysphere_sh_project_c,
+    sss_c_bend,
     max
 }
 
@@ -162,6 +164,14 @@ public static partial class Renderer
             Replace(RenderTarget.light_diffuse,  s_resolution_render_width, s_resolution_render_height, LightBufferFormat);
             Replace(RenderTarget.light_specular, s_resolution_render_width, s_resolution_render_height, LightBufferFormat);
 
+            // screen space shadows (Renderer_Resources.cpp:812, upstream :873), a slice per light, without
+            // RHI_Texture_ConcurrentSharing (no async compute)
+            s_render_targets[(int)RenderTarget.sss]?.Dispose();
+            s_render_targets[(int)RenderTarget.sss] = new Texture(RHI_Texture_Type.Type2DArray, s_resolution_render_width, s_resolution_render_height, renderer_sss_slice_count, 1,
+                RHI_Format.R16_Float, RHI_Texture_Flags.RHI_Texture_Uav | RHI_Texture_Flags.RHI_Texture_Srv | RHI_Texture_Flags.RHI_Texture_ClearBlit, "sss");
+            RenderView.SetRenderTargetSize(RenderTarget.sss, s_resolution_render_width, s_resolution_render_height);
+            s_sss_needs_clear = true;
+
             // shadow atlas (Renderer_Resources.cpp:842), d32, independent of the resolution: created once
             Texture? atlas = s_render_targets[(int)RenderTarget.shadow_atlas];
             if (atlas == null || atlas.GetWidth() != ShadowAtlasResolution)
@@ -224,6 +234,9 @@ public static partial class Renderer
         Compile(Renderer_Shader.skysphere_multiscatter_lut_c,           RHI_Shader_Type.Compute, "sky/skysphere.comp", define: "MULTISCATTER_LUT");
         Compile(Renderer_Shader.skysphere_sky_view_lut_c,               RHI_Shader_Type.Compute, "sky/skysphere.comp", define: "SKY_VIEW_LUT");
         Compile(Renderer_Shader.skysphere_sh_project_c,                 RHI_Shader_Type.Compute, "sky/skysphere_sh_project.comp");
+
+        // screen space shadows (Renderer_Resources.cpp:1227, upstream :1294)
+        Compile(Renderer_Shader.sss_c_bend, RHI_Shader_Type.Compute, "screen_space_shadows/bend_sss.comp");
     }
 
     private static readonly Mesh?[] s_standard_meshes = new Mesh?[(int)Phalanx.Geometry.MeshType.Max];

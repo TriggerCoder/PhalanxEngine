@@ -1,9 +1,11 @@
 // GLSL port of SpartanEngine data/shaders/light.hlsl @ 4c07baa (evaluate_light :143-345, main_cs :347-421): the
 // direct diffuse (demodulated, albedo one) and specular of every light into light_diffuse (tex_uav) and
 // light_specular (tex_uav2).
-// Shadow maps come from common_shadow.glsl (shadow_mapping.hlsl), the atlas is tex2.
+// Shadow maps come from common_shadow.glsl (shadow_mapping.hlsl), the atlas is tex2. The contact shadows of the
+// screen space shadows pass (bend_sss.comp) are tex_uav_sss, one slice per light, taken with min() against the shadow
+// map term like light.hlsl:220-245 (upstream 67a6e8b :222-247).
 // Deviations: every light is evaluated for every pixel (spartan: slot 0 is the sun, the rest come from the light
-// cluster grid); no ray traced, contact or cloud shadows, no water transmission, no subsurface
+// cluster grid); no ray traced or cloud shadows, no water transmission, no subsurface
 // scattering, clearcoat, anisotropy, flakes or sheen, no area lights and no restir; the transparent pass isn't run.
 #version 460
 #extension GL_GOOGLE_include_directive : require
@@ -12,9 +14,16 @@
 #include "common_light.glsl"
 #include "common_shadow.glsl"
 
+// RWTexture2DArray<float4> tex_uav_sss : register(u5) (common_resources_pass.hlsl:26), the contact shadows
+layout(set = 0, binding = 105) uniform image2DArray tex_uav_sss;
+
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-void evaluate_light(uint light_index, Surface surface, bool is_transparent, vec3 diffuse_precomputed, vec3 specular_precomputed,
+// common_structs.hlsl:239 and common.hlsl:1284-1289
+bool light_has_shadows_screen_space(Light l)       { return (l.flags & (1u << 4)) != 0u; }
+uint light_get_screen_space_shadow_slice(Light l)  { return light_parameters[l.index].screen_space_shadow_slice_index; }
+
+void evaluate_light(uint light_index, uvec2 pixel_xy, Surface surface, bool is_transparent, vec3 diffuse_precomputed, vec3 specular_precomputed,
                     inout vec3 out_diffuse, inout vec3 out_specular)
 {
     Light light = light_build(light_index, surface);
@@ -32,13 +41,32 @@ void evaluate_light(uint light_index, Surface surface, bool is_transparent, vec3
     bool light_can_contribute    = contribution_luminance > k_contribution_cull;
     bool has_brdf                = any(greaterThan(light.radiance, vec3(0.0)));
 
+    float scattering_fraction    = clamp(surface.subsurface_scattering, 0.0, 1.0);
+
     if (!surface_is_sky(surface) && light_can_contribute && has_brdf)
     {
-        // shadow maps (light.hlsl:176-251): the primary shadow scales the radiance; no ray traced, cloud or contact
-        // shadows, no water transmission
-        float L_shadow = 1.0;
+        // light.hlsl:176-251: the primary shadow (shadow maps) and the contact shadow, the darker of the two scales the
+        // radiance; no ray traced or cloud shadows, no water transmission
+        float L_shadow_primary = 1.0;
+        float L_shadow_contact = 1.0;
         if (light_has_shadows(light))
-            L_shadow = compute_shadow(surface, light);
+            L_shadow_primary = compute_shadow(surface, light);
+
+        // contact shadows apply on top of whatever produced the primary term, they see whatever reached the depth
+        // buffer. min() below takes the darker term, so pixels the primary term already resolved don't change
+        if (light_has_shadows(light) && light_has_shadows_screen_space(light) && surface_is_opaque(surface))
+        {
+            float contact      = imageLoad(tex_uav_sss, ivec3(ivec2(pixel_xy), int(light_get_screen_space_shadow_slice(light)))).x;
+            float contact_fade = 1.0 - clamp((surface.camera_to_pixel_length - 25.0) / 50.0, 0.0, 1.0);
+            L_shadow_contact   = mix(1.0, contact, contact_fade);
+        }
+
+        // screen space depth has no leaf thickness and treats every card as opaque, retain contact detail without
+        // erasing the thin-sheet paths the primary shadow resolved. Solid occluders still fully block
+        if (surface_is_foliage(surface))
+            L_shadow_contact = mix(L_shadow_contact, 1.0, scattering_fraction * 0.70);
+        float L_shadow = min(L_shadow_primary, L_shadow_contact);
+
         light.radiance     *= L_shadow;
         light_radiance_raw *= L_shadow;
 
@@ -81,7 +109,7 @@ void main()
 
     uint total_lights = uint(buffer_pass.values[0].x);
     for (uint i = 0u; i < total_lights; i++)
-        evaluate_light(i, surface, false, diffuse_precomputed, specular_precomputed, out_diffuse, out_specular);
+        evaluate_light(i, thread_id, surface, false, diffuse_precomputed, specular_precomputed, out_diffuse, out_specular);
 
     imageStore(tex_uav,  ivec2(thread_id), validate_output(vec4(out_diffuse, 1.0)));
     imageStore(tex_uav2, ivec2(thread_id), validate_output(vec4(out_specular, 1.0)));

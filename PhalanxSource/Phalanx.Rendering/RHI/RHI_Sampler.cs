@@ -2,6 +2,11 @@
 // Deviations: GetHash()/ComputeHash() (spartan has no sampler hash, phalanx uses it to dedupe the renderer's samplers
 // and as a pipeline-state input later), maxAnisotropy is clamped to the device limit (spartan passes the value through,
 // above maxSamplerAnisotropy it is a validation error), Dispose() instead of the destructor.
+// The border colour is VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK. Spartan uses VK_BORDER_COLOR_INT_TRANSPARENT_BLACK for
+// every sampler (Vulkan_Sampler.cpp:31, the same at upstream 67a6e8b), but the Vulkan spec makes the border texel
+// undefined when an integer border colour samples a float format or a depth aspect ("Instruction/Sampler/Image View
+// Validation"), and every clamp to border sampler here reads float or depth views: the shadow atlas compare and the
+// screen space shadows' depth, which relies on the border reading as the far depth (0).
 using Silk.NET.Vulkan;
 using static Phalanx.Rendering.RHI.RHI_Implementation;
 
@@ -93,7 +98,7 @@ internal sealed unsafe class RHI_Sampler : IDisposable
             MaxAnisotropy    = max_device_anisotropy > 0 ? System.Math.Min(anisotropy, max_device_anisotropy) : anisotropy, // deviation: clamp
             CompareEnable    = comparison_enabled,
             CompareOp        = VulkanCompareOperator[(int)comparison_function],
-            BorderColor      = BorderColor.IntTransparentBlack,
+            BorderColor      = BorderColor.FloatTransparentBlack, // spartan: int, undefined on float and depth views, see the header
             MipLodBias       = mip_bias,
             MinLod           = 0.0f,
             MaxLod           = float.MaxValue

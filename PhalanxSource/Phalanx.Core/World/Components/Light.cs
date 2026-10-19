@@ -72,6 +72,7 @@ public class Light : Component
     private float m_area_width = 1.0f;  // area light width in meters
     private float m_area_height = 1.0f;  // area light height in meters
     private uint m_index = 0;
+    private uint m_screen_space_shadows_slice_index = 0; // Light.h:247
     private BoundingBox m_bounding_box = BoundingBox.Zero;
     private Vector3 m_far_cascade_min = Vector3.Zero;
     private Vector3 m_far_cascade_max = Vector3.Zero;
@@ -158,7 +159,10 @@ public class Light : Component
         if (m_light_type == LightType.Directional)
             SetIntensity(SunIlluminanceLux);
         else
+        {
             m_flags &= ~LightFlags.ShadowsScreenSpace;
+            m_screen_space_shadows_slice_index = 0; // Light.cpp:441
+        }
 
         UpdateMatrices();
     }
@@ -732,8 +736,9 @@ public class Light : Component
     public uint GetIndex() { return m_index; }
 
     // screen space shadows slice index
-    public void SetScreenSpaceShadowsSliceIndex(uint index) { m_index = index; }
-    public uint GetScreenSpaceShadowsSliceIndex() { return m_index; }
+    // (Light.h:194-195) its own field, it used to alias m_index, so writing the slice overwrote the light's table index
+    public void SetScreenSpaceShadowsSliceIndex(uint index) { m_screen_space_shadows_slice_index = index; }
+    public uint GetScreenSpaceShadowsSliceIndex() { return m_screen_space_shadows_slice_index; }
 
     // draw distance
     public void SetDrawDistance(float distance) { m_draw_distance = distance; }

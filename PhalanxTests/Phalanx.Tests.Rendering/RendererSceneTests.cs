@@ -52,14 +52,14 @@ public partial class RendererSceneTests
         return new Scene { camera = camera, cube = cube, material = material };
     }
 
-    private static void Run(Action body, Renderer_AntiAliasing_Upsampling aa = Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear, uint shadow_atlas = 1024)
+    private static void Run(Action body, Renderer_AntiAliasing_Upsampling aa = Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear, uint shadow_atlas = 1024, uint width = Width, uint height = Height)
     {
         Skip.IfNot(RenderDevice.IsVulkanAvailable(out string reason), reason);
         Renderer.AntiAliasingUpsampling = aa;
         World.World.SetMainThread();
         World.World.ClearScene();
         Renderer.ShadowAtlasResolution = shadow_atlas;
-        Renderer.Initialize(Width, Height, validation: true);
+        Renderer.Initialize(width, height, validation: true);
         try
         {
             body();

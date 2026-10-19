@@ -47,7 +47,7 @@ public class RhiDescriptorLogicTests
         Assert.True(info.CompareEnable);
         Assert.Equal(CompareOp.Greater, info.CompareOp);
         Assert.False(info.AnisotropyEnable);
-        Assert.Equal(BorderColor.IntTransparentBlack, info.BorderColor);
+        Assert.Equal(BorderColor.FloatTransparentBlack, info.BorderColor); // spartan: int, undefined on float views
         Assert.Equal(float.MaxValue, info.MaxLod);
 
         SamplerCreateInfo aniso = RHI_Sampler.BuildCreateInfo(RHI_Filter.Linear, RHI_Filter.Linear, RHI_Filter.Linear, RHI_Sampler_Address_Mode.MirrorOnce,

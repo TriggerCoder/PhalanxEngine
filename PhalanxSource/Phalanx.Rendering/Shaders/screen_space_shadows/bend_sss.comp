@@ -1,0 +1,54 @@
+// GLSL port of SpartanEngine data/shaders/screen_space_shadows/bend_sss.hlsl @ 4c07baa (identical at upstream
+// 67a6e8b): Bend Studio's screen space shadows with spartan's tuning, one dispatch of the list
+// BendSss.BuildDispatchList returns. Reads the depth (tex), writes the contact shadow of one light into a slice of
+// tex_uav_sss, 1 lit and 0 shadowed. The pass values are pass_bend_sss (shared_buffers.h:433-441).
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "../common_resources.glsl"
+
+// RWTexture2DArray<float4> tex_uav_sss : register(u5) (common_resources_pass.hlsl:26)
+layout(set = 0, binding = 105) uniform image2DArray tex_uav_sss;
+
+#define WAVE_SIZE           64
+#define SAMPLE_COUNT        256 // shadow samples per pixel, determines the overall cost, default: 60
+#define HARD_SHADOW_SAMPLES 0   // initial shadow samples that produce a hard shadow and skip the averaging, default: 4
+#define FADE_OUT_SAMPLES    64  // samples that fade out at the end of the shadow (for a minor cost), default: 8
+
+#define SSS_DEPTH_TEXTURE        tex
+#define SSS_POINT_BORDER_SAMPLER samplers[sampler_point_clamp_border] // clamp to border, the border is the far depth (0)
+#define SSS_OUTPUT_TEXTURE       tex_uav_sss
+
+#include "bend_sss_gpu.glsl"
+
+// shared_buffers.h:433-441
+const uint pass_bend_sss_light_coordinate       = 0u;  // float4
+const uint pass_bend_sss_wave_offset            = 4u;  // float2
+const uint pass_bend_sss_inv_depth_texture_size = 6u;  // float2
+const uint pass_bend_sss_near_depth             = 8u;  // float
+const uint pass_bend_sss_far_depth              = 9u;  // float
+const uint pass_bend_sss_array_slice            = 10u; // uint
+
+layout(local_size_x = WAVE_SIZE, local_size_y = 1, local_size_z = 1) in;
+
+void main()
+{
+    DispatchParameters in_parameters;
+    DispatchParameters_SetDefaults(in_parameters);
+    in_parameters.BilinearThreshold          = 0.04;  // recommended starting value: 0.02 (2%)
+    in_parameters.BilinearSamplingOffsetMode = true;
+    in_parameters.IgnoreEdgePixels           = true;
+    in_parameters.SurfaceThickness           = 0.005; // recommended starting value: 0.005
+    in_parameters.ShadowContrast             = 4.0;   // recommended starting value: 2 or 4
+    in_parameters.LightCoordinate            = vec4(pass_float2(pass_bend_sss_light_coordinate), pass_float2(pass_bend_sss_light_coordinate + 2u)); // DispatchList.LightCoordinate_Shader
+    in_parameters.WaveOffset                 = ivec2(pass_float2(pass_bend_sss_wave_offset)); // DispatchData.WaveOffset_Shader
+    in_parameters.NearDepthValue             = pass_float(pass_bend_sss_near_depth);  // the depth of the near clip plane, 1 with reverse-z
+    in_parameters.FarDepthValue              = pass_float(pass_bend_sss_far_depth);   // the depth of the far clip plane, 0 with reverse-z
+    in_parameters.ArraySliceIndex            = int(pass_uint(pass_bend_sss_array_slice));
+    in_parameters.InvDepthTextureSize        = pass_float2(pass_bend_sss_inv_depth_texture_size); // pixel coordinates to uvs
+    in_parameters.DebugOutputEdgeMask        = false; // visualize edges, for tuning BilinearThreshold
+    in_parameters.DebugOutputThreadIndex     = false; // visualize the layout of compute threads
+    in_parameters.DebugOutputWaveIndex       = false; // visualize the layout of compute wavefronts, sanity checks the light coordinate
+
+    WriteScreenSpaceShadow(in_parameters, ivec3(gl_WorkGroupID), int(gl_LocalInvocationID.x));
+}

@@ -188,6 +188,20 @@ internal sealed unsafe partial class RHI_CommandList : IDisposable
         RHI_Context.Vk.CmdClearColorImage(m_rhi_resource, image, layout, in color, 1, in range);
     }
 
+    // spartan: RHI_CommandList::ClearTexture, every mip and array layer of a colour texture to one value. The texture
+    // needs RHI_Texture_ClearBlit (transfer dst); it is parked in general first, the clear is made visible to what reads
+    // it next
+    public void ClearTexture(RHI_Texture texture, Phalanx.Math.Color color)
+    {
+        if (m_state != RHI_CommandListState.Recording)
+            throw new InvalidOperationException($"{Name}: ClearTexture while {m_state}");
+        if (texture.IsDepthFormat())
+            throw new ArgumentException($"{texture.Name}: ClearTexture clears colour textures", nameof(texture));
+        InsertBarrier(texture, RHI_Image_Layout.General);
+        ClearColorImage(texture.GetRhiResource(), ImageLayout.General, color.R, color.G, color.B, color.A);
+        InsertBarrierMemory();
+    }
+
     public void CopyImageToBuffer(Image image, ImageLayout layout, Silk.NET.Vulkan.Buffer buffer, uint width, uint height)
     {
         SuspendRenderPass();

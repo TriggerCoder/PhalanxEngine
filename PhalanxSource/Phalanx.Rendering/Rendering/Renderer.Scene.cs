@@ -9,8 +9,8 @@
 //   Color/Normal/Emission/Packed texture indices (Renderer.cpp:2973-3122) into the deduped bindless texture table.
 //   Cpu textures are uploaded on first use. No terrain, vegetation, paint or clearcoat properties, no
 //   Material::SetIndex. Lights upload colour, intensity (the watt
-//   approximation, Phalanx has no radiometric conversion yet), position, direction, range, angle and the type flags;
-//   no shadows, slices or ies.
+//   approximation, Phalanx has no radiometric conversion yet), position, direction, range, angle, the type flags, the
+//   shadow and screen space shadow bits with the atlas slices and the contact shadow slice; no ies.
 // - Material and light tables are rewritten only when their contents change, at offset 0 (spartan: the same).
 // - Every renderable draws lod 0 of each sub-mesh, there is no culling or lod selection yet.
 using System.Numerics;
@@ -296,6 +296,7 @@ public static partial class Renderer
     {
         s_light_count = 0;
         s_lights.Clear();
+        s_sss_lights.Clear();
         // the first directional light always goes in slot 0, the sky and the sun helpers read it there
         // (Renderer.cpp:3334-3352), the rest follow in world order
         Light? first_directional = null;
@@ -329,6 +330,8 @@ public static partial class Renderer
             LightType type = light.GetLightType();
             // phalanx: also needs a packed slice, spartan sets the bit for slices left unpacked past the minimum size
             bool shadows_effective = light.IsShadowEffective() && light.GetAtlasRectangle(0).IsDefined();
+            // Renderer.cpp:3285-3289, the slice is assigned here, see Renderer_Passes_ScreenSpaceShadows.cs
+            bool has_screen_space_shadows = AssignScreenSpaceShadowSlice(light, shadows_effective);
             Phalanx.Math.Color color = light.GetColorEffective(); // Renderer.cpp:3290-3293
             ref LightParameters entry = ref s_light_parameters[index];
             entry = new LightParameters
@@ -342,11 +345,13 @@ public static partial class Renderer
                 direction_right = entity.GetRight(),
                 area_width      = light.GetAreaWidth(),
                 area_height     = light.GetAreaHeight(),
-                // bit 4 (screen space shadows) and 5 (volumetric) stay clear, those passes aren't ported
+                screen_space_shadow_slice_index = has_screen_space_shadows ? light.GetScreenSpaceShadowsSliceIndex() : 0u,
+                // bit 5 (volumetric) stays clear, that pass isn't ported
                 flags           = (type == LightType.Directional ? 1u << 0 : 0u) |
                                   (type == LightType.Point       ? 1u << 1 : 0u) |
                                   (type == LightType.Spot        ? 1u << 2 : 0u) |
                                   (shadows_effective             ? 1u << 3 : 0u) |
+                                  (has_screen_space_shadows      ? 1u << 4 : 0u) |
                                   (type == LightType.Area        ? 1u << 6 : 0u),
             };
             for (int i = 0; i < 6; i++)
@@ -526,5 +531,9 @@ public static partial class Renderer
         s_bound_vertex_id = s_bound_index_id = s_bound_instance_id = 0;
         s_draw_data_count = 0;
         s_light_count     = 0;
+        s_sss_lights.Clear();
+        s_sss_needs_clear  = true;
+        s_sss_written      = false;
+        s_sss_slice_warned = false;
     }
 }

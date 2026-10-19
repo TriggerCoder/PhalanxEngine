@@ -42,13 +42,15 @@ public partial class RendererSceneTests
         return scene;
     }
 
-    private static (uint x, uint y) Pixel(Scene scene, Vector3 world)
+    private static (uint x, uint y) Pixel(Scene scene, Vector3 world) => Pixel(scene, world, Width, Height);
+
+    private static (uint x, uint y) Pixel(Scene scene, Vector3 world, uint width, uint height)
     {
         Vector4 clip = Vector4.Transform(new Vector4(world, 1), scene.camera.GetViewMatrix() * scene.camera.GetProjectionMatrix());
         Vector2 ndc = new Vector2(clip.X, clip.Y) / clip.W;
-        uint x = (uint)((ndc.X * 0.5f + 0.5f) * Width), y = (uint)((-ndc.Y * 0.5f + 0.5f) * Height);
-        Assert.InRange(x, 0u, Width - 1);
-        Assert.InRange(y, 0u, Height - 1);
+        uint x = (uint)((ndc.X * 0.5f + 0.5f) * width), y = (uint)((-ndc.Y * 0.5f + 0.5f) * height);
+        Assert.InRange(x, 0u, width - 1);
+        Assert.InRange(y, 0u, height - 1);
         return (x, y);
     }
 
@@ -75,7 +77,8 @@ public partial class RendererSceneTests
         byte[] table = RHI_Device.ReadbackBuffer(Renderer.GetBuffer(Renderer_Buffer.LightParameters)!, 0, (ulong)Marshal.SizeOf<LightParameters>());
         LightParameters uploaded = MemoryMarshal.Read<LightParameters>(table);
         Assert.Equal(1u << 3, uploaded.flags & (1u << 3));
-        Assert.Equal(0u, uploaded.flags & (1u << 4)); // no screen space shadows yet
+        // contact shadows (bit 4) only for the sun (Renderer.cpp:3285-3287)
+        Assert.Equal(light.GetLightType() == LightType.Directional ? 1u << 4 : 0u, uploaded.flags & (1u << 4));
 
         // the gbuffer sees ground at both points (the cube does not hide them)
         (uint sx, uint sy) = Pixel(scene, shadowed);

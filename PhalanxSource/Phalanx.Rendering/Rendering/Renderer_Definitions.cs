@@ -1,5 +1,5 @@
 // Port of the renderer definitions SpartanEngine source/rendering/Renderer_Definitions.h @ 4c07baa needs so far: the
-// constants of the frame loop (:61, :82), Renderer_AntiAliasing_Upsampling (:180), Renderer_BindingsCb (:199),
+// constants of the frame loop (:61, :82), Renderer_AntiAliasing_Upsampling (:180), Renderer_BindingsCb (:199), Renderer_BindingsUav (:268, up to tex_sss),
 // Renderer_BindingsSrv (:204, the g-buffer slots), Renderer_Sampler (:643), Renderer_Buffer (:657) and
 // Renderer_StandardTexture (:723), complete so the indices match spartan's. Renderer_RenderTarget lives in Phalanx.Core
 // (World components read the target sizes) and holds the targets created so far, in spartan's relative order.
@@ -30,7 +30,8 @@ internal static class Renderer_Definitions
 
 internal enum Renderer_BindingsCb : uint { frame }
 
-internal enum Renderer_BindingsUav : uint { tex = 0, tex2 = 1 }
+// Renderer_Definitions.h:268-275
+internal enum Renderer_BindingsUav : uint { tex = 0, tex2 = 1, tex3 = 2, tex4 = 3, tex3d = 4, tex_sss = 5 }
 
 internal enum Renderer_BindingsSrv : uint
 {

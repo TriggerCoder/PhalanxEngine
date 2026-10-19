@@ -3,8 +3,9 @@
 // frame_output, which Tick blits to the back buffer. Pass_GBuffer ports the cpu-driven draw loop of
 // Renderer_Passes_Geometry.cpp (Pass_GBuffer), Pass_Blit is a port of Renderer_Passes_Post.cpp:590-619.
 // Pass_Light and Pass_Light_Composition port Renderer_Passes_Lighting.cpp:1580-1652 (light.hlsl,
-// light_composition.hlsl), the sky and Pass_Light_ImageBased live in Renderer_Passes_Sky.cs, Pass_Tonemap ports
-// Renderer_Passes_Post.cpp:385-398 (output.hlsl).
+// light_composition.hlsl), Pass_ScreenSpaceShadows lives in Renderer_Passes_ScreenSpaceShadows.cs, the sky and
+// Pass_Light_ImageBased live in Renderer_Passes_Sky.cs, Pass_Tonemap ports Renderer_Passes_Post.cpp:385-398
+// (output.hlsl).
 // After composition the upscaler takes frame_render to frame_output (Pass_AA_Upscale, taau or a linear blit, see
 // Renderer_Passes_Post.cs) and the post process chain ping-pongs frame_output/frame_output_2, ending display ready in
 // frame_output.
@@ -77,6 +78,7 @@ public static partial class Renderer
         Pass_Depth_Prepass(cmd);
         Pass_GBuffer(cmd);
         Entity.CommitTransformHistory(); // Renderer_Passes_Geometry.cpp:2022, after the opaque g-buffer
+        Pass_ScreenSpaceShadows(cmd);    // Pass_ComputeBatchB (Renderer.cpp:5393-5402), see Renderer_Passes_ScreenSpaceShadows.cs
         Pass_ShadowMaps(cmd);            // Pass_GraphicsPhase2_ShadowsAndRT (Renderer.cpp:5431)
         Pass_Light(cmd);
         Pass_Light_Composition(cmd, rt_render);
@@ -307,6 +309,7 @@ public static partial class Renderer
             cmd.SetTexture((uint)Renderer_BindingsUav.tex,  light_diffuse,  storage: true);
             cmd.SetTexture((uint)Renderer_BindingsUav.tex2, light_specular, storage: true);
             cmd.SetTexture((uint)Renderer_BindingsSrv.tex2, GetRenderTargetTexture(RenderTarget.shadow_atlas)!); // Renderer_Passes_Lighting.cpp:1592
+            cmd.SetTexture((uint)Renderer_BindingsUav.tex_sss, GetRenderTargetTexture(RenderTarget.sss)!, storage: true); // :1590
             var pass = new PassBufferData();
             pass.Set(0, (float)GetLightCount()); // values[0].x (spartan: buffer_frame.cluster_light_count)
             cmd.PushConstants(pass);

@@ -22,6 +22,7 @@ namespace Phalanx.Editor;
 //   add --validation to enable VK_LAYER_KHRONOS_validation (Debug builds enable it by default)
 //   add --aa <taau|off|fxaa|xess|dlss> to pick Renderer.AntiAliasingUpsampling (default taau; fxaa isn't ported and
 //     renders like off, xess and dlss aren't integrated and fall back to off)
+//   add --sss <on|off> to switch Renderer.ScreenSpaceShadows, the sun's contact shadows (default on)
 public static class Program
 {
     public static int Main(string[] args)
@@ -71,6 +72,21 @@ public static class Program
                 Renderer.AntiAliasingUpsampling = mode;
             else
                 Console.Error.WriteLine($"--aa: unknown mode '{args[aa_arg + 1]}', expected taau, off, fxaa, xess or dlss");
+        }
+
+        int sss_arg = Array.IndexOf(args, "--sss");
+        if (sss_arg >= 0 && sss_arg + 1 < args.Length)
+        {
+            bool? sss = args[sss_arg + 1].ToLowerInvariant() switch
+            {
+                "on"  => true,
+                "off" => false,
+                _     => null
+            };
+            if (sss is { } enabled)
+                Renderer.ScreenSpaceShadows = enabled;
+            else
+                Console.Error.WriteLine($"--sss: unknown value '{args[sss_arg + 1]}', expected on or off");
         }
 
         int renderer_cube = Array.IndexOf(args, "--renderer-cube");

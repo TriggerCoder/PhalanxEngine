@@ -30,7 +30,7 @@ public enum Renderer_RenderTarget
     gbuffer_color, gbuffer_normal, gbuffer_normal_previous, gbuffer_material, gbuffer_emissive, gbuffer_velocity,
     gbuffer_velocity_previous, gbuffer_depth, gbuffer_depth_previous, lut_brdf_specular, lut_atmosphere_transmittance,
     lut_atmosphere_multiscatter, lut_sky_view, frame_render, frame_output, frame_output_2, taau_history,
-    dlss_reactivity, light_diffuse, light_specular, skysphere, sky_sh, shadow_atlas, max
+    dlss_reactivity, light_diffuse, light_specular, sss, skysphere, sky_sh, shadow_atlas, max
 }
 
 // TODO(port): source/rhi/RHI_Definitions.h (RHI_CullMode)
