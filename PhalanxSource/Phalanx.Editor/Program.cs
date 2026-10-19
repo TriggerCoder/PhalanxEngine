@@ -22,7 +22,10 @@ namespace Phalanx.Editor;
 //   add --validation to enable VK_LAYER_KHRONOS_validation (Debug builds enable it by default); --validation-sync and
 //     --validation-gpu add the layer's synchronization and gpu-assisted validation (either turns validation on);
 //     --robust-buffer-access enables robustBufferAccess on the device; --gpu-breadcrumbs records which passes the gpu
-//     began and completed, reported if the device is lost (exit code 3, the report also goes to log.txt)
+//     began and completed, reported if the device is lost (exit code 3, the report also goes to log.txt and, written
+//     through to the disk, device_lost.txt); --device-diagnostics off leaves the driver's device lost diagnostics out
+//     (NV checkpoints, VK_EXT_device_fault); --max-instances-per-draw <n> splits instanced draws larger than n
+//     instances into several draw calls (Renderer.MaxInstancesPerDraw, default 0: no limit)
 //   add --aa <taau|off|fxaa|xess|dlss> to pick Renderer.AntiAliasingUpsampling (default taau; fxaa isn't ported and
 //     renders like off, xess and dlss aren't integrated and fall back to off)
 //   add --sss <on|off> to switch Renderer.ScreenSpaceShadows, the sun's contact shadows (default on)
@@ -33,7 +36,20 @@ namespace Phalanx.Editor;
 //     missing-texture|full> shows the default and illegal materials (RendererCubeDemo.cs)
 //   add --entities <N> to --renderer-cube for the stress mode: N turning, circling store entity cubes moved by batched
 //     behaviours and drawn instanced, timings on the console once a second (EntitiesDemo.cs); --layers puts every
-//     other one on layer 2 and --predraw gives about 200 of them the OnPreDraw behaviour
+//     other one on layer 2 and --predraw gives about 200 of them the OnPreDraw behaviour; --entities-moving <0..1> moves
+//     only that fraction of them, the rest are static store entities without behaviours (default 1)
+//   add --shadows <on|off> to switch every light's shadows (LightFlags.Shadows, default on), --sun-shadows <on|off> and
+//     --point-light-shadows <on|off> for the sun's and the --point-light's alone; --shadow-min-texels <n> leaves store
+//     entities smaller than n texels of a shadow cascade or face out of it (Renderer.ShadowCasterMinTexels, default 1,
+//     0 keeps every caster); --gpu-timing <on|off> times the passes on the gpu for the stress mode's console line
+//     (default on)
+//   device lost suspects, each switches one thing off: --serialize-frames <on|off> waits for the gpu at the end of
+//     every frame so frames never overlap (default off); --descriptor-eviction <on|off> keeps every cached descriptor
+//     set when off (default on); --instance-velocity <on|off> binds this frame's instance buffer as the previous one
+//     when off, no per entity motion vectors (default on); --ibl <on|off> skips the light_image_based pass when off
+//     (Renderer.ImageBasedLighting, default on). With the driver's checkpoints on, the device lost report names the
+//     last draw or dispatch that started and the first that did not complete ("g_buffer draw 3 (instances
+//     196608+65536)").
 public static class Program
 {
     public static int Main(string[] args)
@@ -52,6 +68,9 @@ public static class Program
         if (extra != RenderValidation.None)     validation = true;
         if (args.Contains("--robust-buffer-access")) extra |= RenderValidation.RobustBufferAccess;
         if (args.Contains("--gpu-breadcrumbs"))      extra |= RenderValidation.GpuBreadcrumbs;
+        if (!ParseOnOff(args, "--device-diagnostics", true, out bool device_diagnostics))
+            return 1;
+        if (!device_diagnostics)                     extra |= RenderValidation.NoDeviceDiagnostics;
         RenderDevice.Validation = extra;
 
         int clear = Array.IndexOf(args, "--rhi-clear");
@@ -106,6 +125,41 @@ public static class Program
                 Renderer.ScreenSpaceShadows = enabled;
             else
                 Console.Error.WriteLine($"--sss: unknown value '{args[sss_arg + 1]}', expected on or off");
+        }
+
+        if (!ParseOnOff(args, "--gpu-timing", true, out bool gpu_timing))
+            return 1;
+        RenderDevice.GpuPassTiming = gpu_timing && Array.IndexOf(args, "--entities") >= 0; // the stress mode's console line
+        // the device lost suspects, one at a time (see the usage above)
+        if (!ParseOnOff(args, "--serialize-frames", false, out bool serialize_frames)
+            || !ParseOnOff(args, "--descriptor-eviction", true, out bool descriptor_eviction)
+            || !ParseOnOff(args, "--instance-velocity", true, out bool instance_velocity)
+            || !ParseOnOff(args, "--ibl", true, out bool ibl))
+            return 1;
+        RenderDevice.SerializeFrames       = serialize_frames;
+        RenderDevice.DescriptorSetEviction = descriptor_eviction;
+        Renderer.InstanceVelocity          = instance_velocity;
+        Renderer.ImageBasedLighting        = ibl;
+        int min_texels_arg = Array.IndexOf(args, "--shadow-min-texels");
+        if (min_texels_arg >= 0)
+        {
+            if (min_texels_arg + 1 >= args.Length || !float.TryParse(args[min_texels_arg + 1], NumberStyles.Float, CultureInfo.InvariantCulture, out float min_texels) || !(min_texels >= 0.0f))
+            {
+                Console.Error.WriteLine("--shadow-min-texels: expected a number of texels, 0 or more, such as 1");
+                return 1;
+            }
+            Renderer.ShadowCasterMinTexels = min_texels;
+        }
+
+        int max_instances_arg = Array.IndexOf(args, "--max-instances-per-draw");
+        if (max_instances_arg >= 0)
+        {
+            if (max_instances_arg + 1 >= args.Length || !uint.TryParse(args[max_instances_arg + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out uint max_instances))
+            {
+                Console.Error.WriteLine("--max-instances-per-draw: expected a number of instances, such as 65536 (0 for no limit)");
+                return 1;
+            }
+            Renderer.MaxInstancesPerDraw = max_instances;
         }
 
         int renderer_cube = Array.IndexOf(args, "--renderer-cube");
@@ -180,7 +234,22 @@ public static class Program
                 Console.Error.WriteLine("--entities: expected a number of entities, such as 100000");
                 return 1;
             }
-            var options = new RendererCubeDemo.ViewOptions(layers, pre_draw, material_case, entities);
+            float moving = 1.0f;
+            int moving_arg = Array.IndexOf(args, "--entities-moving");
+            if (moving_arg >= 0 && (moving_arg + 1 >= args.Length || !float.TryParse(args[moving_arg + 1], NumberStyles.Float, CultureInfo.InvariantCulture, out moving) || !(moving >= 0.0f && moving <= 1.0f)))
+            {
+                Console.Error.WriteLine("--entities-moving: expected the fraction of moving entities, from 0 to 1, such as 0.1");
+                return 1;
+            }
+            if (!ParseOnOff(args, "--shadows", true, out bool shadows) || !ParseOnOff(args, "--sun-shadows", true, out bool sun_shadows) ||
+                !ParseOnOff(args, "--point-light-shadows", true, out bool point_shadows))
+                return 1;
+            var options = new RendererCubeDemo.ViewOptions(layers, pre_draw, material_case, entities)
+            {
+                SunShadows        = shadows && sun_shadows,
+                PointLightShadows = shadows && point_shadows,
+                EntitiesMoving    = moving
+            };
             int png_arg = Array.IndexOf(args, "--png");
             if (renderer_cube_offscreen && png_arg >= 0 && png_arg + 1 < args.Length)
             {
@@ -272,5 +341,22 @@ public static class Program
 
         Console.WriteLine("Phalanx editor: nothing to show yet. Try --renderer-cube, --rhi-clear, --rhi-triangle, --rhi-cube or --rhi-offscreen.");
         return 0;
+    }
+
+    // an optional "<name> <on|off>": false (and an error on the console) for any other value
+    private static bool ParseOnOff(string[] args, string name, bool fallback, out bool value)
+    {
+        value = fallback;
+        int index = Array.IndexOf(args, name);
+        if (index < 0)
+            return true;
+        string? text = index + 1 < args.Length ? args[index + 1].ToLowerInvariant() : null;
+        if (text == "on" || text == "off")
+        {
+            value = text == "on";
+            return true;
+        }
+        Console.Error.WriteLine($"{name}: expected on or off");
+        return false;
     }
 }

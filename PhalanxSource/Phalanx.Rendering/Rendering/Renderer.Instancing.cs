@@ -9,15 +9,26 @@
 //   instances_previous[slot] (TAAU velocity) (mode 2). The batch's DrawData entry carries its material and uv transform.
 // - An entity whose OnPreDraw hides it is left out of that view's list; one that sets a material or uv transform gets
 //   its own exact DrawData entry and DrawCall for that view, drawn in an override batch, and stays out of the packed one.
-// - Shadow slices cull the store like views (every layer, casters only, no depth for the directional cascades).
+// - Shadow slices cull the store like views (every layer, casters only), each with its own caster volume
+//   (SetShadowCasterLimits): a cascade tests its side planes and its far plane (the near one, toward the light, is
+//   dropped: casters between the light and the slice still shadow it), a point or spot face its frustum and the
+//   light's range; and in every slice a store caster smaller than ShadowCasterMinTexels texels (the diameter of its aabb
+//   sphere against the cascade's texel, or the face's texel at its distance) is left out. World entities (the exact
+//   path) keep spartan's test, so the existing scenes render the same.
 // Deviations from spartan @ 4c07baa, which instances inside one Render (Render::SetInstances, a static instance list,
 // Render.cpp:821) and culls the instances on the gpu (Renderer.cpp:3814-4051, common_vertex_processing.hlsl:58-86):
 // - Batches are separate entities that share mesh and material; their instances move every frame, are culled on the
 //   cpu per view and slice, and the lists are 4 byte slots into a per entity instance buffer, not instance ranges.
 // - The instance buffers and the slot lists are bound in set 0 (bindings 340-342): llvmpipe binds only 8 descriptor
 //   sets, so spartan's bindless geometry_instances (set 10) isn't usable by a pipeline there.
-// - The world tick packs the instances before the frame slot is free, so they are copied (the blocks that changed in
-//   the last frames) into the frame slot's host buffer instead of being written there directly.
+// - The world tick packs the instances before the frame slot is free, so they are copied into the frame slot's host
+//   buffer instead of being written there directly: only the slot groups (EntityStore.SlotGroupSize slots, 8 KB) that
+//   the transform pass stamped since this frame's device local buffer was last written, two frames ago (so the
+//   groups of the last two syncs: an entity that stopped gets previous = current once), coalesced into regions and
+//   copied over the worker pool (spartan's instances are static per Render, Render::SetInstances, Render.cpp:821).
+// - The velocity of an OnPreDraw override's draw uses the history of overrides (s_override_previous: last frame's
+//   transform of each overridden slot) instead of a host copy of every instance; a slot overridden for the first time
+//   has no previous transform that frame (no velocity), like a new instance.
 // - The vertex shaders read device local copies (spartan's geometry_buffer_instances is device local too,
 //   GeometryBuffer.cpp:593-600): the frame's command list copies the changed blocks and the slot list from the frame
 //   slot's host buffers into them before the passes. The first S1 port bound the host buffers themselves, so every
@@ -64,12 +75,19 @@ public static partial class Renderer
         public static double CullMs, ShadowCullMs, ListsMs, UploadMs;
         public static int Batches, Draws, VisibleInstances, ShadowInstances;
         public static long UploadedBytes;
+        public static int UploadRegions;
+        public static int ShadowSkippedSmall; // store casters the sub-texel threshold left out, summed over the slices
+        /// <summary>Per shadow slice of the frame, in slice order: its light, its slice (cascade or face) index, the
+        /// store casters it draws and those the sub-texel threshold left out of it. ShadowInstances and
+        /// ShadowSkippedSmall are their sums, so an entity is counted once per slice it is drawn in or left out of.</summary>
+        public static readonly List<ShadowSliceStats> ShadowSlices = new();
     }
+
+    public readonly record struct ShadowSliceStats(LightType Light, uint Slice, int Drawn, int SkippedSubTexel);
 
     // host visible, one per frame slot: the cpu writes them once the slot's frame finished, the gpu only copies them
     private static readonly RHI_Buffer?[] s_slot_buffers     = new RHI_Buffer?[renderer_draw_data_buffer_count];
     private static readonly RHI_Buffer?[] s_instance_buffers = new RHI_Buffer?[renderer_draw_data_buffer_count];
-    private static readonly uint[] s_instance_region_version = new uint[renderer_draw_data_buffer_count];
     // device local, what the vertex shaders read: the slot list, this frame's and the previous frame's instances
     private static RHI_Buffer? s_slot_buffer_gpu;
     private static readonly RHI_Buffer?[] s_instance_buffers_gpu = new RHI_Buffer?[2];
@@ -78,8 +96,10 @@ public static partial class Renderer
     private static readonly List<uint> s_fresh_pending = new();      // new slots the next upload gives the previous gpu buffer
     private static readonly HashSet<uint> s_fresh_this_frame = new(); // new slots this frame: no previous transform
     private static readonly List<RHI_BufferCopy> s_copy_regions = new();
+    private static readonly RHI_BufferCopy[] s_slot_copy = new RHI_BufferCopy[1];
     private static uint s_slot_capacity, s_instance_capacity;
-    private static bool s_instances_reset;
+    private static readonly List<RHI_BufferCopy> s_upload_regions = new(); // this frame's dirty instance groups, in bytes
+    private static readonly Dictionary<uint, OverrideHistory> s_override_previous = new(); // GetPreviousInstanceMatrix
     private static uint[] s_frame_slots = new uint[4096];
     private static int s_frame_slot_count;
     private static readonly List<uint> s_fresh_slots = new();
@@ -105,7 +125,6 @@ public static partial class Renderer
             s_instance_buffers_gpu[i] = CreateStorage<PackedInstance>(capacity, $"instances_{i}", mappable: false);
         }
         s_instance_capacity   = capacity;
-        s_instances_reset     = true;
         s_instances_gpu_reset = true;
     }
 
@@ -125,9 +144,9 @@ public static partial class Renderer
     {
         CreateSlotBuffers(4096);
         CreateInstanceBuffers((uint)EntityStore.SlotBlockSize);
-        Array.Clear(s_instance_region_version);
         s_fresh_pending.Clear();
         s_fresh_this_frame.Clear();
+        s_override_previous.Clear();
         Phalanx.World.World.Store.HasRenderConsumer = true;
         s_draw_data_capacity = renderer_max_draw_calls;
     }
@@ -336,17 +355,47 @@ public static partial class Renderer
         return WriteDrawDataEntry(in entry);
     }
 
-    // the previous frame's transform of a store entity's slot (the previous frame slot's host copy), the current one for
-    // a slot new this frame
+    // the previous frame's transform of a store entity drawn through an override (its own DrawData entry): the one it
+    // was drawn with last frame, else its current one when its slot group didn't change in this frame's sync (or it is
+    // new this frame). An entity that moved on the frame it starts being overridden has no velocity on that frame: the
+    // host copies only hold this frame's dirty groups, there is no full previous frame copy to read it from
     private static Matrix4x4 GetPreviousInstanceMatrix(uint slot)
     {
-        if (slot >= s_instance_capacity || s_fresh_this_frame.Contains(slot))
-            return Phalanx.World.World.Store.Instances[slot].GetMatrix();
-        uint previous = (s_frame_cb_ring_slot + renderer_draw_data_buffer_count - 1) % renderer_draw_data_buffer_count;
-        Span<PackedInstance> one = stackalloc PackedInstance[1];
-        s_instance_buffers[previous]!.ReadSubRegion(MemoryMarshal.AsBytes(one), (ulong)slot * 32ul);
-        return one[0].GetMatrix();
+        PackedTransform current = Phalanx.World.World.Store.Instances[slot];
+        if (s_override_previous.TryGetValue(slot, out OverrideHistory history))
+        {
+            if (history.frame == s_frame_num - 1)
+                return history.transform.GetMatrix();
+            if (history.frame == s_frame_num) // a second view (or a rebuild) this frame
+                return history.previous.GetMatrix();
+        }
+        return current.GetMatrix();
     }
+
+    private readonly record struct OverrideHistory(ulong frame, PackedTransform transform, PackedTransform previous);
+
+    // after a view's override draw data: what they are drawn with this frame is the next frame's previous transform
+    private static void RememberOverrideTransforms(ViewState s)
+    {
+        PackedTransform[] instances = Phalanx.World.World.Store.Instances;
+        foreach (PackedOverride o in s.PackedOverrides)
+        {
+            PackedTransform previous = instances[o.slot];
+            if (s_override_previous.TryGetValue(o.slot, out OverrideHistory history))
+                previous = history.frame == s_frame_num ? history.previous : history.frame == s_frame_num - 1 ? history.transform : previous;
+            s_override_previous[o.slot] = new OverrideHistory(s_frame_num, instances[o.slot], previous);
+        }
+        if (s_override_previous.Count > 4096) // entities that stopped being overridden
+        {
+            s_override_stale.Clear();
+            foreach (KeyValuePair<uint, OverrideHistory> entry in s_override_previous)
+                if (entry.Value.frame + 1 < s_frame_num)
+                    s_override_stale.Add(entry.Key);
+            foreach (uint slot in s_override_stale)
+                s_override_previous.Remove(slot);
+        }
+    }
+    private static readonly List<uint> s_override_stale = new();
 
     // the per view OnPreDraw overrides of store entities: their own DrawData entries and draws (BuildViewDrawLists)
     private static void AddPackedOverrideDraws(ViewState s)
@@ -373,8 +422,10 @@ public static partial class Renderer
         }
     }
 
-    // copies the instances that changed into this frame slot's host buffer (RecordInstanceUploads copies them on to the
-    // gpu); after a growth every block goes into the previous slot's host buffer too, for GetPreviousInstanceMatrix
+    // the slot groups written since this frame's device local instance buffer was (two frames ago: what changed in the
+    // previous frame and in this one, so an entity that stopped moving gets prev = cur once), coalesced into byte
+    // ranges, copied from the store into this frame slot's host buffer in parallel; RecordInstanceUploads copies the
+    // same ranges on to the gpu. Every group after a growth.
     private static void UploadInstances()
     {
         long start = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -393,33 +444,60 @@ public static partial class Renderer
             RHI_Device.QueueWaitAll();
             CreateInstanceBuffers(System.Numerics.BitOperations.RoundUpToPowerOf2(slot_count));
         }
-        uint current  = s_frame_cb_ring_slot;
-        uint previous = (current + renderer_draw_data_buffer_count - 1) % renderer_draw_data_buffer_count;
-        if (s_instances_reset)
-            Array.Clear(s_instance_region_version); // every block is copied, into the previous slot's buffer too
-        PackedTransform[] instances = store.Instances;
-        uint[] stamps = store.SlotBlockStamp;
-        RHI_Buffer buffer = s_instance_buffers[current]!;
-        uint version = s_instance_region_version[current];
-        int blocks = store.SlotBlockCount;
-        for (int b = 0; b < blocks; b++)
+        uint version = s_instances_gpu_reset ? 0u : s_instance_gpu_version[GpuInstanceIndex(false)];
+        uint[] stamps = store.SlotGroupStamp;
+        int groups = store.SlotGroupCount;
+        ulong end_bytes = (ulong)slot_count * 32ul;
+        s_upload_regions.Clear();
+        for (int g = 0; g < groups; g++)
         {
-            if (stamps[b] <= version && version != 0)
+            if (version != 0 && stamps[g] <= version)
                 continue;
-            int first = b * EntityStore.SlotBlockSize;
-            int count = (int)System.Math.Min((uint)EntityStore.SlotBlockSize, slot_count - (uint)first);
-            ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(instances.AsSpan(first, count));
-            buffer.UploadSubRegion(bytes, (ulong)first * 32ul);
-            InstancingStats.UploadedBytes += bytes.Length;
-            if (s_instances_reset)
-                s_instance_buffers[previous]!.UploadSubRegion(bytes, (ulong)first * 32ul);
+            ulong first = (ulong)g * EntityStore.SlotGroupSize * 32ul;
+            ulong bytes = System.Math.Min((ulong)EntityStore.SlotGroupSize * 32ul, end_bytes - first);
+            if (s_upload_regions.Count > 0 && s_upload_regions[^1] is var last && last.SourceOffset + last.Size == first)
+                s_upload_regions[^1] = last with { Size = last.Size + bytes };
+            else
+                s_upload_regions.Add(new RHI_BufferCopy(first, first, bytes));
+            InstancingStats.UploadedBytes += (long)bytes;
         }
-        s_instance_region_version[current] = store.SyncVersion;
-        if (s_instances_reset)
-            s_instance_region_version[previous] = store.SyncVersion;
-        s_instances_reset = false;
+        s_upload_job.Prepare(store.Instances, s_instance_buffers[s_frame_cb_ring_slot]!, s_upload_regions);
+        if (InstancingStats.UploadedBytes >= 4L << 20)
+            WorkerPool.ParallelLoop(s_upload_job, s_upload_job.PieceCount);
+        else
+            for (int i = 0; i < s_upload_job.PieceCount; i++)
+                s_upload_job.Execute(i);
+        InstancingStats.UploadRegions = s_upload_regions.Count;
         InstancingStats.UploadMs = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
     }
+
+    // the host copy of the dirty ranges, in pieces of up to 512 KB for the workers
+    private sealed class UploadJob : ParallelJob
+    {
+        private const ulong PieceBytes = 512ul << 10;
+        private PackedTransform[] m_instances = Array.Empty<PackedTransform>();
+        private RHI_Buffer? m_buffer;
+        private readonly List<(ulong offset, ulong size)> m_pieces = new();
+        public int PieceCount => m_pieces.Count;
+
+        public void Prepare(PackedTransform[] instances, RHI_Buffer buffer, List<RHI_BufferCopy> regions)
+        {
+            m_instances = instances;
+            m_buffer    = buffer;
+            m_pieces.Clear();
+            foreach (RHI_BufferCopy region in regions)
+                for (ulong offset = 0; offset < region.Size; offset += PieceBytes)
+                    m_pieces.Add((region.SourceOffset + offset, System.Math.Min(PieceBytes, region.Size - offset)));
+        }
+
+        public override void Execute(int index)
+        {
+            (ulong offset, ulong size) = m_pieces[index];
+            ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(m_instances.AsSpan()).Slice((int)offset, (int)size);
+            m_buffer!.UploadSubRegion(bytes, offset);
+        }
+    }
+    private static readonly UploadJob s_upload_job = new();
 
     private static int AppendSlots(ReadOnlySpan<uint> slots)
     {
@@ -433,6 +511,70 @@ public static partial class Renderer
     }
 
     private static int AppendSlot(uint slot) => AppendSlots(new ReadOnlySpan<uint>(in slot));
+
+    // a culled list's slots: the copy into the frame's list waits for UploadFrameSlots, which runs them in parallel
+    private static int AppendSlotsDeferred(uint[] source, int start, int length)
+    {
+        int needed = s_frame_slot_count + length;
+        if (needed > s_frame_slots.Length)
+            Array.Resize(ref s_frame_slots, (int)System.Numerics.BitOperations.RoundUpToPowerOf2((uint)needed));
+        int first = s_frame_slot_count;
+        s_slots_job.Add(source, start, first, length);
+        s_frame_slot_count = needed;
+        return first;
+    }
+
+    // the deferred slot copies, then the whole list into the frame's host buffer, both in pieces over the workers
+    private sealed class SlotsJob : ParallelJob
+    {
+        private const int PieceSlots = 128 << 10;
+        private readonly List<(uint[] source, int start, int destination, int length)> m_copies = new();
+        private readonly List<(uint[] source, int start, int destination, int length)> m_pieces = new();
+        private RHI_Buffer? m_buffer;
+        private bool m_upload;
+
+        public void Add(uint[] source, int start, int destination, int length) => m_copies.Add((source, start, destination, length));
+
+        public void Run(RHI_Buffer buffer, int count)
+        {
+            m_pieces.Clear();
+            foreach ((uint[] source, int start, int destination, int length) in m_copies)
+                for (int offset = 0; offset < length; offset += PieceSlots)
+                    m_pieces.Add((source, start + offset, destination + offset, System.Math.Min(PieceSlots, length - offset)));
+            m_copies.Clear();
+            m_upload = false;
+            Dispatch(m_pieces.Count, count);
+            m_pieces.Clear();
+            for (int offset = 0; offset < count; offset += PieceSlots)
+                m_pieces.Add((s_frame_slots, offset, offset, System.Math.Min(PieceSlots, count - offset)));
+            m_buffer = buffer;
+            m_upload = true;
+            Dispatch(m_pieces.Count, count);
+            m_pieces.Clear();
+            m_buffer = null;
+        }
+
+        public void Clear() => m_copies.Clear();
+
+        private void Dispatch(int pieces, int count)
+        {
+            if (count >= 4 * PieceSlots)
+                WorkerPool.ParallelLoop(this, pieces);
+            else
+                for (int i = 0; i < pieces; i++)
+                    Execute(i);
+        }
+
+        public override void Execute(int index)
+        {
+            (uint[] source, int start, int destination, int length) = m_pieces[index];
+            if (m_upload)
+                m_buffer!.UploadSubRegion(MemoryMarshal.AsBytes(s_frame_slots.AsSpan(start, length)), (ulong)destination * sizeof(uint));
+            else
+                Array.Copy(source, start, s_frame_slots, destination, length);
+        }
+    }
+    private static readonly SlotsJob s_slots_job = new();
 
     // a list of exact draws grouped by mesh and material, in the order of their first draw
     private static readonly Dictionary<(uint, uint, uint, uint, Material?), int> s_group_index = new();
@@ -497,7 +639,7 @@ public static partial class Renderer
             ReadOnlySpan<uint> slots = request.GetSlots(b);
             if (slots.Length == 0)
                 continue;
-            int first = AppendSlots(slots);
+            int first = AppendSlotsDeferred(request.Slots, request.BatchStart[b], slots.Length);
             var draw = new InstancedDraw
             {
                 mode = instancing_mode_packed, draw_index = s_batch_draw_index[b], material_index = material_index,
@@ -517,6 +659,7 @@ public static partial class Renderer
     {
         long start = System.Diagnostics.Stopwatch.GetTimestamp();
         s_shadow_requests.Clear();
+        InstancingStats.ShadowSkippedSmall = 0;
         EntityStore store = Phalanx.World.World.Store;
         for (int i = 0; i < s_shadow_slices.Count; i++)
         {
@@ -531,21 +674,59 @@ public static partial class Renderer
             request.Mask          = uint.MaxValue; // the shadow maps draw every caster whatever its layers
             request.ShadowCasters = true;
             request.Callbacks     = false;
+            SetShadowCasterLimits(request, slice, directional);
             s_shadow_requests.Add(request);
         }
         if (s_shadow_requests.Count > 0 && store.RenderableChunkCount > 0)
         {
             store.CullInstances(s_shadow_requests);
+            store.FinishCulls(s_shadow_requests);
             foreach (InstanceCullRequest request in s_shadow_requests)
-                store.FinishCull(request);
+                InstancingStats.ShadowSkippedSmall += request.RowsSkippedSmall;
         }
         else
             foreach (InstanceCullRequest request in s_shadow_requests)
             {
                 request.Batches.Clear();
                 request.Total = 0;
+                request.RowsSkippedSmall = 0;
             }
         InstancingStats.ShadowCullMs = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+    }
+
+    /// <summary>Store casters smaller than this many texels of a shadow slice (the diameter of their aabb sphere) are
+    /// left out of it, 0 keeps them all (EntityStore.Culling.cs; --shadow-min-texels).</summary>
+    public static float ShadowCasterMinTexels { get; set; } = 1.0f;
+
+    // a slice's caster volume beyond its frustum: a cascade keeps its far plane (the side away from the light) and
+    // drops the near one, a point or spot face is limited to the light's range; and the sub-texel threshold
+    private static void SetShadowCasterLimits(InstanceCullRequest request, ShadowSlice slice, bool directional)
+    {
+        Light light = slice.light;
+        float texels = ShadowCasterMinTexels;
+        uint resolution = slice.resolution;
+        if (directional)
+        {
+            Vector3 forward = light.GetEntity()!.GetForward();
+            for (int p = 0; p < 2; p++)
+                if (Vector3.Dot(request.Planes[p].Normal, forward) < 0.0f) // inside is toward the light: the far side
+                    request.PlaneMask |= 1 << p;
+            float extent = slice.slice_index == 0 ? DirectionalCascades.cascade_near_extent : DirectionalCascades.cascade_far_extent;
+            if (texels > 0.0f && resolution > 0)
+                request.MinDiameter = texels * 2.0f * extent / resolution;
+            return;
+        }
+        Vector3 position = light.GetEntity()!.GetPosition();
+        request.HasSphere    = true;
+        request.SphereCenter = position;
+        request.SphereRadius = light.GetRange();
+        if (texels > 0.0f && resolution > 0)
+        {
+            // a face spans 2 tan(fov / 2) at distance 1 over its resolution
+            float fov = light.GetLightType() == LightType.Spot ? light.GetAngle() * 2.0f : MathF.PI / 2.0f + 0.02f;
+            request.SizeEye = position;
+            request.MinDiameterPerDistance = texels * 2.0f * MathF.Tan(fov * 0.5f) / resolution;
+        }
     }
 
     // every view's and slice's instanced draws and the frame's slot list (UpdateDrawCalls, after the DrawData entries)
@@ -554,6 +735,7 @@ public static partial class Renderer
         long start = System.Diagnostics.Stopwatch.GetTimestamp();
         s_frame_slot_count = 0;
         InstancingStats.Batches = InstancingStats.VisibleInstances = InstancingStats.ShadowInstances = 0;
+        InstancingStats.ShadowSlices.Clear();
         foreach (SceneView view in s_prepared_views)
         {
             ViewState s = view.State;
@@ -583,7 +765,12 @@ public static partial class Renderer
             AddExactDraws(s_draw_calls, slice.draws, shadow: true, InSlice);
             AddExactDraws(s_draw_calls_alpha, slice.draws_alpha, shadow: true, InSlice);
             if (i < s_shadow_requests.Count)
+            {
+                int before = InstancingStats.ShadowInstances;
                 AddPackedDraws(s_shadow_requests[i], slice.draws, slice.draws_alpha, shadow: true);
+                InstancingStats.ShadowSlices.Add(new ShadowSliceStats(light.GetLightType(), slice.slice_index,
+                    InstancingStats.ShadowInstances - before, s_shadow_requests[i].RowsSkippedSmall));
+            }
         }
         UploadFrameSlots();
         int draws = 0;
@@ -603,7 +790,9 @@ public static partial class Renderer
             CreateSlotBuffers(System.Numerics.BitOperations.RoundUpToPowerOf2((uint)s_frame_slot_count));
         }
         if (s_frame_slot_count > 0)
-            s_slot_buffers[s_frame_cb_ring_slot]!.UploadSubRegion(MemoryMarshal.AsBytes(s_frame_slots.AsSpan(0, s_frame_slot_count)), 0);
+            s_slots_job.Run(s_slot_buffers[s_frame_cb_ring_slot]!, s_frame_slot_count);
+        else
+            s_slots_job.Clear();
     }
 
     // the cpu side of the shaders' bounds checks: every instanced draw of the frame's views and shadow slices reads
@@ -644,6 +833,23 @@ public static partial class Renderer
         return null;
     }
 
+    // tests: the device local instances the last frame's shaders read (its own or, previous, the frame before's),
+    // the first count slots, copied back after the gpu went idle
+    internal static PackedTransform[] ReadGpuInstances(bool previous, int count)
+    {
+        var result = new PackedTransform[count];
+        RHI_Buffer? source = s_instance_buffers_gpu[GpuInstanceIndex(previous)];
+        if (source == null || count == 0)
+            return result;
+        RHI_Device.QueueWaitAll();
+        using var readback = CreateStorage<PackedInstance>((uint)count, "instances_readback");
+        RHI_CommandList cmd = RHI_CommandList.ImmediateExecutionBegin(RHI_Queue_Type.Graphics);
+        cmd.CopyBuffer(source, readback, new[] { new RHI_BufferCopy(0, 0, (ulong)count * (ulong)System.Runtime.CompilerServices.Unsafe.SizeOf<PackedInstance>()) });
+        RHI_CommandList.ImmediateExecutionEnd(cmd);
+        readback.ReadSubRegion(MemoryMarshal.AsBytes(result.AsSpan()), 0);
+        return result;
+    }
+
     // the device local buffer of this frame (and the previous frame's) out of the two
     private static int GpuInstanceIndex(bool previous) => (int)((s_frame_cb_ring_slot + (previous ? 1u : 0u)) % 2u);
 
@@ -660,31 +866,22 @@ public static partial class Renderer
         cmd.BeginMarker("instance_upload");
         cmd.InsertBarrierVertexReadUpload(before_copies: true);
 
-        uint version = s_instances_gpu_reset ? 0u : s_instance_gpu_version[GpuInstanceIndex(false)];
-        uint[] stamps = store.SlotBlockStamp;
-        s_copy_regions.Clear();
-        for (int b = 0; b < store.SlotBlockCount && (ulong)b * (ulong)EntityStore.SlotBlockSize < slot_count; b++)
-        {
-            if (version != 0 && stamps[b] <= version)
-                continue;
-            ulong first = (ulong)b * (ulong)EntityStore.SlotBlockSize;
-            ulong bytes = System.Math.Min((ulong)EntityStore.SlotBlockSize, slot_count - first) * 32ul;
-            if (s_copy_regions.Count > 0 && s_copy_regions[^1] is var last && last.SourceOffset + last.Size == first * 32ul)
-                s_copy_regions[^1] = last with { Size = last.Size + bytes };
-            else
-                s_copy_regions.Add(new RHI_BufferCopy(first * 32ul, first * 32ul, bytes));
-        }
-        cmd.CopyBuffer(staging, current, CollectionsMarshal.AsSpan(s_copy_regions));
-        if (!s_instances_gpu_reset)
+        cmd.CopyBuffer(staging, current, CollectionsMarshal.AsSpan(s_upload_regions));
+        if (s_instances_gpu_reset)
+            cmd.CopyBuffer(staging, previous, CollectionsMarshal.AsSpan(s_upload_regions)); // every group after a growth
+        else
         {
             s_copy_regions.Clear();
             foreach (uint slot in s_fresh_pending)
                 if (slot < slot_count)
                     s_copy_regions.Add(new RHI_BufferCopy(slot * 32ul, slot * 32ul, 32ul));
+            cmd.CopyBuffer(staging, previous, CollectionsMarshal.AsSpan(s_copy_regions));
         }
-        cmd.CopyBuffer(staging, previous, CollectionsMarshal.AsSpan(s_copy_regions));
         if (s_frame_slot_count > 0)
-            cmd.CopyBuffer(s_slot_buffers[s_frame_cb_ring_slot]!, s_slot_buffer_gpu!, new[] { new RHI_BufferCopy(0, 0, (ulong)s_frame_slot_count * sizeof(uint)) });
+        {
+            s_slot_copy[0] = new RHI_BufferCopy(0, 0, (ulong)s_frame_slot_count * sizeof(uint));
+            cmd.CopyBuffer(s_slot_buffers[s_frame_cb_ring_slot]!, s_slot_buffer_gpu!, s_slot_copy);
+        }
 
         cmd.InsertBarrierVertexReadUpload(before_copies: false);
         cmd.EndMarker();
@@ -700,8 +897,13 @@ public static partial class Renderer
     {
         cmd.SetBuffer(binding_instance_slots, s_slot_buffer_gpu!);
         cmd.SetBuffer(binding_instances_current, s_instance_buffers_gpu[GpuInstanceIndex(false)]!);
-        cmd.SetBuffer(binding_instances_previous, s_instance_buffers_gpu[GpuInstanceIndex(true)]!);
+        cmd.SetBuffer(binding_instances_previous, s_instance_buffers_gpu[GpuInstanceIndex(previous: InstanceVelocity)]!);
     }
+
+    /// <summary>Spartan has no switch: off binds this frame's instance buffer as the previous one too, so the store
+    /// entities get no motion of their own in the velocity buffer (the camera's still counts) and no draw reads the
+    /// buffer the previous frame wrote (--instance-velocity off, a diagnostic). On by default.</summary>
+    public static bool InstanceVelocity { get; set; } = true;
 
     // the prepass and g-buffer draw loop
     private static void DrawInstanced(RHI_CommandList cmd, List<InstancedDraw> draws)
@@ -718,7 +920,26 @@ public static partial class Renderer
             var pass = new PassBufferData { draw_index = draw.draw_index, material_index = draw.material_index };
             pass.Set(16, draw.mode); // pass_instancing::mode
             cmd.PushConstants(pass);
-            cmd.DrawIndexed(draw.index_count, draw.index_offset, (int)draw.vertex_offset, draw.first_instance, draw.instance_count);
+            DrawIndexedInstances(cmd, in draw);
         }
+    }
+
+    /// <summary>The most instances one draw call carries, 0 for no limit (--max-instances-per-draw). A larger
+    /// instanced draw is issued as consecutive draws over its slot range, drawing the same instances: smaller units
+    /// of gpu work, the same result (spartan draws a Render's instances in one call).</summary>
+    public static uint MaxInstancesPerDraw { get; set; }
+
+    // one instanced draw, in pieces of MaxInstancesPerDraw instances when it is set (the prepass, the g-buffer and
+    // the shadow maps)
+    internal static void DrawIndexedInstances(RHI_CommandList cmd, in InstancedDraw draw)
+    {
+        uint limit = MaxInstancesPerDraw;
+        if (limit == 0 || draw.instance_count <= limit)
+        {
+            cmd.DrawIndexed(draw.index_count, draw.index_offset, (int)draw.vertex_offset, draw.first_instance, draw.instance_count);
+            return;
+        }
+        for (uint done = 0; done < draw.instance_count; done += limit)
+            cmd.DrawIndexed(draw.index_count, draw.index_offset, (int)draw.vertex_offset, draw.first_instance + done, System.Math.Min(limit, draw.instance_count - done));
     }
 }

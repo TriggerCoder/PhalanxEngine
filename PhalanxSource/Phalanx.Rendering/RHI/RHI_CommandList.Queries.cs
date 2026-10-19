@@ -116,6 +116,7 @@ internal sealed unsafe partial class RHI_CommandList
     // before vkBeginCommandBuffer: hand the previous recording's timestamps to its sample
     private void QueriesBeforeBegin()
     {
+        ReadbackTimedMarkers();
         ReadbackTimestampsForProfiler();
         m_timestamp_sample = null;
     }

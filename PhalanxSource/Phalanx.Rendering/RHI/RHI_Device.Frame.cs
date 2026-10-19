@@ -20,6 +20,7 @@ internal static unsafe partial class RHI_Device
     private readonly record struct DeletionEntry(RHI_Resource_Type Type, ulong Resource, RHI_Allocation? Allocation, RHI_PendingWork Completion);
 
     private static readonly RHI_Work[] s_frame_work = new RHI_Work[FramesInFlight];
+    private static readonly RHI_CommandList?[] s_frame_graphics = new RHI_CommandList?[FramesInFlight]; // gpu pass timings
     private static ulong s_frame_index;
     private static readonly RHI_CommandList?[] s_frame_lists = new RHI_CommandList?[(int)RHI_Frame_List.Max];
     private static RHI_Frame_List s_bound_list = RHI_Frame_List.Graphics;
@@ -32,10 +33,14 @@ internal static unsafe partial class RHI_Device
     public static ulong FrameIndex => s_frame_index;
     // cpu time BeginFrame spent waiting for the gpu (frames-in-flight throttle)
     public static double FrameCpuWaitMs { get; private set; }
+    // spartan has no switch: on, EndFrame waits for the frame's gpu work, so no two frames ever overlap on the gpu or
+    // the cpu (a diagnostic, it takes cross frame races out of a run)
+    public static bool SerializeFrames { get; set; }
 
     private static void FrameReset()
     {
         Array.Clear(s_frame_work);
+        Array.Clear(s_frame_graphics);
         Array.Clear(s_frame_lists);
         s_frame_index = 0;
         s_bound_list  = RHI_Frame_List.Graphics;
@@ -82,6 +87,7 @@ internal static unsafe partial class RHI_Device
         long start = Stopwatch.GetTimestamp();
         s_frame_work[s_frame_index % FramesInFlight].Wait();
         FrameCpuWaitMs = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        s_frame_graphics[s_frame_index % FramesInFlight]?.ReadbackTimedMarkers(); // that frame completed
 
         DescriptorSetTick(s_frame_index); // spartan RHI_Device::Tick: descriptor frame + eviction, then the deletion queue
         DeletionQueueParse();
@@ -92,6 +98,7 @@ internal static unsafe partial class RHI_Device
         s_frame_lists[(int)RHI_Frame_List.Graphics] = graphics;
         RHI_Breadcrumbs.BeginFrame(graphics, s_frame_index);
         SetCheckpoint(graphics, "frame", end: false);
+        graphics.BeginFrameTiming();
         if (acquire_compute)
         {
             RHI_Queue compute = GetQueue(RHI_Queue_Type.Compute);
@@ -146,6 +153,7 @@ internal static unsafe partial class RHI_Device
             semaphore_wait   = s_swapchain!.GetImageAcquiredSemaphore();
             semaphore_signal = s_swapchain.GetRenderingCompleteSemaphore();
         }
+        cmd.EndFrameTiming();
         SetCheckpoint(cmd, "frame", end: true);
         RHI_Breadcrumbs.EndFrame();
         cmd.End();
@@ -156,8 +164,11 @@ internal static unsafe partial class RHI_Device
             s_swapchain.Present();
         }
         s_frame_work[s_frame_index % FramesInFlight] = work;
+        s_frame_graphics[s_frame_index % FramesInFlight] = cmd;
         s_frame_index++;
         s_bound_list = RHI_Frame_List.Graphics;
+        if (SerializeFrames)
+            work.Wait(); // the same timeline wait as BeginFrame's, a loss surfaces the same way
         return work;
     }
 

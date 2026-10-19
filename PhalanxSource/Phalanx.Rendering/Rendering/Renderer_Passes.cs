@@ -267,7 +267,7 @@ public static partial class Renderer
                         pass.Set(2, slice.slice_index);    // pass_depth_light::array_index
                         pass.Set(16, draw.mode);           // pass_instancing::mode
                         cmd.PushConstants(pass);
-                        cmd.DrawIndexed(draw.index_count, draw.index_offset, (int)draw.vertex_offset, draw.first_instance, draw.instance_count);
+                        DrawIndexedInstances(cmd, in draw);
                     }
                 }
             }

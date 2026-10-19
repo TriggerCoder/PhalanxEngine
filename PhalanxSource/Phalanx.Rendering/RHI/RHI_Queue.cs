@@ -70,7 +70,7 @@ internal sealed unsafe class RHI_Queue : IDisposable
     {
         if (!RHI_Device.IsDeviceLost) // a lost device never goes idle, the lists count as complete
             lock (m_mutex)
-                Check(RHI_Context.Vk.QueueWaitIdle(NativeQueue), "vkQueueWaitIdle");
+                Check(RHI_Device.SimulateDeviceLostOnWait ? Result.ErrorDeviceLost : RHI_Context.Vk.QueueWaitIdle(NativeQueue), "vkQueueWaitIdle");
         foreach (RHI_CommandList cmd_list in m_cmd_lists)
             cmd_list.WaitForExecution();
     }

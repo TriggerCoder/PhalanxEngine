@@ -16,6 +16,9 @@ namespace Phalanx.Editor;
 // shadows stay; only-cube: only they and the cube show). With --predraw about 200 of the cubes get the demo's OnPreDraw
 // behaviour (quietly, the demo cube logs): drawn blue, blinking or with the destroyed material, each through its own
 // override draw.
+// With --entities-moving f only that fraction of the cubes moves (spread over the field, spawned first so their
+// instance slots are contiguous); the others are static store entities without behaviours, never dirty, so neither
+// the transforms nor the instance upload touch them after their first frame.
 internal static class EntitiesDemo
 {
     private struct Spin : IComponentData
@@ -87,7 +90,7 @@ internal static class EntitiesDemo
 
     /// <summary>Spawns the cubes and registers their behaviours; <paramref name="layer_two"/> puts every other one on
     /// layer 2, <paramref name="pre_draw"/> (a factory) gives about 200 of them a class behaviour.</summary>
-    public static void Populate(int count, bool layer_two, Func<Behaviour>? pre_draw)
+    public static void Populate(int count, bool layer_two, Func<Behaviour>? pre_draw, float moving = 1.0f)
     {
         var clock = Stopwatch.StartNew();
         EntityStore store = World.World.Store;
@@ -107,38 +110,57 @@ internal static class EntitiesDemo
         }
 
         EntityArchetype archetype = EntityArchetype.Empty.Renderable().With<Spin>().With<Orbit>().With<Bob>();
+        EntityArchetype archetype_static = EntityArchetype.Empty.Renderable();
         float field = FieldSize(count);
         int side = (int)MathF.Ceiling(MathF.Sqrt(count));
         float spacing = field / side;
-        var random = new Random(1234);
         int stride = pre_draw != null ? System.Math.Max(1, count / 200) : 0;
-        var ids = new EntityId[1];
-        for (int i = 0; i < count; i++)
+        // which cubes move: an even spread (cube i moves when floor(i * f) steps), the moving ones spawn first
+        bool Moves(int i) => moving >= 1.0f || (moving > 0.0f && (long)((i + 1) * (double)moving) != (long)(i * (double)moving));
+        int moving_count = 0;
+        for (int pass = 0; pass < 2; pass++)
         {
-            float x = (i % side + 0.5f) * spacing - field * 0.5f + (float)(random.NextDouble() - 0.5) * spacing;
-            float z = (i / side + 0.5f) * spacing - 10.0f + (float)(random.NextDouble() - 0.5) * spacing;
-            var spawn = new EntitySpawn(new Vector3(x, Ground + 0.25f, z), batches[i & 3])
+            var random = new Random(1234); // the same field in both passes
+            for (int i = 0; i < count; i++)
             {
-                Rotation = Quaternion.CreateFromYawPitchRoll((float)random.NextDouble() * 6.28f, (float)random.NextDouble() * 6.28f, 0.0f),
-                Scale    = new Vector3(CubeSize),
-                Layers   = layer_two && (i & 1) == 1 ? 1u << 1 : 1u
-            };
-            EntityId id = store.Spawn(archetype, spawn);
-            var axis = Vector3.Normalize(new Vector3((float)random.NextDouble() - 0.5f, (float)random.NextDouble() + 0.2f, (float)random.NextDouble() - 0.5f));
-            store.Set(id, new Spin { Axis = axis, Speed = 0.5f + 2.5f * (float)random.NextDouble() });
-            store.Set(id, new Orbit { Center = new Vector3(x, 0, z), Radius = 0.2f + 0.8f * (float)random.NextDouble() * spacing, Speed = 0.3f + 1.2f * (float)random.NextDouble(), Phase = (float)random.NextDouble() * 6.28f });
-            store.Set(id, new Bob { Height = 0.6f * (float)random.NextDouble(), Speed = 1.0f + 2.0f * (float)random.NextDouble(), Phase = (float)random.NextDouble() * 6.28f });
-            if (stride > 0 && i % stride == 0)
-            {
-                Entity facade = World.World.GetEntity(id)!; // a class Entity for this one store entity, made on demand
-                facade.SetScale(new Vector3(2.5f * CubeSize));
-                facade.AddBehaviour(pre_draw!());
+                float x = (i % side + 0.5f) * spacing - field * 0.5f + (float)(random.NextDouble() - 0.5) * spacing;
+                float z = (i / side + 0.5f) * spacing - 10.0f + (float)(random.NextDouble() - 0.5) * spacing;
+                var rotation = Quaternion.CreateFromYawPitchRoll((float)random.NextDouble() * 6.28f, (float)random.NextDouble() * 6.28f, 0.0f);
+                var axis = Vector3.Normalize(new Vector3((float)random.NextDouble() - 0.5f, (float)random.NextDouble() + 0.2f, (float)random.NextDouble() - 0.5f));
+                float spin_speed = 0.5f + 2.5f * (float)random.NextDouble();
+                float orbit_radius = 0.2f + 0.8f * (float)random.NextDouble() * spacing, orbit_speed = 0.3f + 1.2f * (float)random.NextDouble(), orbit_phase = (float)random.NextDouble() * 6.28f;
+                float bob_height = 0.6f * (float)random.NextDouble(), bob_speed = 1.0f + 2.0f * (float)random.NextDouble(), bob_phase = (float)random.NextDouble() * 6.28f;
+                bool moves = Moves(i);
+                if (moves != (pass == 0))
+                    continue;
+                var spawn = new EntitySpawn(new Vector3(x, Ground + 0.25f, z), batches[i & 3])
+                {
+                    Rotation = rotation,
+                    Scale    = new Vector3(CubeSize),
+                    Layers   = layer_two && (i & 1) == 1 ? 1u << 1 : 1u
+                };
+                if (!moves)
+                {
+                    store.Spawn(archetype_static, spawn);
+                    continue;
+                }
+                moving_count++;
+                EntityId id = store.Spawn(archetype, spawn);
+                store.Set(id, new Spin { Axis = axis, Speed = spin_speed });
+                store.Set(id, new Orbit { Center = new Vector3(x, 0, z), Radius = orbit_radius, Speed = orbit_speed, Phase = orbit_phase });
+                store.Set(id, new Bob { Height = bob_height, Speed = bob_speed, Phase = bob_phase });
+                if (stride > 0 && i % stride == 0)
+                {
+                    Entity facade = World.World.GetEntity(id)!; // a class Entity for this one store entity, made on demand
+                    facade.SetScale(new Vector3(2.5f * CubeSize));
+                    facade.AddBehaviour(pre_draw!());
+                }
             }
         }
         World.World.RegisterBatched(new SpinBehaviour());
         World.World.RegisterBatched(new OrbitBehaviour());
         World.World.RegisterBatched(new BobBehaviour());
-        Console.WriteLine(FormattableString.Invariant($"entities: spawned {count} cubes on a {field:0} m field in {clock.Elapsed.TotalMilliseconds:0} ms ({(stride > 0 ? (count + stride - 1) / stride : 0)} with an OnPreDraw behaviour)"));
+        Console.WriteLine(FormattableString.Invariant($"entities: spawned {count} cubes ({moving_count} moving) on a {field:0} m field in {clock.Elapsed.TotalMilliseconds:0} ms ({(stride > 0 ? (count + stride - 1) / stride : 0)} with an OnPreDraw behaviour)"));
     }
 
     /// <summary>Accumulates the per frame numbers and prints their averages once a second.</summary>
@@ -148,10 +170,40 @@ internal static class EntitiesDemo
         private readonly int m_count;
         private int m_frames;
         private double m_frame_ms, m_frame_max, m_tick, m_fixed, m_update, m_late, m_class, m_playback, m_transforms;
-        private double m_cull, m_shadow_cull, m_lists, m_upload;
-        private long m_uploaded;
+        private double m_cull, m_shadow_cull, m_lists, m_upload, m_wait;
+        private long m_uploaded, m_regions;
 
         public Report(int count) { m_count = count; }
+
+        // the last frame's shadow casters per light, its slices in order: "[sun 20480+0 (0+2000000 sub-texel), point
+        // 140213+...]", what each cascade or face draws and what the sub-texel threshold left out of it. The shadow
+        // total is the sum of the drawn numbers, an entity counts once per slice it is drawn in
+        private static string FormatShadowSlices()
+        {
+            var text = new System.Text.StringBuilder("[");
+            IReadOnlyList<Renderer.ShadowSliceStats> slices = Renderer.InstancingStats.ShadowSlices;
+            for (int i = 0; i < slices.Count;)
+            {
+                int end = i + 1;
+                while (end < slices.Count && slices[end].Slice != 0)
+                    end++; // the slices of one light: its index counts up from 0
+                string light = slices[i].Light switch { LightType.Directional => "sun", LightType.Point => "point", _ => "spot" };
+                var drawn = new System.Text.StringBuilder();
+                var skipped = new System.Text.StringBuilder();
+                bool any_skipped = false;
+                for (int s = i; s < end; s++)
+                {
+                    drawn.Append(s > i ? "+" : "").Append(slices[s].Drawn.ToString(CultureInfo.InvariantCulture));
+                    skipped.Append(s > i ? "+" : "").Append(slices[s].SkippedSubTexel.ToString(CultureInfo.InvariantCulture));
+                    any_skipped |= slices[s].SkippedSubTexel > 0;
+                }
+                text.Append(i > 0 ? ", " : "").Append(light).Append(' ').Append(drawn);
+                if (any_skipped)
+                    text.Append(" (").Append(skipped).Append(" sub-texel)");
+                i = end;
+            }
+            return text.Append(']').ToString();
+        }
 
         public void AddFrame(double frame_ms)
         {
@@ -170,6 +222,8 @@ internal static class EntitiesDemo
             m_lists += Renderer.InstancingStats.ListsMs;
             m_upload += Renderer.InstancingStats.UploadMs;
             m_uploaded += Renderer.InstancingStats.UploadedBytes;
+            m_regions += Renderer.InstancingStats.UploadRegions;
+            m_wait += RenderDevice.FrameCpuWaitMs;
             if (m_second.Elapsed.TotalSeconds < 1.0)
                 return;
 
@@ -178,10 +232,21 @@ internal static class EntitiesDemo
             Console.WriteLine(
                 FormattableString.Invariant($"entities {m_count}: {m_frames / seconds:0.0} fps, frame {m_frame_ms / n:0.00} ms (max {m_frame_max:0.00}) | ") +
                 FormattableString.Invariant($"world tick {m_tick / n:0.00} ms (fixed {m_fixed / n:0.00}, update {m_update / n:0.00}, late {m_late / n:0.00}, class {m_class / n:0.00}, playback {m_playback / n:0.00}, transforms {m_transforms / n:0.00}) | ") +
-                FormattableString.Invariant($"render cull {m_cull / n:0.00} ms, shadow cull {m_shadow_cull / n:0.00} ms, lists {m_lists / n:0.00} ms, upload {m_upload / n:0.00} ms ({m_uploaded / n / 1048576.0:0.0} MB) | ") +
-                FormattableString.Invariant($"visible {Renderer.InstancingStats.VisibleInstances}, shadow {Renderer.InstancingStats.ShadowInstances}, batches {Renderer.InstancingStats.Batches}, draws {Renderer.InstancingStats.Draws} | ") +
+                FormattableString.Invariant($"render cull {m_cull / n:0.00} ms, shadow cull {m_shadow_cull / n:0.00} ms, lists {m_lists / n:0.00} ms, upload {m_upload / n:0.00} ms ({m_uploaded / n / 1048576.0:0.0} MB in {m_regions / n:0} regions), gpu wait {m_wait / n:0.00} ms | ") +
+                FormattableString.Invariant($"visible {Renderer.InstancingStats.VisibleInstances}, shadow {Renderer.InstancingStats.ShadowInstances} {FormatShadowSlices()}, batches {Renderer.InstancingStats.Batches}, draws {Renderer.InstancingStats.Draws} | ") +
                 FormattableString.Invariant($"memory {GC.GetTotalMemory(false) / 1048576.0:0} MB managed, {Environment.WorkingSet / 1048576.0:0} MB working set"));
+            (int gpu_frames, double gpu_ms, IReadOnlyList<(string Pass, double Ms)> passes) = RenderDevice.TakeGpuTimings();
+            if (gpu_frames > 0)
+            {
+                var line = new System.Text.StringBuilder(FormattableString.Invariant($"gpu {gpu_ms:0.00} ms over {gpu_frames} frames:"));
+                foreach ((string pass, double ms) in passes)
+                    if (ms >= 0.005)
+                        line.Append(FormattableString.Invariant($" {pass} {ms:0.00}"));
+                Console.WriteLine(line.ToString());
+            }
             m_frames = 0;
+            m_wait = 0;
+            m_regions = 0;
             m_frame_ms = m_frame_max = m_tick = m_fixed = m_update = m_late = m_class = m_playback = m_transforms = 0;
             m_cull = m_shadow_cull = m_lists = m_upload = 0;
             m_uploaded = 0;

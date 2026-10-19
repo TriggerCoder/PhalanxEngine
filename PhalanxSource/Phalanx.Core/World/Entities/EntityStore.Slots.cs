@@ -6,12 +6,14 @@ namespace Phalanx.World;
 
 public sealed partial class EntityStore
 {
-    public const int SlotBlockSize = 16384;
+    public const int SlotBlockSize = 16384; // the instance buffers grow by these
+    internal const int SlotGroupShift = 8;
+    internal const int SlotGroupSize  = 1 << SlotGroupShift; // the granularity of the dirty stamps and the uploads (8 KB)
     private const int SlotQuarantineFrames = 4; // renderer_draw_data_buffer_count
 
     internal PackedTransform[] Instances = Array.Empty<PackedTransform>();
     internal uint SlotCount;          // the high water mark: slots below it may be live
-    internal uint[] SlotBlockStamp = Array.Empty<uint>(); // per block of SlotBlockSize slots, the sync that last wrote one
+    internal uint[] SlotGroupStamp = Array.Empty<uint>(); // per group of SlotGroupSize slots, the sync that last wrote one
     private readonly Stack<uint> m_free_slots = new();
     private readonly Queue<(uint slot, long frame)> m_quarantine = new();
     private readonly List<uint> m_fresh_slots = new(); // allocated since the renderer last took them
@@ -33,7 +35,7 @@ public sealed partial class EntityStore
             {
                 int capacity = System.Math.Max(SlotBlockSize, Instances.Length * 2);
                 Array.Resize(ref Instances, capacity);
-                Array.Resize(ref SlotBlockStamp, (capacity + SlotBlockSize - 1) / SlotBlockSize);
+                Array.Resize(ref SlotGroupStamp, (capacity + SlotGroupSize - 1) / SlotGroupSize);
             }
         }
         if (HasRenderConsumer)
@@ -66,7 +68,7 @@ public sealed partial class EntityStore
         m_fresh_slots.Clear();
     }
 
-    internal int SlotBlockCount => (int)((SlotCount + SlotBlockSize - 1) / SlotBlockSize);
+    internal int SlotGroupCount => (int)((SlotCount + SlotGroupSize - 1) / SlotGroupSize);
 
     private void ClearSlots()
     {

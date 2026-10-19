@@ -164,6 +164,7 @@ public static partial class Renderer
         AddViewDraws(s, s_draw_calls);
         AddViewDraws(s, s_draw_calls_alpha);
         AddPackedOverrideDraws(s);
+        RememberOverrideTransforms(s);
     }
 
     private static void AddViewDraws(ViewState s, List<DrawCall> draws)

@@ -100,11 +100,14 @@ internal sealed class EntityChunk
     public uint[]? Slot;      // the instance slot (EntityStore.Instances)
 
     // chunk wide state, for the passes to skip whole chunks
-    public bool Dirty = true;  // a local transform changed since the last transform sync
+    public bool Dirty = true;  // every row's local transform may have changed since the last transform sync
+    public int DirtyStart = int.MaxValue, DirtyEnd; // otherwise the rows [DirtyStart, DirtyEnd) did (one row's set)
+    public ulong[] DirtyBits; // and of those exactly the rows set (one bit per row): only they restamp their slot group
     public bool LayersDirty;
     public uint LayersOr;      // every row's CullLayers or'd (conservative until the next transform sync)
     public Vector3 BoundsMin, BoundsMax; // every row's world aabb merged (conservative until the next sync)
     public bool BoundsValid;
+    public float MaxRadiusSquared;       // the largest row's |aabb extent|^2 (the shadow culling's size threshold)
     public int EnabledCount;
     public int CasterCount;
     public int CallbackCount;
@@ -121,6 +124,7 @@ internal sealed class EntityChunk
         Parent    = new uint[capacity];
         Changed   = new uint[capacity];
         Flags     = new RowFlags[capacity];
+        DirtyBits = new ulong[(capacity + 63) >> 6];
         foreach (int id in archetype.ComponentIds)
             Components[id] = ComponentRegistry.Get(id).Create(capacity);
         if (archetype.IsRenderable)
@@ -143,6 +147,7 @@ internal sealed class EntityChunk
         Array.Resize(ref Parent, capacity);
         Array.Resize(ref Changed, capacity);
         Array.Resize(ref Flags, capacity);
+        Array.Resize(ref DirtyBits, (capacity + 63) >> 6);
         foreach (int id in Archetype.ComponentIds)
             Components[id] = ComponentRegistry.Get(id).Resize(Components[id]!, Count, capacity);
         if (Bounds != null)
@@ -219,6 +224,38 @@ internal sealed class EntityChunk
             LayersOr |= CullLayers[row];
         if (sign < 0)
             LayersDirty = true;
+    }
+
+    /// <summary>Whether the next transform sync has rows of this chunk to recompute.</summary>
+    public bool HasDirtyRows => Dirty || DirtyEnd > DirtyStart;
+
+    /// <summary>One row's local transform changed: only it is recomputed (a span of the column marks them all).</summary>
+    public void MarkRowDirty(int row)
+    {
+        if (row < DirtyStart) DirtyStart = row;
+        if (row + 1 > DirtyEnd) DirtyEnd = row + 1;
+        DirtyBits[row >> 6] |= 1ul << (row & 63);
+    }
+
+    public bool IsRowDirty(int row) => (DirtyBits[row >> 6] & (1ul << (row & 63))) != 0;
+
+    // the dirty bits of the 8 rows from row on, bit l row + l
+    public uint RowDirtyBits8(int row)
+    {
+        int word = row >> 6, bit = row & 63;
+        ulong value = DirtyBits[word] >> bit;
+        if (bit > 56 && word + 1 < DirtyBits.Length)
+            value |= DirtyBits[word + 1] << (64 - bit);
+        return (uint)value & 0xFFu;
+    }
+
+    public void ClearDirty()
+    {
+        if (DirtyEnd > DirtyStart)
+            Array.Clear(DirtyBits, DirtyStart >> 6, ((DirtyEnd - 1) >> 6) - (DirtyStart >> 6) + 1);
+        Dirty      = false;
+        DirtyStart = int.MaxValue;
+        DirtyEnd   = 0;
     }
 
     public Matrix4x4 GetWorld(int row)

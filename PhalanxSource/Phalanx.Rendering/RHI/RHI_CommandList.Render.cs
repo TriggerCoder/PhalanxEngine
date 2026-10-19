@@ -292,6 +292,7 @@ internal sealed unsafe partial class RHI_CommandList
     {
         RequireRecording();
         PreDraw();
+        CheckpointWork("draw", 0, 1, 0, instances: true);
         RHI_Context.Vk.CmdDraw(m_rhi_resource, vertex_count, 1, vertex_start_index, 0);
     }
 
@@ -299,6 +300,7 @@ internal sealed unsafe partial class RHI_CommandList
     {
         RequireRecording();
         PreDraw();
+        CheckpointWork("draw", instance_index, instance_count, 0, instances: true);
         RHI_Context.Vk.CmdDrawIndexed(m_rhi_resource, index_count, instance_count, index_offset, vertex_offset, instance_index);
     }
 

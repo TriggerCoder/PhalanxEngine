@@ -105,6 +105,7 @@ internal sealed unsafe partial class RHI_CommandList : IDisposable
             throw new InvalidOperationException($"{Name}: Begin while {m_state}");
         QueriesBeforeBegin();
         m_markers.Clear();
+        m_marker_work.Clear();
 
         Check(RHI_Context.Vk.ResetCommandBuffer(m_rhi_resource, 0), "vkResetCommandBuffer");
         m_pipeline = null; // bound state does not survive a reset

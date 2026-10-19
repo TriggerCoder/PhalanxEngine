@@ -217,7 +217,7 @@ public sealed partial class EntityStore
             chunk.Slot![row]       = AllocateSlot();
         }
         chunk.CountRow(row, +1);
-        chunk.Dirty = true;
+        chunk.MarkRowDirty(row);
         m_count++;
         return id;
     }
@@ -298,7 +298,7 @@ public sealed partial class EntityStore
         {
             chunk.CopyRow(row, chunk, last);
             m_row[chunk.Ids[row].Index] = row;
-            chunk.Dirty = true; // the moved row's bounds are where they were, the chunk's are conservative
+            chunk.MarkRowDirty(row); // the moved row's instance and the chunk's merged bounds are redone
         }
         chunk.Count--;
         if (chunk.Count == 0)
@@ -322,7 +322,7 @@ public sealed partial class EntityStore
         if (source.Slot != null && destination.Slot == null)
             FreeSlot(source.Slot[source_row]);
         destination.CountRow(row, +1);
-        destination.Dirty = true;
+        destination.MarkRowDirty(row);
         RemoveRow(source, source_row);
         m_chunk[id.Index] = destination;
         m_row[id.Index]   = row;
@@ -423,21 +423,21 @@ public sealed partial class EntityStore
         if (DeferIfRendering(() => SetLocalPosition(id, position))) return;
         EntityChunk c = Locate(id, out int row);
         c.Position[row] = position;
-        c.Dirty = true;
+        c.MarkRowDirty(row);
     }
     public void SetLocalRotation(EntityId id, Quaternion rotation)
     {
         if (DeferIfRendering(() => SetLocalRotation(id, rotation))) return;
         EntityChunk c = Locate(id, out int row);
         c.Rotation[row] = rotation;
-        c.Dirty = true;
+        c.MarkRowDirty(row);
     }
     public void SetLocalScale(EntityId id, Vector3 scale)
     {
         if (DeferIfRendering(() => SetLocalScale(id, scale))) return;
         EntityChunk c = Locate(id, out int row);
         c.Scale[row] = scale;
-        c.Dirty = true;
+        c.MarkRowDirty(row);
     }
     public void SetLocalTransform(EntityId id, Vector3 position, Quaternion rotation, Vector3 scale)
     {
@@ -446,7 +446,7 @@ public sealed partial class EntityStore
         c.Position[row] = position;
         c.Rotation[row] = rotation;
         c.Scale[row]    = scale;
-        c.Dirty = true;
+        c.MarkRowDirty(row);
     }
 
     /// <summary>The entity's world matrix as of now (local changes since the last transform sync included).</summary>
@@ -511,7 +511,7 @@ public sealed partial class EntityStore
             throw new InvalidOperationException($"Store hierarchies are at most {MaxDepth} levels deep");
 
         chunk.Parent[row] = parent.IsNull ? uint.MaxValue : parent.Index;
-        chunk.Dirty = true;
+        chunk.MarkRowDirty(row);
         int shift = depth - old_depth;
         if (shift == 0)
             return;

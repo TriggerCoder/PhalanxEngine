@@ -63,6 +63,38 @@ public static partial class World
 
     private static readonly List<EntityChunk> s_batched_chunks = new();
 
+    // one chunk of one behaviour's phase (cached, the loop allocates nothing; spartan: a ThreadPool::ParallelLoop lambda)
+    private sealed class BatchJob : ParallelJob
+    {
+        public BatchedBehaviour? behaviour;
+        public BatchPhase phase;
+        public float delta;
+        public ulong key_base;
+        public Exception? failure;
+
+        public override void Execute(int c)
+        {
+            CommandBuffer commands = GetWorkerBuffer();
+            commands.BeginChunk(key_base | ((ulong)c << 24));
+            var context = new BatchContext(phase, delta, s_batched_time, s_tick_count, commands);
+            var view = new ChunkView(s_batched_chunks[c]);
+            try
+            {
+                switch (phase)
+                {
+                    case BatchPhase.FixedUpdate: ((IBatchedFixedUpdate)behaviour!).FixedUpdate(in context, in view); break;
+                    case BatchPhase.Update:      ((IBatchedUpdate)behaviour!).Update(in context, in view); break;
+                    default:                     ((IBatchedLateUpdate)behaviour!).LateUpdate(in context, in view); break;
+                }
+            }
+            catch (Exception e)
+            {
+                Interlocked.CompareExchange(ref failure, e, null);
+            }
+        }
+    }
+    private static readonly BatchJob s_batch_job = new();
+
     // one phase of every batched behaviour that has it
     private static void RunBatched(BatchPhase phase, float delta_time)
     {
@@ -90,41 +122,27 @@ public static partial class World
                             s_batched_chunks.Add(chunk);
             if (s_batched_chunks.Count == 0)
                 continue;
-            Exception? failure = null;
-            ulong key_base = (ulong)b << 48;
-            void RunChunk(int c)
-            {
-                CommandBuffer commands = GetWorkerBuffer();
-                commands.BeginChunk(key_base | ((ulong)c << 24));
-                var context = new BatchContext(phase, delta_time, s_batched_time, s_tick_count, commands);
-                var view = new ChunkView(s_batched_chunks[c]);
-                try
-                {
-                    switch (phase)
-                    {
-                        case BatchPhase.FixedUpdate: ((IBatchedFixedUpdate)behaviour).FixedUpdate(in context, in view); break;
-                        case BatchPhase.Update:      ((IBatchedUpdate)behaviour).Update(in context, in view); break;
-                        default:                     ((IBatchedLateUpdate)behaviour).LateUpdate(in context, in view); break;
-                    }
-                }
-                catch (Exception e)
-                {
-                    Interlocked.CompareExchange(ref failure, e, null);
-                }
-            }
+            BatchJob job = s_batch_job;
+            job.behaviour = behaviour;
+            job.phase     = phase;
+            job.delta     = delta_time;
+            job.key_base  = (ulong)b << 48;
+            job.failure   = null;
             Store.m_jobs_running = true;
             try
             {
                 if (behaviour.RunInParallel && s_batched_chunks.Count > 1)
-                    Parallel.For(0, s_batched_chunks.Count, RunChunk);
+                    WorkerPool.ParallelLoop(job, s_batched_chunks.Count);
                 else
                     for (int c = 0; c < s_batched_chunks.Count; c++)
-                        RunChunk(c);
+                        job.Execute(c);
             }
             finally
             {
                 Store.m_jobs_running = false;
             }
+            Exception? failure = job.failure;
+            job.behaviour = null;
             if (failure != null)
                 Log.LogError($"{behaviour.GetType().Name}: {failure}"); // a failing behaviour doesn't stop the others
         }

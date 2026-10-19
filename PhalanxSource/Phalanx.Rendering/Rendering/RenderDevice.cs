@@ -17,6 +17,10 @@ public enum RenderValidation
     /// <summary>The gpu writes begun/completed per pass marker into a host buffer, read back when the device is lost
     /// (spartan: debug.breadcrumbs). Startup only, with or without validation.</summary>
     GpuBreadcrumbs = 8,
+    /// <summary>Leaves the device lost diagnostics out (VK_NV_device_diagnostic_checkpoints, VK_EXT_device_fault),
+    /// which are on wherever the driver has them; spartan enables neither. A loss is then reported without the pass
+    /// the gpu was in.</summary>
+    NoDeviceDiagnostics = 16,
 }
 
 /// <summary>
@@ -30,6 +34,51 @@ public static class RenderDevice
     {
         get => RHI_Device.ValidationFeatures;
         set => RHI_Device.ValidationFeatures = value;
+    }
+
+    /// <summary>Whether command lists write gpu timestamps (spartan: cvar_debug_gpu_timing), on by default; lists made
+    /// after the change follow it.</summary>
+    public static bool GpuTiming
+    {
+        get => RHI_Device.GpuTiming;
+        set => RHI_Device.GpuTiming = value;
+    }
+
+    /// <summary>How long the last frame's start waited for the gpu to finish the frame that used its slot, in ms
+    /// (frames in flight: near zero while the cpu is the bottleneck).</summary>
+    public static double FrameCpuWaitMs => RHI_Device.FrameCpuWaitMs;
+
+    /// <summary>Times the frame and its top level passes on the gpu for <see cref="TakeGpuTimings"/> (off by default;
+    /// needs <see cref="GpuTiming"/>).</summary>
+    public static bool GpuPassTiming
+    {
+        get => RHI_GpuTimings.Enabled;
+        set => RHI_GpuTimings.Enabled = value;
+    }
+
+    /// <summary>Waits for every frame's gpu work at its end, so frames never overlap (off by default; a diagnostic
+    /// that takes cross frame races out of a run, at the cost of the cpu/gpu overlap).</summary>
+    public static bool SerializeFrames
+    {
+        get => RHI_Device.SerializeFrames;
+        set => RHI_Device.SerializeFrames = value;
+    }
+
+    /// <summary>Frees the cached descriptor sets that went unused for a while (on by default, spartan's behaviour);
+    /// off keeps them all, a diagnostic.</summary>
+    public static bool DescriptorSetEviction
+    {
+        get => RHI_Device.DescriptorSetEviction;
+        set => RHI_Device.DescriptorSetEviction = value;
+    }
+
+    /// <summary>The gpu time of the frames completed since the last call, on average, and of their top level passes
+    /// (pass markers such as shadow_maps, g_buffer, light, aa_upscale) in the order they first ran; resets the sums.
+    /// Empty when gpu timing is off or unsupported.</summary>
+    public static (int Frames, double FrameMs, IReadOnlyList<(string Pass, double Ms)> Passes) TakeGpuTimings()
+    {
+        (int frames, double frame_ms, List<(string, double)> passes) = RHI_GpuTimings.TakeAverages();
+        return (frames, frame_ms, passes);
     }
 
     /// <summary>Whether a Vulkan loader is present and reports at least one 1.3 capable device (creates a throwaway instance).</summary>

@@ -10,7 +10,8 @@
 //   graphics list fills a slot of a host visible buffer with begun/completed. The breadcrumbs are kept per frame slot
 //   for the frames in flight, so the report also shows the frame before the one that faulted.
 // - No cpu marker stacks or error window: the report goes to the log (and log.txt) and the exception, the caller
-//   decides how to exit (Renderer.Tick throws RendererDeviceLostException).
+//   decides how to exit (Renderer.Tick throws RendererDeviceLostException). It also goes to device_lost.txt, written
+//   through to the disk (its first lines before the driver is queried), so it survives a machine that hangs after.
 // - After the loss every wait returns at once and every timeline counts as complete, so the shutdown destroys the
 //   objects without waiting on a device that will never signal (spartan asserts in its waits).
 using System.Text;
@@ -40,10 +41,15 @@ internal static unsafe partial class RHI_Device
     internal static void MarkDeviceLost() => s_device_lost = true;
     // test seam: the next queue submission fails with VK_ERROR_DEVICE_LOST (RHI_Queue.Submit)
     internal static volatile bool SimulateDeviceLostOnSubmit;
+    // test seam: vkQueueWaitIdle fails with VK_ERROR_DEVICE_LOST like a really lost device's (RHI_Queue.Wait), so a
+    // wait the shutdown should have skipped throws
+    internal static volatile bool SimulateDeviceLostOnWait;
 
     // extensions and features CreateDevice asks for when the driver has them
     private static void DiagnosticsSelectExtensions(HashSet<string> available, List<string> extensions, PhysicalDevice physical, PhysicalDeviceFaultFeaturesEXT* fault_features)
     {
+        if ((ValidationFeatures & RenderValidation.NoDeviceDiagnostics) != 0)
+            return;
         if (available.Contains(CheckpointsExtensionName))
             extensions.Add(CheckpointsExtensionName);
         if (available.Contains(DeviceFaultExtensionName))
@@ -76,12 +82,13 @@ internal static unsafe partial class RHI_Device
         }
         if (RHI_Context.ExtensionsDevice.Contains(DeviceFaultExtensionName) && vk.TryGetDeviceExtension(RHI_Context.Instance, RHI_Context.Device, out ExtDeviceFault fault))
             s_device_fault = fault;
-        Log.LogInfo($"device lost diagnostics: checkpoints {(HasCheckpoints ? "on" : "unavailable")}, device fault {(HasDeviceFault ? "on" : "unavailable")}, gpu breadcrumbs {((ValidationFeatures & RenderValidation.GpuBreadcrumbs) != 0 ? "on" : "off")}");
+        string unused = (ValidationFeatures & RenderValidation.NoDeviceDiagnostics) != 0 ? "off" : "unavailable";
+        Log.LogInfo($"device lost diagnostics: checkpoints {(HasCheckpoints ? "on" : unused)}, device fault {(HasDeviceFault ? "on" : unused)}, gpu breadcrumbs {((ValidationFeatures & RenderValidation.GpuBreadcrumbs) != 0 ? "on" : "off")}");
     }
 
+    // after vkDestroyDevice (RHI_Device.Destroy), the breadcrumb buffer is destroyed before the allocator
     private static void DiagnosticsDestroy()
     {
-        RHI_Breadcrumbs.Destroy();
         s_cmd_set_checkpoint = null;
         s_get_queue_checkpoint_data = null;
         s_device_fault = null;
@@ -112,8 +119,13 @@ internal static unsafe partial class RHI_Device
     internal static ulong EncodeCheckpoint(ulong frame, uint marker_id, bool end) => ((frame & 0xFFFFFFFFUL) << 24) | ((ulong)(marker_id & 0x7FFFFF) << 1) | (end ? 1UL : 0UL) | (1UL << 56);
     internal static (ulong frame, uint marker_id, bool end) DecodeCheckpoint(ulong value) => ((value >> 24) & 0xFFFFFFFFUL, (uint)((value >> 1) & 0x7FFFFF), (value & 1) != 0);
 
+    // test seam: sees every checkpoint as it is recorded, also on drivers without checkpoints
+    internal static Action<string, bool>? CheckpointRecorder;
+    internal static bool RecordsCheckpoints => s_cmd_set_checkpoint != null || CheckpointRecorder != null;
+
     internal static void SetCheckpoint(RHI_CommandList cmd_list, string name, bool end)
     {
+        CheckpointRecorder?.Invoke(name, end);
         if (s_cmd_set_checkpoint == null)
             return;
         ulong value = EncodeCheckpoint(s_frame_index, GetMarkerId(name), end);
@@ -131,6 +143,7 @@ internal static unsafe partial class RHI_Device
         var report = new StringBuilder();
         report.AppendLine($"GPU device lost ({what})");
         report.AppendLine($"  frame {s_frame_index} (frames in flight {FramesInFlight}), device {(s_physical_devices.Count > 0 ? GetPrimaryPhysicalDevice().Name : "?")}");
+        WriteReportToDisk(report.ToString()); // first the loss itself, in case a driver query below never returns
         try { ReportTimelines(report); }   catch (Exception e) { report.AppendLine($"  timelines: {e.Message}"); }
         try { ReportCheckpoints(report); } catch (Exception e) { report.AppendLine($"  checkpoints: {e.Message}"); }
         try { ReportDeviceFault(report); } catch (Exception e) { report.AppendLine($"  device fault: {e.Message}"); }
@@ -144,10 +157,28 @@ internal static unsafe partial class RHI_Device
         catch (Exception e) { report.AppendLine($"  memory: {e.Message}"); }
 
         string text = report.ToString();
+        WriteReportToDisk(text);
         Log.SetLogToFile(true);
         foreach (string line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries))
             Log.LogError(line.TrimEnd('\r'));
         return text;
+    }
+
+    /// <summary>Where the last device lost report is written: device_lost.txt next to log.txt.</summary>
+    public static string DeviceLostReportPath => Path.Combine(Path.GetDirectoryName(Path.GetFullPath(Log.LogFilePath)) ?? "", "device_lost.txt");
+
+    // the report into device_lost.txt, written through to the disk: a loss can be followed by a machine that hangs
+    // and is switched off, which loses what was still in the os file cache (log.txt's lines among it)
+    private static void WriteReportToDisk(string text)
+    {
+        try
+        {
+            using var stream = new FileStream(DeviceLostReportPath, FileMode.Create, FileAccess.Write, FileShare.Read, 4096, FileOptions.WriteThrough);
+            stream.Write(Encoding.UTF8.GetBytes($"{DateTime.Now:yyyy-MM-dd HH:mm:ss}\n{text}"));
+            stream.Flush(flushToDisk: true);
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     private static void ReportTimelines(StringBuilder report)

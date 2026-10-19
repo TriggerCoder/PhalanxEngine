@@ -33,6 +33,9 @@ internal static unsafe partial class RHI_Device
     private static ulong s_descriptor_frame;
     private static uint s_allocated_descriptor_sets;
     public const ulong DescriptorSetMaxUnusedFrames = 300;
+    // spartan has no switch: off keeps every cached set (the eviction and its deletion queue path out of a run, to
+    // tell a set freed too early from anything else)
+    public static bool DescriptorSetEviction { get; set; } = true;
 
     // bindless: (type, register shift, slot, count, name), indexed by RHI_Device_Bindless_Resource
     internal readonly record struct BindlessConfig(DescriptorType Type, uint RegisterShift, uint Slot, uint Count, string Name)
@@ -198,7 +201,7 @@ internal static unsafe partial class RHI_Device
     public static int DescriptorSetTick(ulong frame_count)
     {
         Volatile.Write(ref s_descriptor_frame, frame_count);
-        if (frame_count % 60 != 0)
+        if (frame_count % 60 != 0 || !DescriptorSetEviction)
             return 0;
         int evicted = 0;
         lock (s_descriptor_mutex)

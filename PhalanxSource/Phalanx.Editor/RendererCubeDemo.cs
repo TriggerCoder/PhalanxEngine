@@ -32,7 +32,12 @@ internal static class RendererCubeDemo
     public enum MaterialCase { Own, None, Destroyed, Invalid, MissingTexture, Full }
 
     /// <summary>The render layer, behaviour and fallback material switches of the demo (--layers, --predraw, --material).</summary>
-    public sealed record ViewOptions(Layers Layers = Layers.Default, PreDraw PreDraw = PreDraw.None, MaterialCase Material = MaterialCase.Own, int Entities = 0);
+    public sealed record ViewOptions(Layers Layers = Layers.Default, PreDraw PreDraw = PreDraw.None, MaterialCase Material = MaterialCase.Own, int Entities = 0)
+    {
+        public bool SunShadows { get; init; } = true;         // --shadows, --sun-shadows
+        public bool PointLightShadows { get; init; } = true;  // --shadows, --point-light-shadows
+        public float EntitiesMoving { get; init; } = 1.0f;    // --entities-moving
+    }
 
     // the --predraw behaviour: a per view override in OnPreDraw and the lifecycle on the console
     private sealed class CubeBehaviour : Behaviour, IAwake, IOnEnable, IStart, IPreDraw, IOnBecameVisible, IOnDisable, IOnDestroy
@@ -126,6 +131,8 @@ internal static class RendererCubeDemo
         light.SetColor(new Phalanx.Math.Color(1.0f, 1.0f, 1.0f, 1.0f));
         if (time_of_day is float t)
             light.SetTimeOfDay(t); // the sun rises behind the camera and sets in front of it, in view
+        if (!options.SunShadows)
+            light.SetFlag(LightFlags.Shadows, false);
 
         if (point_light)
         {
@@ -136,6 +143,8 @@ internal static class RendererCubeDemo
             point.SetLightType(LightType.Point);
             point.SetColor(new Phalanx.Math.Color(1.0f, 0.85f, 0.6f, 1.0f));
             point.SetIntensity(2000000.0f); // lm, bright enough to show under sunny 16
+            if (!options.PointLightShadows)
+                point.SetFlag(LightFlags.Shadows, false);
         }
 
         var material = new Material();
@@ -204,7 +213,7 @@ internal static class RendererCubeDemo
         if (options.Entities > 0)
         {
             PreDraw mode = options.PreDraw;
-            EntitiesDemo.Populate(options.Entities, options.Layers != Layers.Default, mode == PreDraw.None ? null : () => new CubeBehaviour(mode, quiet: true));
+            EntitiesDemo.Populate(options.Entities, options.Layers != Layers.Default, mode == PreDraw.None ? null : () => new CubeBehaviour(mode, quiet: true), options.EntitiesMoving);
         }
 
         World.World.Tick(); // publish the entities (spartan: the world load commits them before the first frame)

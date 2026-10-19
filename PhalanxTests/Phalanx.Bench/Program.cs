@@ -10,6 +10,9 @@ namespace Phalanx.Bench;
 // the stress mode's three batched behaviours, the transform pass, the per view culling, structural changes and the
 // class side (behaviour dispatch, the incremental world lists). Run it in Release:
 //   dotnet run -c Release --project PhalanxTests/Phalanx.Bench [-- counts...]   (default 10000 100000 1000000 2000000)
+// The second table (PhalanxEngine-entities-s2.md) is the shadow culling of the stress mode's lights, two sun cascades
+// and six point light faces, with the s1 settings (the cascades' side planes only, no range, no size threshold, the
+// lists finished one after another) and the s2 ones, and the transforms and dirty instance groups when a tenth moves.
 // Every timing is the median of several runs, in milliseconds.
 public static class Program
 {
@@ -87,8 +90,118 @@ public static class Program
         Console.WriteLine("entities | spawn ms | bytes/entity | update+late ms (3 behaviours) | rotate only ms | transforms ms | tick ms | allocated B/tick | hierarchy sync ms (25% children) | cull 1/2/4 views ms | destroy+spawn 10k ms");
         foreach (int count in counts)
             RunStore(count);
+        Console.WriteLine("entities | shadow cull s1 ms (casters) | shadow cull s2 ms (casters) | transforms 10% moving ms | dirty groups 10% moving MB | all moving MB");
+        foreach (int count in counts)
+            RunShadowsAndPartial(count);
         RunClassSide();
         return 0;
+    }
+
+    // the stress mode's field and lights: the sun's two cascades (DirectionalCascades: +-64 m and +-2000 m, 10000 m
+    // deep, 2000 m behind the camera) and the point light's six faces; slices of about 2720 texels (an 8192 atlas of 8)
+    private static void RunShadowsAndPartial(int count)
+    {
+        World.World.ClearScene();
+        EntityStore store = World.World.Store;
+        var random = new Random(1);
+        RenderBatch[] batches = Enumerable.Range(0, 4).Select(_ => RenderBatches.GetForBounds(new BoundingBox(new Vector3(-0.5f), new Vector3(0.5f)))).ToArray();
+        EntityArchetype moving = EntityArchetype.Empty.Renderable().With<Spin>().With<Orbit>().With<Bob>();
+        EntityArchetype still = EntityArchetype.Empty.Renderable();
+        float field = MathF.Max(40.0f, MathF.Sqrt(count) * 1.1f);
+        int moving_count = count / 10;
+        int side = (int)MathF.Ceiling(MathF.Sqrt(count));
+        float spacing = field / side;
+        for (int i = 0; i < count; i++)
+        {
+            // EntitiesDemo's layout: row by row over the field, so a chunk covers a strip of it
+            var p = new Vector3((i % side + random.NextSingle()) * spacing - field / 2, -0.75f, (i / side + random.NextSingle()) * spacing - 10);
+            var spawn = new EntitySpawn(p, batches[i & 3]) { Scale = new Vector3(0.4f), Rotation = Quaternion.CreateFromYawPitchRoll(random.NextSingle() * 6.28f, random.NextSingle() * 6.28f, 0) };
+            if (i >= moving_count)
+            {
+                store.Spawn(still, spawn);
+                continue;
+            }
+            EntityId id = store.Spawn(moving, spawn);
+            store.Set(id, new Spin { Axis = Vector3.UnitY, Speed = 1 + random.NextSingle() });
+            store.Set(id, new Orbit { Center = p, Radius = random.NextSingle(), Speed = 0.3f + random.NextSingle(), Phase = random.NextSingle() * 6.28f });
+            store.Set(id, new Bob { Height = 0.5f, Speed = 2, Phase = random.NextSingle() * 6.28f });
+        }
+        store.SyncTransforms();
+
+        var camera = new Vector3(0, 6, -20);
+        Vector3 sun = Vector3.Transform(Vector3.UnitZ, Quaternion.CreateFromYawPitchRoll(0.5f, 0.6f, 0.0f));
+        const float resolution = 2720.0f, min_texels = 1.0f;
+        var s1 = new List<InstanceCullRequest>();
+        var s2 = new List<InstanceCullRequest>();
+        foreach (float extent in new[] { 64.0f, 2000.0f })
+        {
+            Matrix4x4 view = Matrix4x4.CreateLookAtLeftHanded(camera - sun * 2000.0f, camera, MathF.Abs(sun.Y) > 0.99f ? Vector3.UnitZ : Vector3.UnitY);
+            Matrix4x4 projection = Matrix4x4Extensions.CreateOrthoOffCenterLH(-extent, extent, -extent, extent, 10000.0f, 0.0f);
+            var frustum = new Frustum(view, projection);
+            var old_request = new InstanceCullRequest { ShadowCasters = true };
+            old_request.SetFrustum(frustum, ignore_depth: true);
+            s1.Add(old_request);
+            var request = new InstanceCullRequest { ShadowCasters = true };
+            request.SetFrustum(frustum, ignore_depth: true); // before the limits: it resets them
+            request.MinDiameter = min_texels * 2.0f * extent / resolution;
+            for (int plane = 0; plane < 2; plane++)
+                if (Vector3.Dot(request.Planes[plane].Normal, sun) < 0.0f)
+                    request.PlaneMask |= 1 << plane;
+            s2.Add(request);
+        }
+        Entity point_entity = World.World.CreateEntity();
+        Light point = point_entity.AddComponent<Light>()!;
+        point.SetLightType(LightType.Point);
+        point.SetIntensity(2000000.0f);
+        float range = point.GetRange();
+        var light = new Vector3(0.8f, 0.6f, -1.5f);
+        float fov = MathF.PI / 2.0f + 0.02f;
+        foreach ((Vector3 forward, Vector3 up) in new[] { (Vector3.UnitX, Vector3.UnitY), (-Vector3.UnitX, Vector3.UnitY), (Vector3.UnitY, -Vector3.UnitZ), (-Vector3.UnitY, Vector3.UnitZ), (Vector3.UnitZ, Vector3.UnitY), (-Vector3.UnitZ, Vector3.UnitY) })
+        {
+            var frustum = new Frustum(Matrix4x4.CreateLookAtLeftHanded(light, light + forward, up), Matrix4x4Extensions.CreatePerspectiveFieldOfViewLH(fov, 1.0f, range, 0.05f));
+            var old_request = new InstanceCullRequest { ShadowCasters = true };
+            old_request.SetFrustum(frustum);
+            s1.Add(old_request);
+            var request = new InstanceCullRequest { ShadowCasters = true };
+            request.SetFrustum(frustum);
+            request.HasSphere = true;
+            request.SphereCenter = request.SizeEye = light;
+            request.SphereRadius = range;
+            request.MinDiameterPerDistance = min_texels * 2.0f * MathF.Tan(fov * 0.5f) / resolution;
+            s2.Add(request);
+        }
+        store.CullInstances(s1);
+        store.CullInstances(s2);
+        double s1_ms = Median(9, () =>
+        {
+            store.CullInstances(s1);
+            foreach (InstanceCullRequest r in s1)
+                store.FinishCull(r);
+        });
+        double s2_ms = Median(9, () =>
+        {
+            store.CullInstances(s2);
+            store.FinishCulls(s2);
+        });
+        long s1_casters = s1.Sum(r => (long)r.Total), s2_casters = s2.Sum(r => (long)r.Total);
+
+        var behaviours = new BatchedBehaviour[] { new SpinBehaviour(), new OrbitBehaviour(), new BobBehaviour() };
+        foreach (BatchedBehaviour b in behaviours)
+            World.World.RegisterBatched(b);
+        for (int i = 0; i < 5; i++)
+            World.World.Tick(1.0 / 60.0);
+        double transforms = 0;
+        Median(15, () => { World.World.Tick(1.0 / 60.0); transforms += World.World.Stats.TransformsMs; });
+        transforms /= 15;
+        // the groups the last sync stamped, and those of the frame before (the upload of a frame is both)
+        uint version = store.SyncVersion;
+        long groups = store.SlotGroupStamp.Take(store.SlotGroupCount).Count(stamp => stamp >= version - 1 && stamp != 0);
+        double group_mb = groups * EntityStore.SlotGroupSize * 32.0 / 1048576.0;
+        double all_mb = store.SlotCount * 32.0 / 1048576.0;
+        foreach (BatchedBehaviour b in behaviours)
+            World.World.UnregisterBatched(b);
+        Console.WriteLine($"{count,8} | {F(s1_ms) + " (" + s1_casters + ")",27} | {F(s2_ms) + " (" + s2_casters + ")",27} | {F(transforms),24} | {group_mb,26:0.0} | {all_mb,13:0.0}");
+        World.World.ClearScene();
     }
 
     private static string RuntimeInformation() => System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription;

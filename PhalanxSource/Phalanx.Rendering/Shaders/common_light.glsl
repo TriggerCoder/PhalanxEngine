@@ -6,7 +6,8 @@
 // direction_sphere_uv (:891) and compute_multiscatter_energy_split_sum (brdf.hlsl:129). Needs common_resources.glsl.
 // Deviations: the surface has no clearcoat, anisotropy, sheen, flakes, pearl/coat tint, subsurface scattering,
 // decals or ssao (bent normal = normal, occlusion = the g-buffer's); lights have no area shape, ies profiles or
-// shadows; auto exposure isn't ported, the exposure is the camera's manual one.
+// shadows; auto exposure isn't ported, the exposure is the camera's manual one. Surface::Build clamps the material
+// index it decodes (see there).
 #ifndef PHALANX_COMMON_LIGHT
 #define PHALANX_COMMON_LIGHT
 
@@ -115,7 +116,11 @@ Surface surface_build(uvec2 position_screen, vec2 resolution_out, bool use_albed
     vec4 sample_normal   = texelFetch(tex_normal, p, 0);
     vec4 sample_material = texelFetch(tex_material, p, 0);
     float sample_depth   = texelFetch(tex_depth, p, 0).r;
-    MaterialParameters material = material_parameters[unpack_material_index(sample_normal.a)];
+    // deviation: the index is clamped to the buffer (spartan common_structs.hlsl:89 reads it unchecked); the half the
+    // g-buffer holds decodes to 0..64511 while the buffer has rhi_max_array_size (16384) entries, so a pixel the
+    // g-buffer didn't write as expected can't read past it
+    uint material_index = min(unpack_material_index(sample_normal.a), uint(material_parameters.length()) - 1u);
+    MaterialParameters material = material_parameters[material_index];
 
     s.depth     = sample_depth;
     s.normal    = sample_normal.xyz;

@@ -1,10 +1,21 @@
 // The culling of instanced store entities for the views and shadow slices of a frame (Renderer.Instancing.cs): every
 // request (a frustum, a layer mask, casters only or not) gets, per render batch, the instance slots it draws. Chunks
-// are skipped whole when no row is on the request's layers, none casts a shadow (shadow requests) or their merged aabb
-// is outside the frustum; the rows of the others are tested 8 at a time (layers, then the 6 planes, Frustum.CheckCube's
-// test) in parallel over chunks, every request in the same pass over a chunk.
+// are skipped whole when no row is on the request's layers, none casts a shadow (shadow requests), their merged aabb
+// is outside the frustum or the light's range, or their largest row is below the request's size threshold; the rows
+// of the others are tested 8 at a time (layers, then the planes, Frustum.CheckCube's test, the range sphere and the
+// size) in parallel over chunks (WorkerPool), every request in the same pass over a chunk.
+// Shadow requests can also leave out the casters too small to matter: smaller than MinTexels texels of their slice,
+// measured by the diameter of the row's aabb sphere, against a fixed texel size (orthographic cascades) or against
+// the distance to the light (perspective faces). A shadow that small is a sub-texel speckle that flickers as the
+// caster moves (the rasterizer covers a texel centre or not).
 // Spartan @ 4c07baa culls each Render once against the camera (Render::UpdateFrustumAndDistanceCulling,
-// Render.cpp:417-475) and its instanced renderables on the gpu (the instance cull, Renderer.cpp:3814-4051).
+// Render.cpp:417-475), its instanced renderables on the gpu (the instance cull, Renderer.cpp:3814-4051) and its shadow
+// casters on the gpu per slice (shadow_cull.hlsl:56-90: the 4 side planes of a cascade, 6 planes of a face, a
+// per caster max shadow distance from the camera). Deviations:
+// - The cpu culls the casters per slice (no gpu culling pass), with the far plane of a cascade kept (the near one is
+//   dropped: the volume is extruded toward the light, casters between the light and the cascade still shadow it;
+//   spartan drops both), a range sphere for point and spot lights, and the sub-texel threshold, which spartan doesn't
+//   have (Renderer.ShadowCasterMinTexels, 0 turns it off).
 using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
@@ -25,6 +36,17 @@ internal sealed class InstanceCullRequest
     public bool HasFrustum;
     public readonly Plane[] Planes = new Plane[6];
     public bool IgnoreDepth;     // orthographic shadow slices: no near and far planes
+    public int PlaneMask = 0x3F; // the planes tested (bit i plane i: near, far, left, right, top, bottom)
+    // shadow slices: the light's range (a sphere), and the smallest caster kept, by the diameter of its aabb sphere:
+    // at least MinDiameter (orthographic), at least MinDiameterPerDistance * its distance to SizeEye (perspective)
+    public bool HasSphere;
+    public Vector3 SphereCenter;
+    public float SphereRadius;
+    public float MinDiameter;
+    public float MinDiameterPerDistance;
+    public Vector3 SizeEye;
+    internal int ChunksSkippedSmall; // chunks skipped whole by the size threshold (stats and tests)
+    internal int RowsSkippedSmall;   // casters left out by it (those of the skipped chunks included)
     public uint Mask = uint.MaxValue;
     public bool ShadowCasters;   // only rows that cast shadows
     public bool Callbacks;       // rows with facade callbacks go to CallbackRows instead of the lists
@@ -48,8 +70,11 @@ internal sealed class InstanceCullRequest
     {
         HasFrustum = true;
         IgnoreDepth = ignore_depth;
+        PlaneMask = ignore_depth ? 0x3C : 0x3F;
         for (int i = 0; i < 6; i++)
             Planes[i] = frustum.GetPlane(i);
+        HasSphere = false;
+        MinDiameter = MinDiameterPerDistance = 0.0f;
     }
 
     /// <summary>A callback row that the view draws after all, in its batch's list (after the culled ones).</summary>
@@ -96,6 +121,8 @@ public sealed partial class EntityStore
             request.CallbackRows.Clear();
             request.Extras.Clear();
             request.ChunksTested = 0;
+            request.ChunksSkippedSmall = 0;
+            request.RowsSkippedSmall = 0;
         }
         int rows = 0;
         foreach (EntityChunk chunk in chunks)
@@ -106,12 +133,50 @@ public sealed partial class EntityStore
                 CullChunk(chunks[c], c, requests);
         }
         else
-            Parallel.For(0, chunks.Count, c => CullChunk(chunks[c], c, requests));
+        {
+            m_cull_job.chunks   = chunks;
+            m_cull_job.requests = requests;
+            WorkerPool.ParallelLoop(m_cull_job, chunks.Count);
+            m_cull_job.chunks   = null!;
+            m_cull_job.requests = null!;
+        }
         foreach (InstanceCullRequest request in requests)
             for (int c = 0; c < chunks.Count; c++)
                 if (request.ChunkCallbacks[c] is { Count: > 0 } list)
                     request.CallbackRows.AddRange(list);
     }
+
+    private sealed class CullJob : ParallelJob
+    {
+        public List<EntityChunk> chunks = null!;
+        public IReadOnlyList<InstanceCullRequest> requests = null!;
+        public override void Execute(int c) => CullChunk(chunks[c], c, requests);
+    }
+    private readonly CullJob m_cull_job = new();
+
+    /// <summary>FinishCull of every request, the requests in parallel (they share nothing but the chunks they read).</summary>
+    internal void FinishCulls(IReadOnlyList<InstanceCullRequest> requests)
+    {
+        if (requests.Count < 2)
+        {
+            foreach (InstanceCullRequest request in requests)
+                FinishCull(request);
+            return;
+        }
+        GetCullChunks(); // built here, on the calling thread, before the workers read it
+        m_finish_job.Store    = this;
+        m_finish_job.Requests = requests;
+        WorkerPool.ParallelLoop(m_finish_job, requests.Count);
+        m_finish_job.Requests = null;
+    }
+
+    private sealed class FinishJob : ParallelJob
+    {
+        public EntityStore? Store;
+        public IReadOnlyList<InstanceCullRequest>? Requests;
+        public override void Execute(int index) => Store!.FinishCull(Requests![index]);
+    }
+    private readonly FinishJob m_finish_job = new();
 
     internal void FinishCull(InstanceCullRequest request)
     {
@@ -167,8 +232,17 @@ public sealed partial class EntityStore
             request.ChunkCallbacks[c]?.Clear();
             if (chunk.Count == 0 || (chunk.LayersOr & request.Mask) == 0 || (request.ShadowCasters && chunk.CasterCount == 0))
                 continue;
-            if (request.HasFrustum && chunk.BoundsValid && !BoxVisible(request, (chunk.BoundsMin + chunk.BoundsMax) * 0.5f, (chunk.BoundsMax - chunk.BoundsMin) * 0.5f))
+            Vector3 center = (chunk.BoundsMin + chunk.BoundsMax) * 0.5f, extent = (chunk.BoundsMax - chunk.BoundsMin) * 0.5f;
+            if (request.HasFrustum && chunk.BoundsValid && !BoxVisible(request, center, extent))
                 continue;
+            if (chunk.BoundsValid && request.HasSphere && BoxDistanceSquared(center, extent, request.SphereCenter) > request.SphereRadius * request.SphereRadius)
+                continue;
+            if (chunk.BoundsValid && TooSmall(request, 2.0f * MathF.Sqrt(chunk.MaxRadiusSquared), BoxDistanceSquared(center, extent, request.SizeEye)))
+            {
+                Interlocked.Increment(ref request.ChunksSkippedSmall);
+                Interlocked.Add(ref request.RowsSkippedSmall, chunk.CasterCount);
+                continue;
+            }
             Interlocked.Increment(ref request.ChunksTested);
             uint[]? output = request.ChunkSlots[c];
             if (output == null || output.Length < chunk.Count)
@@ -177,10 +251,31 @@ public sealed partial class EntityStore
         }
     }
 
+    // whether a caster of this diameter, this squared distance from the eye at the closest, is below the threshold
+    private static bool TooSmall(InstanceCullRequest request, float diameter, float distance_squared)
+    {
+        if (request.MinDiameter > 0.0f && diameter < request.MinDiameter)
+            return true;
+        if (request.MinDiameterPerDistance > 0.0f)
+        {
+            float k = request.MinDiameterPerDistance;
+            return diameter * diameter < k * k * distance_squared;
+        }
+        return false;
+    }
+
+    private static float BoxDistanceSquared(Vector3 center, Vector3 extent, Vector3 point)
+    {
+        Vector3 d = Vector3.Max(Vector3.Abs(point - center) - extent, Vector3.Zero);
+        return Vector3.Dot(d, d);
+    }
+
     private static bool BoxVisible(InstanceCullRequest request, Vector3 center, Vector3 extent)
     {
-        for (int p = request.IgnoreDepth ? 2 : 0; p < 6; p++)
+        for (int p = 0; p < 6; p++)
         {
+            if ((request.PlaneMask & (1 << p)) == 0)
+                continue;
             Plane plane = request.Planes[p];
             float d = Vector3.Dot(plane.Normal, center) + plane.D;
             float r = Vector3.Dot(Vector3.Abs(plane.Normal), extent);
@@ -195,22 +290,34 @@ public sealed partial class EntityStore
         int count = chunk.Count, n = chunk.Capacity, visible = 0;
         uint[] layers = chunk.CullLayers!;
         float[] b = chunk.Bounds!;
+        bool sphere = request.HasSphere;
+        bool small_ortho = request.MinDiameter > 0.0f, small_perspective = request.MinDiameterPerDistance > 0.0f;
+        int skipped_small = 0;
         int i = 0;
         if (Vector256.IsHardwareAccelerated)
         {
             ref uint layer_ref = ref MemoryMarshal.GetArrayDataReference(layers);
             ref float bounds = ref MemoryMarshal.GetArrayDataReference(b);
             Vector256<uint> mask = Vector256.Create(request.Mask);
-            int first_plane = request.IgnoreDepth ? 2 : 0;
-            Span<Vector256<float>> plane_n = stackalloc Vector256<float>[24]; // nx ny nz d per plane
+            Span<Vector256<float>> plane_n = stackalloc Vector256<float>[24]; // nx ny nz d per tested plane
+            int planes = 0;
             for (int p = 0; p < 6; p++)
             {
+                if ((request.PlaneMask & (1 << p)) == 0)
+                    continue;
                 Plane plane = request.Planes[p];
-                plane_n[4 * p]     = Vector256.Create(plane.Normal.X);
-                plane_n[4 * p + 1] = Vector256.Create(plane.Normal.Y);
-                plane_n[4 * p + 2] = Vector256.Create(plane.Normal.Z);
-                plane_n[4 * p + 3] = Vector256.Create(plane.D);
+                plane_n[4 * planes]     = Vector256.Create(plane.Normal.X);
+                plane_n[4 * planes + 1] = Vector256.Create(plane.Normal.Y);
+                plane_n[4 * planes + 2] = Vector256.Create(plane.Normal.Z);
+                plane_n[4 * planes + 3] = Vector256.Create(plane.D);
+                planes++;
             }
+            Vector256<float> sphere_x = Vector256.Create(request.SphereCenter.X), sphere_y = Vector256.Create(request.SphereCenter.Y), sphere_z = Vector256.Create(request.SphereCenter.Z);
+            Vector256<float> sphere_r2 = Vector256.Create(request.SphereRadius * request.SphereRadius);
+            Vector256<float> eye_x = Vector256.Create(request.SizeEye.X), eye_y = Vector256.Create(request.SizeEye.Y), eye_z = Vector256.Create(request.SizeEye.Z);
+            // diameter = 2 |extent|: diameter^2 = 4 |extent|^2
+            Vector256<float> min_d2 = Vector256.Create(request.MinDiameter * request.MinDiameter * 0.25f);
+            Vector256<float> k2 = Vector256.Create(request.MinDiameterPerDistance * request.MinDiameterPerDistance * 0.25f);
             nuint cs = (nuint)n;
             for (; i + 8 <= count; i += 8)
             {
@@ -218,19 +325,47 @@ public sealed partial class EntityStore
                 uint bits = ~Vector256.Equals(Vector256.LoadUnsafe(ref layer_ref, o) & mask, Vector256<uint>.Zero).ExtractMostSignificantBits() & 0xFFu;
                 if (bits == 0)
                     continue;
-                if (request.HasFrustum)
+                if (request.HasFrustum || sphere || small_ortho || small_perspective)
                 {
                     Vector256<float> cx = Vector256.LoadUnsafe(ref bounds, o), cy = Vector256.LoadUnsafe(ref bounds, o + cs), cz = Vector256.LoadUnsafe(ref bounds, o + 2 * cs);
                     Vector256<float> ex = Vector256.LoadUnsafe(ref bounds, o + 3 * cs), ey = Vector256.LoadUnsafe(ref bounds, o + 4 * cs), ez = Vector256.LoadUnsafe(ref bounds, o + 5 * cs);
                     Vector256<float> outside = Vector256<float>.Zero;
-                    for (int p = first_plane; p < 6; p++)
+                    if (request.HasFrustum)
                     {
-                        Vector256<float> nx = plane_n[4 * p], ny = plane_n[4 * p + 1], nz = plane_n[4 * p + 2];
-                        Vector256<float> d = nx * cx + ny * cy + nz * cz + plane_n[4 * p + 3];
-                        Vector256<float> r = Vector256.Abs(nx) * ex + Vector256.Abs(ny) * ey + Vector256.Abs(nz) * ez;
-                        outside |= Vector256.LessThan(d + r, Vector256<float>.Zero);
+                        for (int p = 0; p < planes; p++)
+                        {
+                            Vector256<float> nx = plane_n[4 * p], ny = plane_n[4 * p + 1], nz = plane_n[4 * p + 2];
+                            Vector256<float> d = nx * cx + ny * cy + nz * cz + plane_n[4 * p + 3];
+                            Vector256<float> r = Vector256.Abs(nx) * ex + Vector256.Abs(ny) * ey + Vector256.Abs(nz) * ez;
+                            outside |= Vector256.LessThan(d + r, Vector256<float>.Zero);
+                        }
                     }
-                    bits &= ~outside.ExtractMostSignificantBits();
+                    if (sphere)
+                    {
+                        Vector256<float> dx = Vector256.Max(Vector256.Abs(sphere_x - cx) - ex, Vector256<float>.Zero);
+                        Vector256<float> dy = Vector256.Max(Vector256.Abs(sphere_y - cy) - ey, Vector256<float>.Zero);
+                        Vector256<float> dz = Vector256.Max(Vector256.Abs(sphere_z - cz) - ez, Vector256<float>.Zero);
+                        outside |= Vector256.GreaterThan(dx * dx + dy * dy + dz * dz, sphere_r2);
+                    }
+                    uint culled = outside.ExtractMostSignificantBits();
+                    if (small_ortho || small_perspective)
+                    {
+                        Vector256<float> radius2 = ex * ex + ey * ey + ez * ez;
+                        Vector256<float> small = Vector256<float>.Zero;
+                        if (small_ortho)
+                            small |= Vector256.LessThan(radius2, min_d2);
+                        if (small_perspective)
+                        {
+                            Vector256<float> dx = Vector256.Max(Vector256.Abs(eye_x - cx) - ex, Vector256<float>.Zero);
+                            Vector256<float> dy = Vector256.Max(Vector256.Abs(eye_y - cy) - ey, Vector256<float>.Zero);
+                            Vector256<float> dz = Vector256.Max(Vector256.Abs(eye_z - cz) - ez, Vector256<float>.Zero);
+                            small |= Vector256.LessThan(radius2, k2 * (dx * dx + dy * dy + dz * dz));
+                        }
+                        uint small_bits = small.ExtractMostSignificantBits() & ~culled & bits;
+                        skipped_small += System.Numerics.BitOperations.PopCount(small_bits);
+                        culled |= small_bits;
+                    }
+                    bits &= ~culled;
                 }
                 while (bits != 0)
                 {
@@ -244,15 +379,21 @@ public sealed partial class EntityStore
         {
             if ((layers[i] & request.Mask) == 0)
                 continue;
-            if (request.HasFrustum)
+            var center = new Vector3(b[i], b[n + i], b[2 * n + i]);
+            var extent = new Vector3(b[3 * n + i], b[4 * n + i], b[5 * n + i]);
+            if (request.HasFrustum && !BoxVisible(request, center, extent))
+                continue;
+            if (sphere && BoxDistanceSquared(center, extent, request.SphereCenter) > request.SphereRadius * request.SphereRadius)
+                continue;
+            if ((small_ortho || small_perspective) && TooSmall(request, 2.0f * extent.Length(), BoxDistanceSquared(center, extent, request.SizeEye)))
             {
-                var center = new Vector3(b[i], b[n + i], b[2 * n + i]);
-                var extent = new Vector3(b[3 * n + i], b[4 * n + i], b[5 * n + i]);
-                if (!BoxVisible(request, center, extent))
-                    continue;
+                skipped_small++;
+                continue;
             }
             Emit(chunk, request, i, output, ref visible, c);
         }
+        if (skipped_small > 0)
+            Interlocked.Add(ref request.RowsSkippedSmall, skipped_small);
         return visible;
     }
 

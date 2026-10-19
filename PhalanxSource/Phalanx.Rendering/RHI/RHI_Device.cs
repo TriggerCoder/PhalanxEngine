@@ -220,7 +220,9 @@ internal static unsafe partial class RHI_Device
         if (RHI_Context.Device.Handle != 0)
         {
             vk.DeviceWaitIdle(RHI_Context.Device);
-            DiagnosticsDestroy();
+            // the diagnostics (and the lost flag) go with the device, last: after a loss the waits below (the deletion
+            // queue's, the swapchain's) must keep returning at once instead of failing on vkQueueWaitIdle
+            RHI_Breadcrumbs.Destroy(); // a buffer: before the allocator
             DestroySwapChain();
             DeletionQueueFlush();
             PipelinesDestroy();
@@ -237,6 +239,7 @@ internal static unsafe partial class RHI_Device
             }
             vk.DestroyDevice(RHI_Context.Device, null);
             RHI_Context.Device = default;
+            DiagnosticsDestroy();
         }
         if (RHI_Context.DebugMessenger.Handle != 0)
         {

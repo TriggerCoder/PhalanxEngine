@@ -60,6 +60,7 @@ internal sealed unsafe partial class RHI_CommandList
         if (m_pipeline == null || !m_pipeline.IsCompute)
             throw new InvalidOperationException($"{Name}: Dispatch without a compute pipeline");
         SetDynamic(m_pipeline);
+        CheckpointWork("dispatch", x, y, z, instances: false);
         RHI_Context.Vk.CmdDispatch(m_rhi_resource, x, y, z);
     }
 

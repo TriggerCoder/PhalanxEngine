@@ -14,6 +14,8 @@
 // - Clear doesn't rotate the log: spartan renames log.txt to log_previous.txt there too (Log.cpp:124), which replaces
 //   the previous run's log, the one record the rotation exists to keep, with the current session's.
 // - The file location can be set (LogFilePath) and Initialize takes the headless flag instead of reading the engine.
+// - Error lines are flushed past the os file cache to the disk (spartan's writes stay in the cache): a gpu loss can
+//   take the whole machine down right after it is logged.
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -213,6 +215,8 @@ public static class Log
             s_log_file.Write(GetPrefix(type));
             s_log_file.Write(text);
             s_log_file.Write('\n');
+            if (type == LogType.Error)
+                (s_log_file.BaseStream as FileStream)?.Flush(flushToDisk: true); // past the os cache: the run may take the machine down
         }
         catch (IOException) { }                 // logging must never throw or log
         catch (UnauthorizedAccessException) { }
