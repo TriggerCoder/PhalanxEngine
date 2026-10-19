@@ -213,15 +213,18 @@ public partial class RendererSceneTests
             scene.camera.SetAperture(System.MathF.Sqrt(683.0f / 1.2f));
             Frame(scene);
             Assert.Equal(1.0f / 683.0f, Renderer.GetFrameConstantBuffer().camera_exposure, 6);
+            // the corner is sky (no light: the night sky); 683 * exposure = 1 turns its radiometric red into what the
+            // tonemapper sees, and the exposure scales with the iso, so the iso sets that value
+            float sky_nits = Rgba16(Read(Renderer_RenderTarget.frame_render), 0, 0).X;
+            Assert.True(sky_nits > 0.0f, sky_nits.ToString());
 
             foreach (Renderer_Tonemapping tonemapper in new[] { Renderer_Tonemapping.GranTurismo7, Renderer_Tonemapping.Reinhard, Renderer_Tonemapping.Max })
             {
                 Renderer.Tonemapping = tonemapper;
                 float previous = -1;
-                foreach (float nits in new[] { 0.0f, 0.01f, 0.05f, 0.1f, 0.2f, 0.4f, 0.8f, 1.6f, 4f, 16f, 100f, 1000f })
+                foreach (float nits in new[] { 0.01f, 0.05f, 0.1f, 0.2f, 0.4f, 0.8f, 1.6f, 4f, 16f, 100f, 1000f })
                 {
-                    // the sky is nits / 683, exposure brings it back to nits
-                    Renderer.SkyFallbackNits = new Vector3(nits * 683.0f);
+                    scene.camera.SetIso(100.0f * nits / sky_nits);
                     Frame(scene);
                     Vector4 p = Rgba16(Read(Renderer_RenderTarget.frame_output), 0, 0);
                     Assert.Equal(1.0f, p.W);

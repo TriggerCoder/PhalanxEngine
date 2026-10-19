@@ -1,0 +1,35 @@
+// GLSL port of the single mip average reduce of SpartanEngine data/shaders/amd_fidelity_fx/spd.hlsl @ 4c07baa
+// (identical at upstream 67a6e8b, the ONE_MIP AVERAGE kernel, :86-136): mip n (tex) to mip n + 1 (tex_uav), each
+// destination texel the mean of its 2x2 source footprint, clamped at odd edges.
+// Deviation: spartan's Pass_Downscale runs amd fidelityfx spd (one dispatch for up to 12 mips) and only falls back to
+// this kernel above 4096 texels; Phalanx always chains this kernel, one dispatch per mip. For the power of two
+// textures it serves the 2x2 averages are the same.
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "common_resources.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+void main()
+{
+    uvec2 thread_id = gl_GlobalInvocationID.xy;
+    uvec2 dst_res   = uvec2(imageSize(tex_uav));
+    if (any(greaterThanEqual(thread_id, dst_res)))
+        return;
+
+    ivec2 src_res = textureSize(tex, 0);
+
+    ivec2 s   = ivec2(thread_id) * 2;
+    ivec2 s00 = s;
+    ivec2 s10 = ivec2(min(s.x + 1, src_res.x - 1), s.y);
+    ivec2 s01 = ivec2(s.x, min(s.y + 1, src_res.y - 1));
+    ivec2 s11 = ivec2(min(s.x + 1, src_res.x - 1), min(s.y + 1, src_res.y - 1));
+
+    vec4 v00 = texelFetch(tex, s00, 0);
+    vec4 v10 = texelFetch(tex, s10, 0);
+    vec4 v01 = texelFetch(tex, s01, 0);
+    vec4 v11 = texelFetch(tex, s11, 0);
+
+    imageStore(tex_uav, ivec2(thread_id), (v00 + v10 + v01 + v11) * 0.25);
+}

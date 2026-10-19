@@ -21,6 +21,11 @@ internal static class Renderer_Definitions
 
     // Renderer_Definitions.h:151, total shadow atlas, packed by row of square slices
     public const uint renderer_resolution_shadow_atlas = 8192;
+
+    // Renderer_Definitions.h:152-156, the skysphere panorama and the pre integrated brdf lut
+    public const uint renderer_resolution_skysphere_w = 4096;
+    public const uint renderer_resolution_skysphere_h = 2048;
+    public const uint renderer_resolution_brdf_lut    = 512;
 }
 
 internal enum Renderer_BindingsCb : uint { frame }
@@ -31,7 +36,7 @@ internal enum Renderer_BindingsSrv : uint
 {
     // g-buffer
     gbuffer_color = 0, gbuffer_normal = 1, gbuffer_material = 2, gbuffer_velocity = 3, gbuffer_depth = 4,
-    tex = 7, tex2 = 8, tex3 = 9, tex4 = 10,
+    tex = 7, tex2 = 8, tex3 = 9, tex4 = 10, tex5 = 11, tex6 = 12,
     // spartan binds it by name ("tex_emissive", register t33)
     gbuffer_emissive = 33,
 }

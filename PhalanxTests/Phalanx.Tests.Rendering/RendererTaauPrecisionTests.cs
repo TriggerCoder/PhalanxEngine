@@ -66,8 +66,6 @@ public partial class RendererSceneTests
             render.SetMaterial(material);
         }
 
-        Renderer.SkyFallbackNits     = new Vector3(4000.0f, 6000.0f, 10000.0f);
-        Renderer.AmbientFallbackNits = new Vector3(2000.0f, 3000.0f, 5000.0f);
         World.World.Tick();
         return cube;
     }
@@ -104,8 +102,6 @@ public partial class RendererSceneTests
         finally
         {
             Renderer.AntiAliasingUpsampling = Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear;
-            Renderer.SkyFallbackNits     = new Vector3(1500.0f, 2200.0f, 3500.0f);
-            Renderer.AmbientFallbackNits = new Vector3(150.0f, 220.0f, 350.0f);
             Renderer.ShadowAtlasResolution = 8192;
             Renderer.Shutdown();
             World.World.ClearScene();
@@ -201,8 +197,6 @@ public partial class RendererSceneTests
         finally
         {
             Renderer.AntiAliasingUpsampling = Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear;
-            Renderer.SkyFallbackNits     = new Vector3(1500.0f, 2200.0f, 3500.0f);
-            Renderer.AmbientFallbackNits = new Vector3(150.0f, 220.0f, 350.0f);
             Renderer.ShadowAtlasResolution = 8192;
             Renderer.Shutdown();
             World.World.ClearScene();

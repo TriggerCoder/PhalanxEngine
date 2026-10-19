@@ -2,7 +2,8 @@
 // shared_lighting.h, radiometric_to_photometric / get_effective_exposure / luminance / validate_output /
 // get_position / microw_shadowing_cod (common.hlsl:37-71, :504-518, :794, :905, :1124), Surface::Build
 // (common_structs.hlsl:73-176), Light and AngularInfo (common_structs.hlsl:210-517) and the isotropic brdf
-// (brdf.hlsl:1-156). Needs common_resources.glsl.
+// (brdf.hlsl:1-156), the sun and night sky helpers (common.hlsl:80-137), hdr_clamp_chroma (:495),
+// direction_sphere_uv (:891) and compute_multiscatter_energy_split_sum (brdf.hlsl:129). Needs common_resources.glsl.
 // Deviations: the surface has no clearcoat, anisotropy, sheen, flakes, pearl/coat tint, subsurface scattering,
 // decals or ssao (bent normal = normal, occlusion = the g-buffer's); lights have no area shape, ies profiles or
 // shadows; auto exposure isn't ported, the exposure is the camera's manual one.
@@ -10,6 +11,7 @@
 #define PHALANX_COMMON_LIGHT
 
 const float PI                         = 3.14159265;
+const float PI2                        = 6.28318530;
 const float INV_PI                     = 0.31830988;
 const float FLT_MIN                    = 0.00000001;
 const float FLT_MAX_16U                = 65504.0;
@@ -297,6 +299,70 @@ vec3 BRDF_Specular_Isotropic(inout Surface surface, AngularInfo a)
     Fr                    *= compute_multiscatter_energy(surface.F0, a.n_dot_v, surface.roughness);
     surface.diffuse_energy *= compute_diffuse_energy(F, surface.metallic);
     return Fr;
+}
+
+// brdf.hlsl:129-133, split sum multiscatter compensation (kulla conty style energy from the env lut)
+vec3 compute_multiscatter_energy_split_sum(vec3 f0, vec2 env_brdf)
+{
+    float single_scatter = max(env_brdf.x + env_brdf.y, 0.05);
+    return 1.0 + f0 * (1.0 / single_scatter - 1.0);
+}
+
+// common.hlsl:80-104, the sun is light slot 0. The cpu writes the atmospheric transmittance toward the sun into the
+// directional light color, so light.color is the ground level sun tint and light.intensity the top of atmosphere
+// radiance (lux / 683).
+// Deviation: spartan trusts slot 0 to be the sun or a zero sentinel; with local lights only Renderer.cpp fills slot 0
+// with a point or spot light and the sky treats it as the sun. Phalanx orders directional lights first like spartan
+// and also checks the flag here, a slot 0 that isn't directional reads as no sun (intensity 0, pointing down).
+bool sun_present() { return (light_parameters[0].flags & (1u << 0)) != 0u; }
+
+vec3 get_sun_direction()
+{
+    return sun_present() ? normalize(-light_parameters[0].direction) : vec3(0.0, -1.0, 0.0);
+}
+
+vec3  get_sun_color()     { return sun_present() ? light_parameters[0].color.rgb : vec3(0.0); }
+float get_sun_intensity() { return sun_present() ? light_parameters[0].intensity : 0.0; }
+
+// sun radiance before entering the atmosphere, neutral white, the sky applies its own per path transmittance so
+// feeding it a pre tinted colour would extinct the light twice
+vec3 get_sun_radiance_toa() { return vec3(get_sun_intensity()); }
+
+// common.hlsl:126-137, shared night radiometric levels
+const vec3  night_sky_zenith_rad  = vec3(0.00009, 0.00015, 0.00030);
+const vec3  night_sky_horizon_rad = vec3(0.00022, 0.00030, 0.00048);
+const vec3  night_airglow_rad     = vec3(0.00010, 0.00014, 0.00007);
+// moon/sun irradiance ratio applied on top of get_sun_radiance_toa(), keep near physical ~4e-6
+const float night_moon_to_sun     = 2.0e-6;
+
+vec3 night_sky_radiance(float up_y)
+{
+    float h = clamp(up_y * 0.5 + 0.5, 0.0, 1.0);
+    return mix(night_sky_horizon_rad, night_sky_zenith_rad, h);
+}
+
+// common.hlsl:495-499, chromaticity preserving hdr clamp, scales the whole colour when its peak channel exceeds the
+// cap so the sun disc keeps its tint
+vec3 hdr_clamp_chroma(vec3 color, float max_value)
+{
+    float peak = max(color.r, max(color.g, color.b));
+    return (peak > max_value) ? color * (max_value / peak) : color;
+}
+
+// common.hlsl:891-897, direction to equirectangular uv (the skysphere panorama layout)
+vec2 direction_sphere_uv(vec3 direction)
+{
+    float u = 0.5 + atan(direction.z, direction.x) / PI2;
+    float v = 0.5 - asin(clamp(direction.y, -1.0, 1.0)) / PI;
+    return vec2(u, v);
+}
+
+// subsurface_scattering.hlsl:40-45, transmitted light crosses the chlorophyll twice, a deeper yellower green
+vec3 foliage_transmission_tint(vec3 albedo)
+{
+    float peak  = max(max(albedo.r, albedo.g), albedo.b) + 1e-4;
+    vec3 chroma = clamp(albedo / peak, 0.0, 1.0);
+    return chroma * chroma * vec3(0.85, 1.0, 0.8);
 }
 
 #endif

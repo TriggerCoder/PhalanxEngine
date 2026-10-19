@@ -69,8 +69,7 @@ public partial class RendererSceneTests
         finally
         {
             Renderer.AntiAliasingUpsampling = Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear;
-            Renderer.SkyFallbackNits     = new Vector3(1500.0f, 2200.0f, 3500.0f);
-            Renderer.AmbientFallbackNits = new Vector3(150.0f, 220.0f, 350.0f);
+            Renderer.ImageBasedLighting  = true;
             Renderer.Tonemapping         = Renderer_Tonemapping.GranTurismo7;
             Renderer.ShadowAtlasResolution = 8192;
             Renderer.Shutdown();
@@ -226,25 +225,23 @@ public partial class RendererSceneTests
     }
 
     [SkippableFact]
-    public void The_composition_lights_the_albedo_and_the_sky_falls_back_to_a_constant()
+    public void The_composition_lights_the_albedo_and_the_sky_is_the_skysphere()
     {
         Run(() =>
         {
             Scene scene = CreateScene(new Vector4(0.5f, 0.25f, 1.0f, 1.0f));
-            Renderer.SkyFallbackNits     = new Vector3(100.0f, 200.0f, 300.0f);
-            Renderer.AmbientFallbackNits = new Vector3(683.0f, 683.0f, 683.0f);
 
-            // frame_render is radiometric: the sky is nits / 683 and the ambient stand-in albedo * nits / 683
+            // no light and no image based lighting: the cube is black, the sky pixels are the (night) skysphere
+            Renderer.ImageBasedLighting = false;
             Frame(scene);
             Vector4 albedo = Rgba8(Read(Renderer_RenderTarget.gbuffer_color), Width / 2, Height / 2);
             Vector4 center = Rgba16(Read(Renderer_RenderTarget.frame_render), Width / 2, Height / 2);
             Vector4 corner = Rgba16(Read(Renderer_RenderTarget.frame_render), 0, 0);
-            NearRel(new Vector3(albedo.X, albedo.Y, albedo.Z), new Vector3(center.X, center.Y, center.Z), 0.01f);
-            NearRel(new Vector3(100, 200, 300) / 683.0f, new Vector3(corner.X, corner.Y, corner.Z), 0.01f);
+            Assert.Equal(Vector3.Zero, new Vector3(center.X, center.Y, center.Z));
+            Assert.True(corner.Z > corner.X && corner.X > 0.0f, corner.ToString()); // night_sky_radiance is blue
             Assert.Equal(0.0f, corner.W); // spartan's sky alpha
 
             // a sun adds its light: diffuse demodulated (times the albedo here) plus specular
-            Renderer.AmbientFallbackNits = Vector3.Zero;
             Entity light_entity = World.World.CreateEntity();
             light_entity.SetPosition(new Vector3(0, 5, 0)); // forward is +z, into the front face
             Light light = light_entity.AddComponent<Light>()!;
@@ -257,6 +254,12 @@ public partial class RendererSceneTests
             Assert.True(diffuse.X > 1.0f, diffuse.ToString()); // 120000 lux / 683 * brdf
             center = Rgba16(Read(Renderer_RenderTarget.frame_render), Width / 2, Height / 2);
             NearRel(diffuse * new Vector3(albedo.X, albedo.Y, albedo.Z) + specular, new Vector3(center.X, center.Y, center.Z), 0.02f);
+
+            // the sky's image based lighting adds on top
+            Renderer.ImageBasedLighting = true;
+            Frame(scene);
+            Vector4 lit = Rgba16(Read(Renderer_RenderTarget.frame_render), Width / 2, Height / 2);
+            Assert.True(lit.X > center.X && lit.Y > center.Y && lit.Z > center.Z, $"{lit} vs {center}");
 
             // the light parameters table carries the light, radiometric with its effective colour
             byte[] table = RHI_Device.ReadbackBuffer(Renderer.GetBuffer(Renderer_Buffer.LightParameters)!, 0, (ulong)Marshal.SizeOf<LightParameters>());

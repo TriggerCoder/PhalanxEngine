@@ -17,7 +17,8 @@ namespace Phalanx.Editor;
 //   Phalanx.Editor --renderer-cube [frames]  spartan's standard cube through the renderer (g-buffer, resolve) with a camera
 //   Phalanx.Editor --renderer-cube-offscreen  no window: renders that frame and prints frame_output's center pixel;
 //     with --png <file> [--size w h] [--time t] it writes the whole frame (default 1920x1080) as a png instead
-//   add --texture <image file> to either to texture the cube; --point-light adds a bright point light
+//   add --texture <image file> to either to texture the cube; --point-light adds a bright point light; --time-of-day
+//     <0..1> moves the sun (0.25 sunrise, 0.5 noon, 0.75 sunset)
 //   add --validation to enable VK_LAYER_KHRONOS_validation (Debug builds enable it by default)
 //   add --aa <taau|off|fxaa|xess|dlss> to pick Renderer.AntiAliasingUpsampling (default taau; fxaa isn't ported and
 //     renders like off, xess and dlss aren't integrated and fall back to off)
@@ -83,6 +84,17 @@ public static class Program
             }
             int texture_arg = Array.IndexOf(args, "--texture");
             string? texture_path = texture_arg >= 0 && texture_arg + 1 < args.Length ? args[texture_arg + 1] : null;
+            int tod_arg = Array.IndexOf(args, "--time-of-day");
+            float? time_of_day = null;
+            if (tod_arg >= 0)
+            {
+                if (tod_arg + 1 >= args.Length || !float.TryParse(args[tod_arg + 1], NumberStyles.Float, CultureInfo.InvariantCulture, out float tod) || tod < 0.0f || tod > 1.0f)
+                {
+                    Console.Error.WriteLine("--time-of-day: expected a value from 0 to 1 (0.25 sunrise, 0.5 noon, 0.75 sunset)");
+                    return 1;
+                }
+                time_of_day = tod;
+            }
             int png_arg = Array.IndexOf(args, "--png");
             if (renderer_cube_offscreen && png_arg >= 0 && png_arg + 1 < args.Length)
             {
@@ -92,13 +104,13 @@ public static class Program
                 if (size_arg >= 0 && size_arg + 2 < args.Length) { w = uint.Parse(args[size_arg + 1], CultureInfo.InvariantCulture); h = uint.Parse(args[size_arg + 2], CultureInfo.InvariantCulture); }
                 int time_arg = Array.IndexOf(args, "--time");
                 if (time_arg >= 0 && time_arg + 1 < args.Length) t = float.Parse(args[time_arg + 1], CultureInfo.InvariantCulture);
-                RendererCubeDemo.RunOffscreenPng(args[png_arg + 1], w, h, t, validation, texture_path, Array.IndexOf(args, "--point-light") >= 0);
+                RendererCubeDemo.RunOffscreenPng(args[png_arg + 1], w, h, t, validation, texture_path, Array.IndexOf(args, "--point-light") >= 0, time_of_day);
                 Console.WriteLine($"renderer-cube-offscreen: wrote {args[png_arg + 1]} ({w}x{h})");
                 return 0;
             }
             if (renderer_cube_offscreen)
             {
-                System.Numerics.Vector4 c = RendererCubeDemo.RunOffscreen(128, validation, texture_path, Array.IndexOf(args, "--point-light") >= 0);
+                System.Numerics.Vector4 c = RendererCubeDemo.RunOffscreen(128, validation, texture_path, Array.IndexOf(args, "--point-light") >= 0, time_of_day);
                 Console.WriteLine(FormattableString.Invariant($"renderer-cube-offscreen: center pixel = {c.X:0.###}, {c.Y:0.###}, {c.Z:0.###}, {c.W:0.###}"));
                 return 0;
             }
@@ -106,7 +118,7 @@ public static class Program
             if (renderer_cube + 1 < args.Length)
                 int.TryParse(args[renderer_cube + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out frames);
             Window.Initialize();
-            int presented = RendererCubeDemo.Run(Window.GetWindow()!, frames, validation, texture_path, Array.IndexOf(args, "--point-light") >= 0);
+            int presented = RendererCubeDemo.Run(Window.GetWindow()!, frames, validation, texture_path, Array.IndexOf(args, "--point-light") >= 0, time_of_day);
             Console.WriteLine($"renderer-cube: presented {presented} frames");
             return 0;
         }

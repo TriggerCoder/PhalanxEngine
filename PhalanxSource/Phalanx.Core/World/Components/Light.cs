@@ -642,6 +642,27 @@ public class Light : Component
     }
     public LightPreset GetPreset() { return m_preset; }
 
+    // Light.cpp:680-694: moves the sun to a time of day (0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset) and sets the
+    // world's clock; a manual move drops the preset.
+    // Deviation: spartan points the sun along the ephemeris (World::GetEnvironment().sun, astronomy library, not ported)
+    // and ignores yaw_degrees; Phalanx uses SetPreset's orbit, elevation (time_of_day * 360 - 90) degrees about the
+    // right axis, so the sun rises towards -z, culminates overhead and sets towards +z, then turns it by yaw_degrees about up.
+    public void SetTimeOfDay(float time_of_day, float yaw_degrees = 0.0f)
+    {
+        m_preset = LightPreset.custom;
+
+        World.SetTimeOfDay(time_of_day);
+
+        if (m_light_type == LightType.Directional)
+        {
+            float elevation_rad  = (World.GetTimeOfDay(false) * 360.0f - 90.0f) * MathEx.DegToRad;
+            Quaternion elevation = QuaternionExtensions.FromAxisAngle(MathEx.Vector3.Right, elevation_rad);
+            Quaternion yaw       = QuaternionExtensions.FromAxisAngle(MathEx.Vector3.Up, yaw_degrees * MathEx.DegToRad);
+            GetEntity()!.SetRotation(yaw * elevation);
+            UpdateMatrices();
+        }
+    }
+
     // range
     public void SetRange(float range)
     {

@@ -81,6 +81,10 @@ public static partial class Renderer
     internal const RHI_Format TaauHistoryFormat = RHI_Format.R32G32B32A32_Float;
     internal const RHI_Format LightBufferFormat = RHI_Format.R16G16B16A16_Float;
 
+    // Environment.cpp:150-151 at mean distance: asin(695700 km / 1 au) and asin(1737.4 km / 384400 km)
+    private const float sun_angular_radius  = 0.0046505f;
+    private const float moon_angular_radius = 0.0045198f;
+
     /// <summary>spartan's r.dlss_reactivity (default 1, ConsoleVariables.cpp:190): how strongly disocclusion and
     /// motion edges in the upscaler reactivity mask reject the taau history, 0 to 1.</summary>
     public static float UpscalerReactivity { get; set; } = 1.0f;
@@ -179,7 +183,7 @@ public static partial class Renderer
         s_clock.Restart();
         s_time_last   = 0.0;
         s_initialized = true;
-        Log.LogInfo($"output {output_width}x{output_height}, render {render_width}x{render_height}{(window == null ? ", headless" : "")}, anti-aliasing {AntiAliasingUpsampling}, taau history {TaauHistoryFormat}, light buffers {LightBufferFormat}");
+        Log.LogInfo($"output {output_width}x{output_height}, render {render_width}x{render_height}{(window == null ? ", headless" : "")}, anti-aliasing {AntiAliasingUpsampling}, taau history {TaauHistoryFormat}, light buffers {LightBufferFormat}, skysphere {SkysphereFormat}");
     }
 
     public static void Shutdown()
@@ -409,6 +413,17 @@ public static partial class Renderer
         // Renderer.cpp:1963-1974: the camera's exposure, 1 without one; auto exposure isn't ported, so the mode stays manual
         s_cb_frame.camera_exposure      = GetViewCamera() is { } camera ? camera.GetExposure() : 1.0f;
         s_cb_frame.camera_exposure_mode = 0.0f;
+        // Renderer.cpp:2008-2016. The ephemeris (Environment.cpp) isn't ported: the sun's angular radius is its mean
+        // value (Environment.cpp:150 at 1 au), there is no moon (pointing down, nothing illuminated) and no equatorial
+        // frame for the stars
+        ref readonly LightParameters sun = ref GetLightParametersSlot0();
+        Vector3 sun_direction = (sun.flags & 1u) != 0 ? -Vector3.Normalize(sun.direction) : new Vector3(0.0f, -1.0f, 0.0f);
+        s_cb_frame.time_of_day    = Phalanx.World.World.GetTimeOfDay(false);
+        s_cb_frame.celestial_moon = new Vector4(0.0f, -1.0f, 0.0f, 0.0f);
+        s_cb_frame.celestial_sun  = new Vector4(sun_direction, moon_angular_radius);
+        s_cb_frame.equatorial_x   = new Vector4(1.0f, 0.0f, 0.0f, sun_angular_radius);
+        s_cb_frame.equatorial_y   = new Vector4(0.0f, 1.0f, 0.0f, 0.0f);
+        s_cb_frame.equatorial_z   = new Vector4(0.0f, 0.0f, 1.0f, 0.0f);
         s_time_last = time;
     }
 

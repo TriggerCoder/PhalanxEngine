@@ -45,7 +45,13 @@ using MaterialTextureType = Phalanx.World.MaterialTextureType;
 namespace Phalanx.Rendering;
 
 // spartan's shader names; resolve_c is Phalanx's stand-in for light, composition and tonemapping
-internal enum Renderer_Shader { gbuffer_v, gbuffer_p, depth_prepass_alpha_p, light_c, light_composition_c, output_c, blit_c, depth_light_v, depth_light_alpha_p, taau_c, dlss_reactivity_c, max }
+internal enum Renderer_Shader
+{
+    gbuffer_v, gbuffer_p, depth_prepass_alpha_p, light_c, light_composition_c, light_image_based_c, output_c, blit_c, depth_light_v, depth_light_alpha_p, taau_c, dlss_reactivity_c,
+    light_integration_brdf_specular_lut_c, light_integration_environment_filter_c, ffx_spd_average_one_c,
+    skysphere_c, skysphere_transmittance_lut_c, skysphere_multiscatter_lut_c, skysphere_sky_view_lut_c, skysphere_sh_project_c,
+    max
+}
 
 public static partial class Renderer
 {
@@ -177,15 +183,19 @@ public static partial class Renderer
             Replace(RenderTarget.taau_history,   s_resolution_output_width, s_resolution_output_height, history_format);
         }
 
+        CreateSkyRenderTargets();
+
         // new targets hold no history (Renderer.cpp:1720, SetResolution resets it with the targets)
         s_taau_reset_history = true;
     }
 
     private static void CreateShaders()
     {
-        void Compile(Renderer_Shader type, RHI_Shader_Type stage, string file, RHI_Vertex_Type vertex_type = RHI_Vertex_Type.Max)
+        void Compile(Renderer_Shader type, RHI_Shader_Type stage, string file, RHI_Vertex_Type vertex_type = RHI_Vertex_Type.Max, string? define = null)
         {
             var shader = new RHI_Shader();
+            if (define != null)
+                shader.AddDefine(define);
             shader.Compile(stage, file, async: false, vertex_type);
             if (!shader.IsCompiled())
                 throw new InvalidOperationException($"{file} failed to compile: {shader.LastError}");
@@ -203,6 +213,17 @@ public static partial class Renderer
         Compile(Renderer_Shader.depth_light_alpha_p, RHI_Shader_Type.Pixel,   "depth_light_alpha.frag");
         Compile(Renderer_Shader.taau_c,              RHI_Shader_Type.Compute, "taau.comp");
         Compile(Renderer_Shader.dlss_reactivity_c,   RHI_Shader_Type.Compute, "dlss_reactivity.comp");
+
+        // sky and image based lighting (Renderer_Resources.cpp:1168-1169, :1180, :1197, :1202-1206, spartan's defines select the kernel)
+        Compile(Renderer_Shader.light_image_based_c,                    RHI_Shader_Type.Compute, "light_image_based.comp");
+        Compile(Renderer_Shader.light_integration_brdf_specular_lut_c,  RHI_Shader_Type.Compute, "light_integration.comp", define: "BRDF_SPECULAR_LUT");
+        Compile(Renderer_Shader.light_integration_environment_filter_c, RHI_Shader_Type.Compute, "light_integration.comp", define: "ENVIRONMENT_FILTER");
+        Compile(Renderer_Shader.ffx_spd_average_one_c,                    RHI_Shader_Type.Compute, "downscale.comp");
+        Compile(Renderer_Shader.skysphere_c,                            RHI_Shader_Type.Compute, "sky/skysphere.comp");
+        Compile(Renderer_Shader.skysphere_transmittance_lut_c,          RHI_Shader_Type.Compute, "sky/skysphere.comp", define: "TRANSMITTANCE_LUT");
+        Compile(Renderer_Shader.skysphere_multiscatter_lut_c,           RHI_Shader_Type.Compute, "sky/skysphere.comp", define: "MULTISCATTER_LUT");
+        Compile(Renderer_Shader.skysphere_sky_view_lut_c,               RHI_Shader_Type.Compute, "sky/skysphere.comp", define: "SKY_VIEW_LUT");
+        Compile(Renderer_Shader.skysphere_sh_project_c,                 RHI_Shader_Type.Compute, "sky/skysphere_sh_project.comp");
     }
 
     private static readonly Mesh?[] s_standard_meshes = new Mesh?[(int)Phalanx.Geometry.MeshType.Max];
@@ -300,5 +321,6 @@ public static partial class Renderer
         RenderView.SetStandardMaterial(null);
         s_samplers_created = false;
         s_mip_bias         = float.MaxValue;
+        ResetSkyState();
     }
 }

@@ -29,6 +29,8 @@ layout(set = 0, binding = 307) uniform texture2D tex;
 layout(set = 0, binding = 308) uniform texture2D tex2;
 layout(set = 0, binding = 309) uniform texture2D tex3;
 layout(set = 0, binding = 310) uniform texture2D tex4;
+// Texture2D tex5 : register(t11) (common_resources_pass.hlsl:16), the 9x1 sky sh coefficients
+layout(set = 0, binding = 311) uniform texture2D tex5;
 
 // g-buffer (common_resources_gbuffer.hlsl:12-16), Renderer_BindingsSrv gbuffer_color .. gbuffer_depth
 layout(set = 0, binding = 300) uniform texture2D tex_albedo;

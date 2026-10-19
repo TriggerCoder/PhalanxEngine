@@ -1,9 +1,7 @@
-// GLSL port of SpartanEngine data/shaders/light_composition.hlsl @ 4c07baa (main_cs :59-107): frame_render =
-// light_diffuse * albedo + light_specular + emissive, sky pixels get the sky.
-// Deviations: there is no skysphere yet, sky pixels get a constant fallback radiance (values[0].rgb, photometric
-// nits, spartan: the atmospheric panorama through sample_sky_catmull_rom); light_image_based isn't ported, so
-// values[1].rgb, the same sky's diffuse ambient (albedo * occlusion * sky, what a uniform environment of that
-// radiance gives a lambertian surface) stands in for it; no transparent pass, water or glass.
+// GLSL port of SpartanEngine data/shaders/light_composition.hlsl @ 4c07baa (identical at upstream 67a6e8b):
+// frame_render = light_diffuse * albedo + light_specular + emissive, sky pixels get the skysphere panorama (tex2)
+// through the 5 tap catmull rom. The sky image based lighting is added afterwards by light_image_based.
+// Deviations: no transparent pass, water or glass yet, so only the opaque branch is ported.
 #version 460
 #extension GL_GOOGLE_include_directive : require
 
@@ -11,6 +9,48 @@
 #include "common_light.glsl"
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// catmull rom filtered sky panorama fetch (:15-54), sky pixels magnify the 4k panorama ~2.5x at a typical fov so
+// plain bilinear smears, the neighbourhood clamp suppresses ringing from the negative lobes around the sun
+vec3 sample_sky_catmull_rom(vec2 uv)
+{
+    vec2 resolution = vec2(textureSize(tex2, 0));
+
+    vec2 sample_position = uv * resolution;
+    vec2 tex_pos_1       = floor(sample_position - 0.5) + 0.5;
+    vec2 f               = sample_position - tex_pos_1;
+
+    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    vec2 w3 = f * f * (-0.5 + 0.5 * f);
+
+    vec2 w12       = w1 + w2;
+    vec2 offset_12 = w2 / w12;
+
+    vec2 inv_res    = 1.0 / resolution;
+    vec2 tex_pos_0  = (tex_pos_1 - 1.0) * inv_res;
+    vec2 tex_pos_3  = (tex_pos_1 + 2.0) * inv_res;
+    vec2 tex_pos_12 = (tex_pos_1 + offset_12) * inv_res;
+
+    vec3 s0 = textureLod(sampler2D(tex2, samplers[sampler_bilinear_clamp]), vec2(tex_pos_12.x, tex_pos_0.y),  0.0).rgb;
+    vec3 s1 = textureLod(sampler2D(tex2, samplers[sampler_bilinear_clamp]), vec2(tex_pos_0.x,  tex_pos_12.y), 0.0).rgb;
+    vec3 s2 = textureLod(sampler2D(tex2, samplers[sampler_bilinear_clamp]), vec2(tex_pos_12.x, tex_pos_12.y), 0.0).rgb;
+    vec3 s3 = textureLod(sampler2D(tex2, samplers[sampler_bilinear_clamp]), vec2(tex_pos_3.x,  tex_pos_12.y), 0.0).rgb;
+    vec3 s4 = textureLod(sampler2D(tex2, samplers[sampler_bilinear_clamp]), vec2(tex_pos_12.x, tex_pos_3.y),  0.0).rgb;
+
+    vec3 result = vec3(0.0);
+    result += s0 * w12.x * w0.y;
+    result += s1 * w0.x  * w12.y;
+    result += s2 * w12.x * w12.y;
+    result += s3 * w3.x  * w12.y;
+    result += s4 * w12.x * w3.y;
+
+    float weight_sum = w12.x + w12.y - w12.x * w12.y;
+    vec3 sky_min     = min(min(min(s0, s1), min(s2, s3)), s4);
+    vec3 sky_max     = max(max(max(s0, s1), max(s2, s3)), s4);
+    return clamp(result / weight_sum, sky_min, sky_max);
+}
 
 void main()
 {
@@ -28,8 +68,12 @@ void main()
 
     if (surface_is_sky(surface))
     {
-        light_emissive = photometric_to_radiometric(buffer_pass.values[0].rgb);
-        alpha          = 0.0;
+        // clamp y to the upper hemisphere so the dimmed below horizon sky does not show a dark band
+        vec3 view_dir_sky = surface.camera_to_pixel;
+        view_dir_sky.y    = max(view_dir_sky.y, 0.0);
+        view_dir_sky      = normalize(view_dir_sky);
+        light_emissive    = sample_sky_catmull_rom(direction_sphere_uv(view_dir_sky));
+        alpha             = 0.0;
     }
     else if (surface_is_opaque(surface))
     {
@@ -38,10 +82,8 @@ void main()
         // the g-buffer already stores emitted scene radiance, emission is not reflectance
         light_emissive = surface.emissive;
         alpha          = surface.alpha;
-
-        // stand-in for light_image_based: the fallback sky as a uniform environment
-        light_diffuse += photometric_to_radiometric(buffer_pass.values[1].rgb) * surface.occlusion;
     }
 
+    // each pixel reaches this point once per frame so a straight write is safe
     imageStore(tex_uav, ivec2(thread_id), validate_output(vec4(light_diffuse * surface.albedo + light_specular + light_emissive, alpha)));
 }

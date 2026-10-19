@@ -3,7 +3,8 @@
 // frame_output, which Tick blits to the back buffer. Pass_GBuffer ports the cpu-driven draw loop of
 // Renderer_Passes_Geometry.cpp (Pass_GBuffer), Pass_Blit is a port of Renderer_Passes_Post.cpp:590-619.
 // Pass_Light and Pass_Light_Composition port Renderer_Passes_Lighting.cpp:1580-1652 (light.hlsl,
-// light_composition.hlsl), Pass_Tonemap ports Renderer_Passes_Post.cpp:385-398 (output.hlsl).
+// light_composition.hlsl), the sky and Pass_Light_ImageBased live in Renderer_Passes_Sky.cs, Pass_Tonemap ports
+// Renderer_Passes_Post.cpp:385-398 (output.hlsl).
 // After composition the upscaler takes frame_render to frame_output (Pass_AA_Upscale, taau or a linear blit, see
 // Renderer_Passes_Post.cs) and the post process chain ping-pongs frame_output/frame_output_2, ending display ready in
 // frame_output.
@@ -33,14 +34,6 @@ namespace Phalanx.Rendering;
 
 public static partial class Renderer
 {
-    /// <summary>The sky radiance (photometric, nits, linear rec.709) where no geometry is. Spartan composites its
-    /// atmospheric skysphere there; until that is ported this constant stands in (light_composition.comp).</summary>
-    public static Vector3 SkyFallbackNits { get; set; } = new(1500.0f, 2200.0f, 3500.0f);
-
-    /// <summary>The fallback sky as diffuse ambient on surfaces (the stand-in for light_image_based), in nits;
-    /// zero turns it off.</summary>
-    public static Vector3 AmbientFallbackNits { get; set; } = new(150.0f, 220.0f, 350.0f);
-
     /// <summary>spartan's r.tonemapping (default gran turismo 7, ConsoleVariables.cpp:188); gran turismo 7 and reinhard
     /// are ported, the others clamp like Max.</summary>
     public static Renderer_Tonemapping Tonemapping { get; set; } = Renderer_Tonemapping.GranTurismo7;
@@ -78,6 +71,7 @@ public static partial class Renderer
     {
         RHI_Texture rt_render = GetRenderTargetTexture(RenderTarget.frame_render)!;
 
+        Pass_ComputeSky(cmd);            // Pass_ComputeBatchA (Renderer.cpp:5364-5388), see Renderer_Passes_Sky.cs
         SwapDepthHistory();
         ClearDepthHistoryIfNeeded(cmd);
         Pass_Depth_Prepass(cmd);
@@ -86,6 +80,7 @@ public static partial class Renderer
         Pass_ShadowMaps(cmd);            // Pass_GraphicsPhase2_ShadowsAndRT (Renderer.cpp:5431)
         Pass_Light(cmd);
         Pass_Light_Composition(cmd, rt_render);
+        Pass_Light_ImageBased(cmd, rt_render);
         Pass_AA_Upscale(cmd);
         Pass_PostProcess(cmd);
     }
@@ -316,6 +311,7 @@ public static partial class Renderer
             pass.Set(0, (float)GetLightCount()); // values[0].x (spartan: buffer_frame.cluster_light_count)
             cmd.PushConstants(pass);
             cmd.Dispatch((light_diffuse.GetWidth() + 7) / 8, (light_diffuse.GetHeight() + 7) / 8);
+            cmd.InsertBarrierMemory(); // the composition reads both, the rhi has no hazard tracking between dispatches yet
         }
         cmd.EndMarker();
     }
@@ -331,13 +327,11 @@ public static partial class Renderer
             SetStandardResources(cmd);
             SetCommonTextures(cmd);
             cmd.SetTexture((uint)Renderer_BindingsUav.tex, tex_out, storage: true);
+            cmd.SetTexture((uint)Renderer_BindingsSrv.tex2, GetRenderTargetTexture(RenderTarget.skysphere)!);
             cmd.SetTexture((uint)Renderer_BindingsSrv.tex3, GetRenderTargetTexture(RenderTarget.light_diffuse)!);
             cmd.SetTexture((uint)Renderer_BindingsSrv.tex4, GetRenderTargetTexture(RenderTarget.light_specular)!);
-            var pass = new PassBufferData();
-            pass.Set(0, new Vector4(SkyFallbackNits, 0.0f));
-            pass.Set(4, new Vector4(AmbientFallbackNits, 0.0f));
-            cmd.PushConstants(pass);
             cmd.Dispatch((tex_out.GetWidth() + 7) / 8, (tex_out.GetHeight() + 7) / 8);
+            cmd.InsertBarrierMemory(); // light_image_based reads and adds onto tex_out
         }
         cmd.EndMarker();
     }

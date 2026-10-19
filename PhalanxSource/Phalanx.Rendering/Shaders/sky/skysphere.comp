@@ -1,0 +1,325 @@
+// GLSL port of SpartanEngine data/shaders/sky/skysphere.hlsl @ 4c07baa (identical at upstream 67a6e8b), one file
+// for four kernels like spartan: TRANSMITTANCE_LUT, MULTISCATTER_LUT, SKY_VIEW_LUT and, without a define, the
+// equirectangular skysphere panorama. Bindings as in Pass_Skysphere / Pass_Lut_AtmosphericScattering
+// (Renderer_Passes_Sky.cpp): tex is the transmittance lut, tex2 the multiscatter lut, tex3 the sky view lut, tex_uav
+// the output. The sun is light slot 0 (get_sun_direction / get_sun_intensity in common_light.glsl).
+// Deviations:
+// - No stars, milky way or moon disc (night_compute_stars, night_compute_milky_way, night_compute_moon, :145-439):
+//   they need the ephemeris (Environment.cpp) and the star catalogue (stars.bin), neither is ported. The night
+//   atmosphere (night_sky_radiance and airglow, :441-460) is, the moon scatter in it stays dark because the frame
+//   buffer's celestial_moon points straight down (no moon).
+// - The panorama always runs the full bake (the warmup path); the renderer bakes it only when the sky changed,
+//   see Renderer_Passes_Sky.cs. The steady state 4x4 bayer partial dispatch (:560-571) and the warmup blend
+//   (:673-679) are kept for fidelity but the renderer never selects them, without clouds or stars every bake of the
+//   same sun is identical.
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "../common_resources.glsl"
+#include "../common_light.glsl"
+#include "atmosphere.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// main sky colour computation
+vec3 compute_sky_luminance(vec3 position, vec3 view_dir, vec3 sun_dir, float jitter)
+{
+    vec2 atmo_hit = ray_sphere_intersect(position, view_dir, earth_center, atmosphere_radius);
+    if (atmo_hit.y < 0.0) return vec3(0.0);
+
+    float t_min = max(0.0, atmo_hit.x);
+    float t_max = atmo_hit.y;
+
+    vec2 ground_hit = ray_sphere_intersect(position, view_dir, earth_center, earth_radius);
+    if (ground_hit.x > 0.0) t_max = min(t_max, ground_hit.x);
+
+    vec3 luminance_  = vec3(0.0);
+    vec3 trans       = vec3(1.0);
+    float previous_t = t_min;
+
+    for (int i = 0; i < scattering_samples; i++)
+    {
+        float u  = float(i + 1) / float(scattering_samples);
+        float t  = t_min + (t_max - t_min) * u * u;
+        float dt = t - previous_t;
+        vec3 sample_pos = position + view_dir * mix(previous_t, t, jitter);
+        previous_t = t;
+        float height = get_height(sample_pos);
+
+        if (height < 0.0 || height > atmosphere_radius - earth_radius)
+            continue;
+
+        vec3 extinction  = get_extinction(height);
+        vec3 total       = atmosphere_source(sample_pos, view_dir, sun_dir);
+        vec3 scatter_int = total * atmosphere_segment_weight(extinction, dt);
+
+        luminance_ += scatter_int * trans;
+        trans      *= exp(-extinction * dt);
+
+        if (all(lessThan(trans, vec3(1e-6)))) break;
+    }
+
+    // top of atmosphere radiance, the integral above already applied per path transmittance
+    return luminance_ * get_sun_radiance_toa();
+}
+
+// sun disc with limb darkening and a solar aureole
+vec3 compute_sun_disc(vec3 view_dir, vec3 sun_dir, vec3 transmittance)
+{
+    float cos_angle = dot(view_dir, sun_dir);
+    if (cos_angle <= 0.0)
+        return vec3(0.0);
+
+    float angle = acos(clamp(cos_angle, 0.0, 1.0));
+    vec3 toa    = get_sun_radiance_toa() * transmittance;
+    float x     = angle / buffer_frame.equatorial_x.w;
+
+    // limb darkening across the geometric disc
+    float r    = clamp(x, 0.0, 1.0);
+    float mu   = safe_sqrt(1.0 - r * r);
+    float limb = 0.3 + 0.93 * mu - 0.23 * mu * mu;
+
+    // compact soft core, solid angle division is skipped on purpose, it produces ~600k nits that the panorama hdr
+    // clamp flattens into a hard circle and erases every soft edge
+    float core = 1.0 - smoothstep(0.75, 1.4, x);
+    vec3 disc  = toa * core * limb * 0.5;
+
+    // wide solar aureole, must stay bright over several degrees or tonemap collapses the sun into a flat cream
+    // sticker against the blue sky
+    vec3 aureole = toa * (
+        exp(-x * x * 0.8)    * 0.45 +
+        exp(-x * x * 0.05)   * 0.35 +
+        exp(-x * x * 0.008)  * 0.18 +
+        exp(-x * x * 0.0015) * 0.06
+    );
+
+    return disc + aureole;
+}
+
+// sky view lut (hillaire 2020): the sky is azimuthally symmetric about the light's vertical plane so u only needs the
+// [0, pi] azimuth difference, v is elevation with a square root warp that concentrates texels at the horizon, the
+// texture packs two half luts vertically, rows [0, h) hold the sun sky and rows [h, 2h) the moonlit night sky
+const vec2 sky_view_lut_size = vec2(192.0, 108.0); // resolution of one half
+
+// horizontal unit vector of a direction, falls back to +x when degenerate
+vec2 sky_view_horizontal(vec3 dir)
+{
+    vec2 h    = vec2(dir.x, dir.z);
+    float len = length(h);
+    return len > 1e-5 ? h / len : vec2(1.0, 0.0);
+}
+
+// forward mapping used when sampling, unit uv in [0,1]^2 for the upper hemisphere
+vec2 sky_view_dir_to_unit(vec3 view_dir, vec3 light_dir)
+{
+    float elevation = asin(clamp(view_dir.y, 0.0, 1.0));
+    float v         = sqrt(elevation / (PI * 0.5));
+    float cos_az    = clamp(dot(sky_view_horizontal(view_dir), sky_view_horizontal(light_dir)), -1.0, 1.0);
+    float u         = acos(cos_az) / PI;
+    return vec2(u, v);
+}
+
+// inverse mapping used by the bake kernel, texel centres span the full unit range
+vec3 sky_view_unit_to_dir(vec2 unit_, vec3 light_dir)
+{
+    float elevation = unit_.y * unit_.y * (PI * 0.5);
+    float azimuth   = unit_.x * PI;
+    vec2 fwd        = sky_view_horizontal(light_dir);
+    vec2 side       = vec2(-fwd.y, fwd.x);
+    vec2 dir_h      = fwd * cos(azimuth) + side * sin(azimuth);
+    float cos_el    = cos(elevation);
+    return vec3(dir_h.x * cos_el, sin(elevation), dir_h.y * cos_el);
+}
+
+// bilinear fetch from the packed lut (tex3), half_index 0 samples the sun half, 1 the moon half
+vec3 sample_sky_view_lut(vec3 view_dir, vec3 light_dir, float half_index)
+{
+    vec2 unit_ = sky_view_dir_to_unit(view_dir, light_dir);
+    vec2 uv;
+    uv.x = (unit_.x * (sky_view_lut_size.x - 1.0) + 0.5) / sky_view_lut_size.x;
+    uv.y = (unit_.y * (sky_view_lut_size.y - 1.0) + 0.5) / (sky_view_lut_size.y * 2.0) + half_index * 0.5;
+    return textureLod(sampler2D(tex3, samplers[sampler_bilinear_clamp]), uv, 0.0).rgb;
+}
+
+// night atmosphere, the shared night radiometric levels of common_light.glsl
+vec3 night_compute_atmosphere(vec3 view_dir, vec3 moon_dir)
+{
+    vec3 base = night_sky_radiance(view_dir.y);
+
+    float dy           = view_dir.y - 0.04;
+    float airglow_band = exp(-(dy * dy) / 0.0050);
+    vec3 airglow       = night_airglow_rad * airglow_band;
+
+    float moon_elev   = dot(moon_dir, up_direction);
+    vec3 moon_scatter = vec3(0.0);
+    if (moon_elev > -0.10)
+    {
+        vec3 lum     = sample_sky_view_lut(view_dir, moon_dir, 1.0);
+        float fade   = smoothstep(-0.05, 0.10, moon_elev);
+        moon_scatter = lum * night_moon_to_sun * fade * buffer_frame.celestial_moon.w;
+    }
+
+    return base + airglow + moon_scatter;
+}
+
+#if defined(TRANSMITTANCE_LUT)
+void main()
+{
+    uvec2 tid = gl_GlobalInvocationID.xy;
+    vec2 res  = vec2(imageSize(tex_uav));
+    if (any(greaterThanEqual(tid, uvec2(res)))) return;
+
+    vec2 uv = (vec2(tid) + 0.5) / res;
+    float height, cos_zenith;
+    transmittance_uv_to_params(uv, height, cos_zenith);
+
+    vec3 pos    = earth_center + vec3(0.0, height, 0.0);
+    float sin_z = safe_sqrt(1.0 - cos_zenith * cos_zenith);
+    vec3 dir    = vec3(sin_z, cos_zenith, 0.0);
+
+    imageStore(tex_uav, ivec2(tid), vec4(compute_transmittance_to_top(pos, dir), 1.0));
+}
+
+#elif defined(MULTISCATTER_LUT)
+void main()
+{
+    uvec2 tid = gl_GlobalInvocationID.xy;
+    vec2 res  = vec2(imageSize(tex_uav));
+    if (any(greaterThanEqual(tid, uvec2(res)))) return;
+
+    vec2 uv       = vec2(tid) / (res - 1.0);
+    float cos_sun = uv.x * 2.0 - 1.0;
+    // include sea level and concentrate resolution in the dense lower atmosphere
+    float height = uv.y * uv.y * (atmosphere_radius - earth_radius);
+
+    imageStore(tex_uav, ivec2(tid), vec4(compute_multiscatter(height, cos_sun), 1.0));
+}
+
+#elif defined(SKY_VIEW_LUT)
+// bakes the full 32 step atmosphere march into a small direction indexed lut, the panorama bake then replaces its
+// per pixel march with one bilinear fetch
+void main()
+{
+    uvec2 tid = gl_GlobalInvocationID.xy;
+    vec2 res  = vec2(imageSize(tex_uav));
+    if (any(greaterThanEqual(tid, uvec2(res))))
+        return;
+
+    float half_h   = res.y * 0.5;
+    bool moon_half = float(tid.y) >= half_h;
+    vec2 texel     = vec2(float(tid.x), moon_half ? float(tid.y) - half_h : float(tid.y));
+    vec2 unit_     = vec2(texel.x / (res.x - 1.0), texel.y / (half_h - 1.0));
+
+    vec3 sun_dir   = get_sun_direction();
+    float sun_elev = dot(sun_dir, up_direction);
+
+    // the moon half is only read when the night factor exceeds its cutoff, skip the march during the day
+    if (moon_half && sun_elev >= 0.35)
+    {
+        imageStore(tex_uav, ivec2(tid), vec4(0.0, 0.0, 0.0, 1.0));
+        return;
+    }
+
+    vec3 light_dir = moon_half ? buffer_frame.celestial_moon.xyz : sun_dir;
+    vec3 view_dir  = sky_view_unit_to_dir(unit_, light_dir);
+    vec3 cam_pos   = clamp_camera_to_atmosphere(buffer_frame.camera_position);
+
+    vec3 luminance_ = compute_sky_luminance(cam_pos, view_dir, light_dir, 0.5);
+    imageStore(tex_uav, ivec2(tid), vec4(luminance_, 1.0));
+}
+
+#else
+void main()
+{
+    uvec2 tid = gl_GlobalInvocationID.xy;
+    vec2 res  = vec2(imageSize(tex_uav));
+
+    // bake mode, the first push constant float: warmup > 0 runs every output pixel and blends with that weight
+    // (1, 1/2, 1/3 ...), 0 is the steady state quarter resolution dispatch where each thread writes one pixel of
+    // a 4x4 tile chosen by the frame index
+    const float warmup_blend = pass_float(0u);
+    const bool  warmup       = warmup_blend > 0.0;
+    uvec2 pixel;
+    if (warmup)
+    {
+        pixel = tid;
+    }
+    else
+    {
+        // bayer ordered refresh, decorrelates staleness inside each 4x4 tile
+        const uvec2 bayer_order[16] = uvec2[16](uvec2(0, 0), uvec2(2, 2), uvec2(2, 0), uvec2(0, 2), uvec2(1, 1), uvec2(3, 3), uvec2(3, 1), uvec2(1, 3),
+                                                uvec2(1, 0), uvec2(3, 2), uvec2(3, 0), uvec2(1, 2), uvec2(0, 1), uvec2(2, 3), uvec2(2, 1), uvec2(0, 3));
+        pixel = tid * 4u + bayer_order[buffer_frame.frame & 15u];
+    }
+    if (any(greaterThanEqual(pixel, uvec2(res)))) return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / res;
+
+    // equirectangular to direction
+    float phi       = uv.x * PI2 + PI;
+    float theta     = (0.5 - uv.y) * PI;
+    float cos_t     = cos(theta);
+    vec3 view_dir   = normalize(vec3(cos(phi) * cos_t, sin(theta), sin(phi) * cos_t));
+    vec3 orig_view  = view_dir;
+
+    // mirror below horizon for ibl
+    bool below_horizon = view_dir.y < 0.0;
+    if (below_horizon) view_dir.y = -view_dir.y;
+
+    // sun direction from light slot 0
+    vec3 sun_dir   = get_sun_direction();
+    float sun_elev = dot(sun_dir, up_direction);
+
+    // day/night factor
+    float day_factor = 1.0 / (1.0 + exp(-sun_elev * 20.0));
+
+    // camera in atmosphere
+    vec3 cam_pos = clamp_camera_to_atmosphere(buffer_frame.camera_position);
+
+    // sky luminance, one fetch from the sky view lut instead of a 32 step march
+    vec3 luminance_ = sample_sky_view_lut(view_dir, sun_dir, 0.0);
+
+    // sun disc only, the night celestials are gathered below
+    vec3 sun_col = vec3(0.0);
+
+    // ground fade for the bottom hemisphere, fully gone within ~7 degrees below the horizon, the hard cap on the
+    // luminance prevents the mie peak around the sun from producing a pillar down through the bottom pole
+    float ground_fade = below_horizon ? clamp(1.0 + orig_view.y * 8.0, 0.0, 1.0) : 1.0;
+
+    if (below_horizon)
+    {
+        // clamp the mirrored sky so an intense sun mie spike cannot punch through the fade
+        float lum_avg   = (luminance_.r + luminance_.g + luminance_.b) * 0.333;
+        vec3 lum_capped = luminance_ * min(1.0, 1.0 / max(lum_avg, 1e-3));
+        luminance_      = lum_capped * 0.15 * ground_fade;
+    }
+    else if (sun_elev > -0.02)
+    {
+        vec3 cam_up    = normalize(cam_pos - earth_center);
+        vec3 sun_trans = planet_transmittance(length(cam_pos - earth_center), dot(cam_up, orig_view));
+        sun_col        = compute_sun_disc(orig_view, sun_dir, sun_trans);
+    }
+
+    // night sky, the physical sky needs no day factor, the earth shadow in the transmittance lut fades it
+    float night_factor = 1.0 - day_factor;
+    vec3 night_ambient = vec3(0.0);
+    if (night_factor > 0.001)
+    {
+        vec3 moon_dir = buffer_frame.celestial_moon.xyz;
+        night_ambient = night_compute_atmosphere(view_dir, moon_dir);
+        if (below_horizon)
+            night_ambient *= ground_fade;
+        night_ambient *= night_factor;
+    }
+
+    vec3 final_color = luminance_ + night_ambient + sun_col;
+    // chroma preserving clamp so the sun disc and any other hdr spike keep their tint
+    final_color = hdr_clamp_chroma(final_color, 100.0);
+
+    // the first warmup frame must not read uninitialized texture contents
+    if (warmup && warmup_blend < 1.0)
+        final_color = mix(imageLoad(tex_uav, ivec2(pixel)).rgb, final_color, warmup_blend);
+
+    imageStore(tex_uav, ivec2(pixel), vec4(final_color, 1.0));
+}
+#endif

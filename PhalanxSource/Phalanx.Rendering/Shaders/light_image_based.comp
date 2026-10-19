@@ -1,0 +1,125 @@
+// GLSL port of SpartanEngine data/shaders/light_image_based.hlsl @ 4c07baa (main_cs :130-275, the shading is the
+// same at upstream 67a6e8b): sky image based lighting added on top of the composed frame (tex_uav +=). tex2 is the
+// split sum brdf lut, tex3 the ggx prefiltered skysphere, tex5 the l2 sky sh, values[0].x the environment mip count.
+// Deviations:
+// - Specular mip: spartan picks mip roughness^2 * (mip_count - 1) (:162), while the prefilter writes mip m with
+//   roughness m / (mip_count - 1) (light_integration.hlsl:111), so a surface fetched a lobe much sharper than its own
+//   (roughness 0.7 read the roughness 0.49 mip, ggx alpha 0.059 instead of 0.215). Phalanx reads mip
+//   roughness * (mip_count - 1), the mip that was filtered for that roughness.
+// - No ssao: occlusion is the g-buffer's (material ao, 1 without a map) and the bent normal is the normal, so the
+//   specular occlusion stack (lagarde cone, bent normal overlap, horizon fade) runs with those; the hooks are the same
+//   lines as spartan's and pick up ssao when it lands.
+// - Not ported: restir gi, metallic flakes, water, transparents (no transparent pass yet) and ray traced reflections,
+//   their branches are left out.
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "common_resources.glsl"
+#include "common_light.glsl"
+#include "spherical_harmonics.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// approx of multi-bounce (inter-reflection) for ao, jimenez et al. 2016
+vec3 gtao_multi_bounce(float visibility, vec3 albedo)
+{
+    vec3 a = 2.0404 * albedo - 0.3324;
+    vec3 b = -4.7951 * albedo + 0.6417;
+    vec3 c = 2.7552 * albedo + 0.6903;
+    return max(vec3(visibility), ((visibility * a + b) * visibility + c) * visibility);
+}
+
+// frostbite/epic dominant direction, biases toward the normal as roughness increases
+vec3 get_dominant_specular_direction(vec3 normal, vec3 view_dir, float roughness)
+{
+    vec3 reflection  = reflect(-view_dir, normal);
+    float smoothness = 1.0 - roughness;
+    float factor     = smoothness * (sqrt(smoothness) + roughness);
+    return normalize(mix(normal, reflection, factor));
+}
+
+// roughness modified fresnel
+vec3 fresnel_schlick_roughness(float cos_theta, vec3 F0, float roughness)
+{
+    return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
+}
+
+void main()
+{
+    uvec2 thread_id     = gl_GlobalInvocationID.xy;
+    vec2 resolution_out = vec2(imageSize(tex_uav));
+    if (any(greaterThanEqual(vec2(thread_id), resolution_out)))
+        return;
+
+    Surface surface = surface_build(thread_id, resolution_out, true, false);
+
+    // sky check (and transparents, there is no transparent pass yet)
+    if (!surface_is_opaque(surface))
+        return;
+
+    // no ssao yet, the bent normal is the normal
+    vec3 bent_normal = surface.normal;
+
+    // view and energy calculations
+    vec3 view_dir = normalize(-surface.camera_to_pixel);
+    float n_dot_v = clamp(dot(surface.normal, view_dir), 0.0, 1.0);
+
+    // split sum approximation: use F0 (not full fresnel) as the lut already encodes the fresnel response
+    vec2 env_brdf        = textureLod(sampler2D(tex2, samplers[sampler_bilinear_clamp]), vec2(n_dot_v, surface.roughness), 0.0).xy;
+    vec3 specular_energy = (surface.F0 * env_brdf.x + env_brdf.y) * compute_multiscatter_energy_split_sum(surface.F0, env_brdf);
+
+    // diffuse energy uses roughness modified fresnel for proper energy conservation
+    vec3 F              = fresnel_schlick_roughness(n_dot_v, surface.F0, surface.roughness);
+    vec3 diffuse_energy = compute_diffuse_energy(F, surface.metallic);
+
+    // specular reflection setup, the mip the prefilter filtered for this roughness (see the header)
+    vec3 dominant_specular_direction = get_dominant_specular_direction(surface.normal, view_dir, surface.roughness);
+    float mip_count_environment      = pass_float(0u);
+    float mip_level                  = surface.roughness * (mip_count_environment - 1.0);
+
+    // specular occlusion stack, lagarde 2014 cone aperture vs ao
+    float specular_occlusion = clamp(pow(n_dot_v + surface.occlusion, exp2(-16.0 * surface.roughness - 1.0)) - 1.0 + surface.occlusion, 0.0, 1.0);
+
+    // bent normal cone overlap, jimenez 2016, weighted by smoothness^2 so it only bites near mirrors
+    float bent_dot               = clamp(dot(bent_normal, dominant_specular_direction), 0.0, 1.0);
+    float smoothness             = 1.0 - surface.roughness;
+    float bent_reflection_factor = mix(1.0, bent_dot, smoothness * smoothness);
+    specular_occlusion          *= bent_reflection_factor;
+
+    // horizon fade, lagarde 2014, stops sampling the panorama below the surface plane
+    float horizon       = clamp(1.0 + dot(dominant_specular_direction, surface.normal), 0.0, 1.0);
+    specular_occlusion *= horizon * horizon;
+
+    // environment sampling, specular stays on the prefiltered skysphere
+    vec3 specular_skysphere = textureLod(sampler2D(tex3, samplers[sampler_trilinear_clamp]), direction_sphere_uv(dominant_specular_direction), mip_level).rgb;
+
+    // diffuse directional ao on sh, ao narrows the higher bands, multi bounce is applied as a relative boost so
+    // occlusion is not squared on top of the cone
+    vec3 sky_sh[9];
+    sh_load_l2(sky_sh);
+    const float ibl_visibility_floor = 0.1;
+    float ibl_visibility   = max(surface.occlusion, ibl_visibility_floor);
+    vec3 diffuse_skysphere = sh_irradiance_l2(bent_normal, sky_sh, ibl_visibility);
+
+    // thin leaves also receive sky through their reverse side, with the same deeper green the sun picks up
+    vec3 transmitted_sky = vec3(0.0);
+    if (surface_is_foliage(surface))
+    {
+        transmitted_sky = sh_irradiance_l2(-surface.normal, sky_sh, ibl_visibility) *
+                          clamp(surface.subsurface_scattering, 0.0, 1.0) *
+                          foliage_transmission_tint(surface.albedo);
+    }
+    vec3 multi_bounce = gtao_multi_bounce(ibl_visibility, surface.albedo);
+    vec3 bounce_boost = multi_bounce / ibl_visibility;
+    // sh convolution returns irradiance, so the lambert brdf still needs 1/pi
+    vec3 diffuse_ibl          = diffuse_skysphere * INV_PI * bounce_boost * diffuse_energy * surface.albedo;
+    vec3 diffuse_ibl_transmit = transmitted_sky * INV_PI * diffuse_energy * surface.albedo;
+    vec3 specular_ibl         = specular_skysphere * specular_energy * specular_occlusion;
+
+    diffuse_ibl += diffuse_ibl_transmit;
+
+    vec3 ibl = (diffuse_ibl + specular_ibl) * surface.alpha;
+
+    vec4 current = imageLoad(tex_uav, ivec2(thread_id));
+    imageStore(tex_uav, ivec2(thread_id), current + validate_output(vec4(ibl, 0.0)));
+}

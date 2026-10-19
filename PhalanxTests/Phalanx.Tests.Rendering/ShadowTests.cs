@@ -37,7 +37,7 @@ public partial class RendererSceneTests
         Entity camera = scene.camera.GetEntity()!;
         camera.SetPosition(new Vector3(0, 4, -5));
         camera.SetRotation(LookRotation(new Vector3(0, -0.5f, 0.5f) - new Vector3(0, 4, -5)));
-        Renderer.AmbientFallbackNits = Vector3.Zero;
+        Renderer.ImageBasedLighting = false; // direct light only, Run turns it back on
         World.World.Tick();
         return scene;
     }

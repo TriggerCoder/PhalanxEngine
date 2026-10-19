@@ -296,9 +296,22 @@ public static partial class Renderer
     {
         s_light_count = 0;
         s_lights.Clear();
+        // the first directional light always goes in slot 0, the sky and the sun helpers read it there
+        // (Renderer.cpp:3334-3352), the rest follow in world order
+        Light? first_directional = null;
         foreach (Entity light_entity in Phalanx.World.World.GetEntitiesLights())
         {
-            if (light_entity.GetComponent<Light>() is not Light light)
+            if (light_entity.GetComponent<Light>() is Light light && light.GetLightType() == LightType.Directional)
+            {
+                first_directional = light;
+                light.SetIndex(s_light_count++);
+                s_lights.Add(light);
+                break;
+            }
+        }
+        foreach (Entity light_entity in Phalanx.World.World.GetEntitiesLights())
+        {
+            if (light_entity.GetComponent<Light>() is not Light light || light == first_directional)
                 continue;
             if (s_light_count >= RHI_Definitions.rhi_max_array_size)
                 break;
@@ -349,8 +362,22 @@ public static partial class Renderer
                 }
             }
         }
+
+        // slot 0 is read directly by the sky, clear it when the last light disappears instead of leaving the previous
+        // sun live; the atmosphere still uses the direction at zero intensity (Renderer.cpp:3497-3504)
+        if (s_light_count == 0)
+        {
+            s_light_parameters[0] = new LightParameters
+            {
+                direction       = new Vector3(0.0f, -1.0f, 0.0f),
+                direction_right = new Vector3(1.0f, 0.0f, 0.0f),
+            };
+        }
         UploadIfChanged(cmd, Renderer_Buffer.LightParameters, MemoryMarshal.AsBytes(s_light_parameters.AsSpan(0, (int)System.Math.Max(s_light_count, 1u))), ref s_light_bytes_uploaded);
     }
+
+    // light slot 0 as uploaded this frame, the sky's sun (Pass_Skysphere change detection)
+    internal static ref readonly LightParameters GetLightParametersSlot0() => ref s_light_parameters[0];
 
     // a shadow map slice: one directional cascade, one point light cube face or a spot light (Renderer.h ShadowSlice)
     internal sealed record ShadowSlice(Light light, uint slice_index)

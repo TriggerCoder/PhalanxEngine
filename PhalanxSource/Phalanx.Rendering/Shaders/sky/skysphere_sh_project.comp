@@ -1,0 +1,54 @@
+// GLSL port of SpartanEngine data/shaders/sky/skysphere_sh_project.hlsl @ 4c07baa (identical at upstream 67a6e8b):
+// projects the skysphere radiance (tex, sampled at a mid mip) into l2 sh, 9 rgba32f coefficients in the 9x1 tex_uav.
+// A single thread over a 64x32 grid, it runs only when the panorama was rebuilt.
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "../common_resources.glsl"
+#include "../common_light.glsl"
+#include "../spherical_harmonics.glsl"
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+const uint sh_samples_x = 64;
+const uint sh_samples_y = 32;
+
+void main()
+{
+    float mip_count_f = float(textureQueryLevels(sampler2D(tex, samplers[sampler_bilinear_clamp])));
+    // mid mip keeps l2 stable without paying for the full panorama
+    float mip = max(mip_count_f - 4.0, 0.0);
+
+    vec3 sh[9];
+    for (int i = 0; i < 9; i++)
+        sh[i] = vec3(0.0);
+
+    for (uint y = 0; y < sh_samples_y; y++)
+    {
+        for (uint x = 0; x < sh_samples_x; x++)
+        {
+            vec2 uv         = (vec2(x, y) + 0.5) / vec2(sh_samples_x, sh_samples_y);
+            vec3 dir        = direction_from_sphere_uv(uv);
+            float sin_theta = max(sqrt(max(1.0 - dir.y * dir.y, 0.0)), 1e-4);
+            float d_omega   = (PI2 / float(sh_samples_x)) * (PI / float(sh_samples_y)) * sin_theta;
+
+            vec3 radiance = textureLod(sampler2D(tex, samplers[sampler_bilinear_clamp]), uv, mip).rgb;
+            if (any(isnan(radiance)) || any(isinf(radiance)))
+                continue;
+
+            float b[9];
+            sh_eval_basis_l2(dir, b);
+
+            for (int c = 0; c < 9; c++)
+                sh[c] += radiance * b[c] * d_omega;
+        }
+    }
+
+    for (int c = 0; c < 9; c++)
+    {
+        vec3 coeff = sh[c];
+        if (any(isnan(coeff)) || any(isinf(coeff)))
+            coeff = vec3(0.0);
+        imageStore(tex_uav, ivec2(c, 0), vec4(coeff, 1.0));
+    }
+}
