@@ -141,7 +141,7 @@ public static partial class Renderer
         bool sun_present    = (sun.flags & 1u) != 0;
         Vector3 direction   = sun_present ? Vector3.Normalize(sun.direction) : new Vector3(0.0f, -1.0f, 0.0f);
         float intensity     = sun_present ? sun.intensity : 0.0f;
-        Vector3 camera      = s_cb_frame.camera_position;
+        Vector3 camera      = s_main_view.State.Cb.camera_position; // shared by the views: the main view's camera
 
         bool changed = !s_sky.baked || sun_present != s_sky.sun_present;
         if (!changed)

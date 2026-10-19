@@ -12,6 +12,8 @@
 //   approximation, Phalanx has no radiometric conversion yet), position, direction, range, angle, the type flags, the
 //   shadow and screen space shadow bits with the atlas slices and the contact shadow slice; no ies.
 // - Material and light tables are rewritten only when their contents change, at offset 0 (spartan: the same).
+// - The light table is shared entries plus per view parts: a directional light's cascades and contact shadow slice
+//   come from the view (Renderer.Views.cs), the main view's table is uploaded.
 // - Every renderable draws lod 0 of each sub-mesh, there is no culling or lod selection yet.
 using System.Numerics;
 using System.Runtime.CompilerServices;
@@ -37,13 +39,14 @@ public static partial class Renderer
     private static readonly HashSet<Mesh> s_uploaded_meshes = new();
 
     // a cpu draw: what the prepass and the g-buffer replay (spartan: Renderer_DrawCall)
-    private struct DrawCall
+    internal struct DrawCall
     {
         public uint draw_index, material_index, index_count, index_offset, vertex_offset;
         public Render? render;
     }
     // spartan's two halves: opaque draws first, alpha tested draws (Material::IsAlphaTested) after
-    // (Renderer_Passes_Geometry.cpp:1553 prepass, :1764 g-buffer)
+    // (Renderer_Passes_Geometry.cpp:1553 prepass, :1764 g-buffer). These are every draw of the frame (the shadow maps
+    // draw them); a view draws its own lists (ViewState.DrawCalls, CullView)
     private static readonly List<DrawCall> s_draw_calls       = new();
     private static readonly List<DrawCall> s_draw_calls_alpha = new();
 
@@ -77,8 +80,18 @@ public static partial class Renderer
         }
     }
 
-    /// <summary>The camera the frame renders from (Renderer::GetCamera): the world's.</summary>
-    public static Camera? GetViewCamera() => Phalanx.World.World.GetCamera();
+    /// <summary>The camera the view being rendered renders from (Renderer::GetCamera), the main view's outside a frame:
+    /// the world's unless the view has its own.</summary>
+    public static Camera? GetViewCamera() => ActiveViewState.View.GetCamera();
+
+    // what a view draws: there is no culling yet, every view draws every draw of the frame in the same order
+    private static void CullView(ViewState view)
+    {
+        view.DrawCalls.Clear();
+        view.DrawCallsAlpha.Clear();
+        view.DrawCalls.AddRange(s_draw_calls);
+        view.DrawCallsAlpha.AddRange(s_draw_calls_alpha);
+    }
 
     // the material a renderable draws with: its own, else the standard one (spartan: SetDefaultMaterial on load)
     internal static Material? GetRenderMaterial(Render render) => render.GetMaterial() ?? s_standard_material;
@@ -291,12 +304,13 @@ public static partial class Renderer
     private static readonly List<Light> s_lights = new();
 
     // UpdateLights (Renderer.cpp:3255-3340): indices first, then the shadow atlas (UpdateShadowAtlas, spartan runs it
-    // when the lights changed, here every frame), then the matrices that depend on the atlas, then the table
+    // when the lights changed, here every frame), then the matrices that depend on the atlas, then the table. The table
+    // is split: the shared entries (every light, a directional one without its cascades) are written once, then every
+    // rendered view composes its own table with its directional cascades and contact shadow slices (Renderer.Views.cs)
     private static void UpdateLights(RHI_CommandList cmd)
     {
         s_light_count = 0;
         s_lights.Clear();
-        s_sss_lights.Clear();
         // the first directional light always goes in slot 0, the sky and the sun helpers read it there
         // (Renderer.cpp:3334-3352), the rest follow in world order
         Light? first_directional = null;
@@ -322,51 +336,24 @@ public static partial class Renderer
 
         UpdateShadowAtlas();
 
+        float atlas_width = GetRenderTargetTexture(RenderTarget.shadow_atlas)?.GetWidth() ?? 0u;
         foreach (Light light in s_lights)
+            light.UpdateMatrices();
+        foreach (SceneView view in RenderedViews())
         {
-            light.UpdateMatrices(); // the directional cascades snap to the atlas texel they were just given
-            uint index = light.GetIndex();
-            Entity entity = light.GetEntity()!;
-            LightType type = light.GetLightType();
-            // phalanx: also needs a packed slice, spartan sets the bit for slices left unpacked past the minimum size
-            bool shadows_effective = light.IsShadowEffective() && light.GetAtlasRectangle(0).IsDefined();
-            // Renderer.cpp:3285-3289, the slice is assigned here, see Renderer_Passes_ScreenSpaceShadows.cs
-            bool has_screen_space_shadows = AssignScreenSpaceShadowSlice(light, shadows_effective);
-            Phalanx.Math.Color color = light.GetColorEffective(); // Renderer.cpp:3290-3293
-            ref LightParameters entry = ref s_light_parameters[index];
-            entry = new LightParameters
+            ViewState state = view.State;
+            PruneCascades(state);
+            // the directional cascades snap to the atlas texel they were just given
+            foreach (Light light in s_lights)
             {
-                intensity       = light.GetIntensityRadiometric(),
-                range           = light.GetRange(),
-                angle           = light.GetAngle(),
-                color           = new Vector4(color.R, color.G, color.B, color.A),
-                position        = entity.GetPosition(),
-                direction       = entity.GetForward(),
-                direction_right = entity.GetRight(),
-                area_width      = light.GetAreaWidth(),
-                area_height     = light.GetAreaHeight(),
-                screen_space_shadow_slice_index = has_screen_space_shadows ? light.GetScreenSpaceShadowsSliceIndex() : 0u,
-                // bit 5 (volumetric) stays clear, that pass isn't ported
-                flags           = (type == LightType.Directional ? 1u << 0 : 0u) |
-                                  (type == LightType.Point       ? 1u << 1 : 0u) |
-                                  (type == LightType.Spot        ? 1u << 2 : 0u) |
-                                  (shadows_effective             ? 1u << 3 : 0u) |
-                                  (has_screen_space_shadows      ? 1u << 4 : 0u) |
-                                  (type == LightType.Area        ? 1u << 6 : 0u),
-            };
-            for (int i = 0; i < 6; i++)
-            {
-                if (i < light.GetSliceCount())
-                {
-                    entry.transform[i]         = light.GetViewProjectionMatrix((uint)i);
-                    entry.atlas_offsets[i]     = light.GetAtlasOffset((uint)i);
-                    entry.atlas_scales[i]      = light.GetAtlasScale((uint)i);
-                    Phalanx.Math.Rectangle rect = light.GetAtlasRectangle((uint)i);
-                    // spartan writes 1 / 0 = inf for unpacked slices, the shader never reads them (has_shadows is off)
-                    entry.atlas_texel_sizes[i] = rect.IsDefined() ? new Vector2(1.0f / rect.Width, 1.0f / rect.Height) : Vector2.Zero;
-                }
+                if (light.GetLightType() == LightType.Directional)
+                    state.GetCascades(light).Update(light, view.GetCamera(), atlas_width);
             }
         }
+
+        // the shared entries
+        foreach (Light light in s_lights)
+            WriteLightParameters(ref s_light_parameters[light.GetIndex()], light, null);
 
         // slot 0 is read directly by the sky, clear it when the last light disappears instead of leaving the previous
         // sun live; the atmosphere still uses the direction at zero intensity (Renderer.cpp:3497-3504)
@@ -378,27 +365,118 @@ public static partial class Renderer
                 direction_right = new Vector3(1.0f, 0.0f, 0.0f),
             };
         }
-        UploadIfChanged(cmd, Renderer_Buffer.LightParameters, MemoryMarshal.AsBytes(s_light_parameters.AsSpan(0, (int)System.Math.Max(s_light_count, 1u))), ref s_light_bytes_uploaded);
+
+        // every view's table; the light buffer holds the main view's (see Renderer.Views.cs)
+        int table_count = (int)System.Math.Max(s_light_count, 1u);
+        foreach (SceneView view in RenderedViews())
+        {
+            ViewState state = view.State;
+            state.SssLights.Clear();
+            if (state.LightParameters.Length < table_count)
+                state.LightParameters = new LightParameters[System.Math.Max(table_count, 16)];
+            s_light_parameters.AsSpan(0, table_count).CopyTo(state.LightParameters);
+            foreach (Light light in s_lights)
+            {
+                if (light.GetLightType() == LightType.Directional)
+                    WriteLightParameters(ref state.LightParameters[light.GetIndex()], light, state);
+            }
+        }
+        UploadIfChanged(cmd, Renderer_Buffer.LightParameters, MemoryMarshal.AsBytes(s_main_view.State.LightParameters.AsSpan(0, table_count)), ref s_light_bytes_uploaded);
     }
 
-    // light slot 0 as uploaded this frame, the sky's sun (Pass_Skysphere change detection)
-    internal static ref readonly LightParameters GetLightParametersSlot0() => ref s_light_parameters[0];
+    // one light's table entry (Renderer.cpp:3270-3310); a directional light takes its cascades and its contact shadow
+    // slice from the view, without a view it is the shared entry (no cascades, no shadows)
+    private static void WriteLightParameters(ref LightParameters entry, Light light, ViewState? view)
+    {
+        Entity entity  = light.GetEntity()!;
+        LightType type = light.GetLightType();
+        DirectionalCascades? cascades = type == LightType.Directional && view != null ? view.GetCascades(light) : null;
+        Phalanx.Math.Rectangle AtlasRectangle(uint i) => cascades?.GetAtlasRectangle(i) ?? light.GetAtlasRectangle(i);
 
-    // a shadow map slice: one directional cascade, one point light cube face or a spot light (Renderer.h ShadowSlice)
+        // phalanx: also needs a packed slice, spartan sets the bit for slices left unpacked past the minimum size
+        bool shadows_effective = light.IsShadowEffective() && AtlasRectangle(0).IsDefined();
+        // Renderer.cpp:3285-3289, the slice is assigned here, see Renderer_Passes_ScreenSpaceShadows.cs
+        int screen_space_shadow_slice = view != null ? AssignScreenSpaceShadowSlice(view, light, shadows_effective) : -1;
+        bool has_screen_space_shadows = screen_space_shadow_slice >= 0;
+        Phalanx.Math.Color color = light.GetColorEffective(); // Renderer.cpp:3290-3293
+        entry = new LightParameters
+        {
+            intensity       = light.GetIntensityRadiometric(),
+            range           = light.GetRange(),
+            angle           = light.GetAngle(),
+            color           = new Vector4(color.R, color.G, color.B, color.A),
+            position        = entity.GetPosition(),
+            direction       = entity.GetForward(),
+            direction_right = entity.GetRight(),
+            area_width      = light.GetAreaWidth(),
+            area_height     = light.GetAreaHeight(),
+            screen_space_shadow_slice_index = has_screen_space_shadows ? (uint)screen_space_shadow_slice : 0u,
+            // bit 5 (volumetric) stays clear, that pass isn't ported
+            flags           = (type == LightType.Directional ? 1u << 0 : 0u) |
+                              (type == LightType.Point       ? 1u << 1 : 0u) |
+                              (type == LightType.Spot        ? 1u << 2 : 0u) |
+                              (shadows_effective             ? 1u << 3 : 0u) |
+                              (has_screen_space_shadows      ? 1u << 4 : 0u) |
+                              (type == LightType.Area        ? 1u << 6 : 0u),
+        };
+        for (int i = 0; i < 6; i++)
+        {
+            if (i < light.GetSliceCount())
+            {
+                entry.transform[i]         = cascades?.GetViewProjectionMatrix((uint)i) ?? light.GetViewProjectionMatrix((uint)i);
+                entry.atlas_offsets[i]     = cascades?.GetAtlasOffset((uint)i) ?? light.GetAtlasOffset((uint)i);
+                entry.atlas_scales[i]      = cascades?.GetAtlasScale((uint)i) ?? light.GetAtlasScale((uint)i);
+                Phalanx.Math.Rectangle rect = AtlasRectangle((uint)i);
+                // spartan writes 1 / 0 = inf for unpacked slices, the shader never reads them (has_shadows is off)
+                entry.atlas_texel_sizes[i] = rect.IsDefined() ? new Vector2(1.0f / rect.Width, 1.0f / rect.Height) : Vector2.Zero;
+            }
+        }
+    }
+
+    // a view's cascades of lights that are gone
+    private static void PruneCascades(ViewState view)
+    {
+        if (view.Cascades.Count == 0)
+            return;
+        foreach (Light light in view.Cascades.Keys.ToArray())
+        {
+            if (light.GetLightType() != LightType.Directional || !s_lights.Contains(light))
+                view.Cascades.Remove(light);
+        }
+    }
+
+    // light slot 0 as the view sees it this frame, the sky's sun (Pass_Skysphere change detection) and the frame constants
+    internal static ref readonly LightParameters GetLightParametersSlot0() => ref GetLightParametersSlot0(s_main_view.State);
+    private static ref readonly LightParameters GetLightParametersSlot0(ViewState view) =>
+        ref view.LightParameters.Length > 0 ? ref view.LightParameters[0] : ref s_light_parameters[0];
+
+    // a shadow map slice: one directional cascade of one view, one point light cube face or a spot light (Renderer.h
+    // ShadowSlice)
     internal sealed record ShadowSlice(Light light, uint slice_index)
     {
         public uint resolution;
         public Phalanx.Math.Rectangle rect;
+        // the view a directional cascade belongs to, null for the other lights
+        public ViewState? view { get; init; }
     }
     private static readonly List<ShadowSlice> s_shadow_slices = new();
     internal static IReadOnlyList<ShadowSlice> GetShadowSlices() => s_shadow_slices;
+
+    /// <summary>The atlas rectangle of a slice: the view's cascade for a directional light, the light's own otherwise.</summary>
+    internal static Phalanx.Math.Rectangle GetShadowSliceRectangle(ShadowSlice slice) =>
+        slice.view != null ? slice.view.GetCascades(slice.light).GetAtlasRectangle(slice.slice_index) : slice.light.GetAtlasRectangle(slice.slice_index);
+
+    /// <summary>The view projection of one of <paramref name="light"/>'s directional cascades as <paramref name="view"/> sees it.</summary>
+    internal static Matrix4x4 GetDirectionalCascadeViewProjection(SceneView view, Light light, uint cascade) =>
+        view.State.GetCascades(light).GetViewProjectionMatrix(cascade);
 
     /// <summary>The shadow atlas size, square (spartan: renderer_resolution_shadow_atlas, 8192). Takes effect on the next
     /// Initialize; a smaller atlas keeps software rasterizers fast.</summary>
     public static uint ShadowAtlasResolution { get; set; } = Renderer_Definitions.renderer_resolution_shadow_atlas;
 
     // UpdateShadowAtlas (Renderer.cpp:4739-4851): every slice of every light with effective shadows gets the same
-    // square size, the largest that row packs (8 texel borders) into the atlas, found by binary search
+    // square size, the largest that row packs (8 texel borders) into the atlas, found by binary search. A directional
+    // light has its two cascades once per rendered view.
     internal static void UpdateShadowAtlas()
     {
         Texture? atlas = GetRenderTargetTexture(RenderTarget.shadow_atlas);
@@ -410,11 +488,26 @@ public static partial class Renderer
 
         foreach (Light light in s_lights)
         {
+            bool directional = light.GetLightType() == LightType.Directional;
             light.ClearAtlasRectangles();
+            if (directional)
+            {
+                foreach (SceneView view in RenderedViews())
+                    view.State.GetCascades(light).ClearAtlasRectangles();
+            }
             if (!light.IsShadowEffective())
                 continue;
-            for (uint i = 0; i < light.GetSliceCount(); ++i)
-                s_shadow_slices.Add(new ShadowSlice(light, i));
+            if (directional)
+            {
+                foreach (SceneView view in RenderedViews())
+                    for (uint i = 0; i < light.GetSliceCount(); ++i)
+                        s_shadow_slices.Add(new ShadowSlice(light, i) { view = view.State });
+            }
+            else
+            {
+                for (uint i = 0; i < light.GetSliceCount(); ++i)
+                    s_shadow_slices.Add(new ShadowSlice(light, i));
+            }
         }
         if (s_shadow_slices.Count == 0)
             return;
@@ -442,7 +535,12 @@ public static partial class Renderer
         // assign rectangles (spartan ignores the result: past the minimum the trailing slices keep a zero rect)
         PackRow(max_slice_res, num_slices, true);
         foreach (ShadowSlice slice in s_shadow_slices)
-            slice.light.SetAtlasRectangle(slice.slice_index, slice.rect);
+        {
+            if (slice.view != null)
+                slice.view.GetCascades(slice.light).SetAtlasRectangle(slice.slice_index, slice.rect, atlas.GetWidth(), atlas.GetHeight());
+            else
+                slice.light.SetAtlasRectangle(slice.slice_index, slice.rect);
+        }
     }
 
     // row-based packing: uniform slices left to right with 8 texel borders, wrapping to the next row; assign only
@@ -531,9 +629,7 @@ public static partial class Renderer
         s_bound_vertex_id = s_bound_index_id = s_bound_instance_id = 0;
         s_draw_data_count = 0;
         s_light_count     = 0;
-        s_sss_lights.Clear();
-        s_sss_needs_clear  = true;
-        s_sss_written      = false;
-        s_sss_slice_warned = false;
+        s_lights.Clear();
+        s_shadow_slices.Clear();
     }
 }

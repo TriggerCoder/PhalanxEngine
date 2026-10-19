@@ -154,8 +154,9 @@ public partial class RendererSceneTests
             byte[] table = RHI_Device.ReadbackBuffer(Renderer.GetBuffer(Renderer_Buffer.LightParameters)!, 0, (ulong)Marshal.SizeOf<LightParameters>());
             LightParameters uploaded = MemoryMarshal.Read<LightParameters>(table);
             Matrix4x4 near = uploaded.transform[0], far = uploaded.transform[1];
-            Assert.Equal(sun.GetViewProjectionMatrix(0), near);
-            Assert.Equal(sun.GetViewProjectionMatrix(1), far);
+            // the cascades follow the camera, so they belong to the view (DirectionalCascades)
+            Assert.Equal(Renderer.GetDirectionalCascadeViewProjection(Renderer.MainView, sun, 0), near);
+            Assert.Equal(Renderer.GetDirectionalCascadeViewProjection(Renderer.MainView, sun, 1), far);
 
             // the shader picks the first cascade whose ndc holds the point (shadow_mapping.hlsl): the camera's
             // surroundings land in cascade 0, a point 200 m out only in cascade 1
@@ -220,7 +221,7 @@ public partial class RendererSceneTests
                 Assert.Equal(resolution, s.rect.Width);
                 Assert.Equal(resolution, s.rect.Height);
                 Assert.True(s.rect.X + s.rect.Width <= 1024 && s.rect.Y + s.rect.Height <= 1024, s.rect.ToString());
-                Assert.Equal(s.rect, s.light.GetAtlasRectangle(s.slice_index));
+                Assert.Equal(s.rect, Renderer.GetShadowSliceRectangle(s));
             }
             // no two slices overlap, and neighbours keep the 8 texel border
             for (int i = 0; i < slices.Count; i++)

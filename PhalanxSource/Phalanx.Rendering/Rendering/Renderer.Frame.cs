@@ -19,7 +19,9 @@
 //   a warning, and selecting taau resets its history. FXAA isn't ported yet, it renders like AA_Off_Upscale_Linear.
 // - A camera cut (NotifyCameraCut, :4886, applied in UpdateFrameConstantBuffer :2294-2310) resets the taau history and
 //   makes the previous camera matrices the current ones. Spartan also cuts when the world unloads (:669-677); Phalanx
-//   has no world unload event, it cuts when the view camera changes instead.
+//   has no world unload event, it cuts when the view camera changes instead. The frame constants, the jitter, the
+//   camera history and the cut are per view (ViewState, Renderer.Views.cs); Renderer.NotifyCameraCut cuts the main
+//   view, ResetTaauHistory and a switch to taau reset every view, a resize resets the resized view.
 // - resolution_scale is spartan's dynamic resolution scale (GetResolutionScale, :1925), always 1 here (no
 //   r.resolution_scale or dynamic resolution yet); get_render_resolution_active in the shaders reads it.
 // - The output resolution follows the swapchain when the window is resized (spartan: OnResize from the window event).
@@ -40,16 +42,8 @@ public static partial class Renderer
     private static bool s_initialized;
     private static ulong s_frame_num;
     private static uint s_frame_cb_ring_slot;
-    private static uint s_resolution_render_width, s_resolution_render_height;
-    private static uint s_resolution_output_width, s_resolution_output_height;
-    private static FrameBufferData s_cb_frame;
-    private static uint s_temporal_frame;
+    // the per view frame state (frame constants, jitter, camera history, resolution) lives in ViewState, see Renderer.Views.cs
     private static readonly System.Diagnostics.Stopwatch s_clock = new();
-    private static double s_time_last;
-    private static uint s_jitter_phase_index;
-    private static Vector2 s_jitter_offset;
-    private static bool s_camera_cut_pending;
-    private static Phalanx.World.Camera? s_camera_previous;
 
     /// <summary>spartan's r.antialiasing_upsampling default (ConsoleVariables.cpp:189).</summary>
     internal const Renderer_AntiAliasing_Upsampling AntiAliasingUpsamplingDefault = Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau;
@@ -72,7 +66,7 @@ public static partial class Renderer
                 value = Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear;
             }
             if (value == Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau)
-                s_taau_reset_history = true;
+                ResetTaauHistory(); // every view
             s_antialiasing_upsampling = value;
         }
     }
@@ -91,14 +85,20 @@ public static partial class Renderer
 
     /// <summary>The next frame starts a new shot (spartan: Renderer::NotifyCameraCut): the taau history is dropped and the
     /// previous camera matrices are set to the current ones, so nothing reprojects across the cut. A change of the view
-    /// camera does this by itself.</summary>
-    public static void NotifyCameraCut() => s_camera_cut_pending = true;
+    /// camera does this by itself. This is the main view's; other views have
+    /// <see cref="SceneView.NotifyCameraCut"/>.</summary>
+    public static void NotifyCameraCut() => s_main_view.NotifyCameraCut();
 
-    /// <summary>Drops the taau history, the next taau frame starts from the current frame only (spartan: Renderer::ResetTaauHistory).</summary>
-    public static void ResetTaauHistory() => s_taau_reset_history = true;
+    /// <summary>Drops the taau history of every view, the next taau frame starts from the current frame only (spartan:
+    /// Renderer::ResetTaauHistory). One view: <see cref="SceneView.ResetHistory"/>.</summary>
+    public static void ResetTaauHistory()
+    {
+        foreach (SceneView view in s_views)
+            view.ResetHistory();
+    }
 
-    // whether the next taau resolve ignores the history (tests)
-    internal static bool IsTaauHistoryResetPending() => s_taau_reset_history;
+    // whether the main view's next taau resolve ignores the history (tests)
+    internal static bool IsTaauHistoryResetPending() => s_main_view.State.History.TaauResetPending;
 
     /// <summary>Whether <see cref="Initialize(IWindow, bool)"/> (or the headless overload) ran and <see cref="Shutdown"/> did not.</summary>
     public static bool IsInitialized => s_initialized;
@@ -106,8 +106,10 @@ public static partial class Renderer
     /// <summary>Frames rendered since <see cref="Initialize(IWindow, bool)"/>.</summary>
     public static ulong GetFrameNumber() => s_frame_num;
 
-    public static (uint width, uint height) GetResolutionRender() => (s_resolution_render_width, s_resolution_render_height);
-    public static (uint width, uint height) GetResolutionOutput() => (s_resolution_output_width, s_resolution_output_height);
+    /// <summary>The main view's render resolution.</summary>
+    public static (uint width, uint height) GetResolutionRender() => s_main_view.RenderResolution;
+    /// <summary>The main view's output resolution (the swapchain's with a window).</summary>
+    public static (uint width, uint height) GetResolutionOutput() => s_main_view.OutputResolution;
 
     /// <summary>Gamma written to the frame constant buffer (spartan's r.gamma, default the display gamma 2.2).</summary>
     public static float Gamma { get; set; } = 2.2f;
@@ -159,12 +161,14 @@ public static partial class Renderer
             CreateBuffers();
             CreateStandardMeshes();
             CreateStandardMaterials();
-            CreateRenderTargets(true, true);
+            CreateRenderTargets();
+            CreateViewTargets(s_main_view, true, true);
             CreateSamplers();
             UpdateBindlessResources();
         }
         catch
         {
+            DestroyViews();
             DestroyResources();
             RHI_Device.Destroy();
             throw;
@@ -172,16 +176,8 @@ public static partial class Renderer
 
         s_frame_num          = 0;
         s_frame_cb_ring_slot = 0;
-        s_temporal_frame     = 0;
-        s_cb_frame           = default;
-        s_cb_frame.view = s_cb_frame.projection = s_cb_frame.view_projection = s_cb_frame.view_projection_unjittered = Matrix4x4.Identity;
-        s_jitter_phase_index = 0;
-        s_jitter_offset      = Vector2.Zero;
-        s_camera_cut_pending = false;
-        s_camera_previous    = null;
-        s_taau_reset_history = true;
+        s_main_view.State.ResetFrameState();
         s_clock.Restart();
-        s_time_last   = 0.0;
         s_initialized = true;
         Log.LogInfo($"output {output_width}x{output_height}, render {render_width}x{render_height}{(window == null ? ", headless" : "")}, anti-aliasing {AntiAliasingUpsampling}, taau history {TaauHistoryFormat}, light buffers {LightBufferFormat}, skysphere {SkysphereFormat}");
     }
@@ -192,6 +188,7 @@ public static partial class Renderer
             return;
         s_initialized = false;
         RHI_Device.QueueWaitAll();
+        DestroyViews();
         DestroyResources();
         GeometryBuffer.Shutdown();
         ResetSceneGpuState();
@@ -209,14 +206,15 @@ public static partial class Renderer
         if (!s_initialized)
             throw new InvalidOperationException("The renderer is not initialized");
 
+        ViewState main = s_main_view.State;
         RHI_SwapChain? swapchain = RHI_Device.GetSwapChain();
-        bool resolution_valid = s_resolution_render_width >= renderer_min_render_dimension && s_resolution_render_height >= renderer_min_render_dimension;
+        bool resolution_valid = main.RenderWidth >= renderer_min_render_dimension && main.RenderHeight >= renderer_min_render_dimension;
         bool can_render = resolution_valid && (swapchain == null || RHI_Device.AcquireSwapChainImage());
         if (!can_render)
             return false;
 
         // the output follows the swapchain
-        if (swapchain != null && (swapchain.GetWidth() != s_resolution_output_width || swapchain.GetHeight() != s_resolution_output_height))
+        if (swapchain != null && (swapchain.GetWidth() != main.OutputWidth || swapchain.GetHeight() != main.OutputHeight))
         {
             SetResolutionOutputInternal(swapchain.GetWidth(), swapchain.GetHeight(), recreate: true);
             SetViewport(swapchain.GetWidth(), swapchain.GetHeight());
@@ -228,44 +226,35 @@ public static partial class Renderer
 
         TickAdvanceFrameConstantBufferRing();
         TickUploadBindlessDependencies(cmd);
-        UpdateFrameConstantBuffer(cmd);
         ProduceFrame(cmd);
 
         if (swapchain is { IsImageAcquired: true })
-            RHI_Device.BlitToBackBuffer(cmd, GetRenderTargetTexture(RenderTarget.frame_output)!);
+            RHI_Device.BlitToBackBuffer(cmd, s_main_view.State.GetTarget(RenderTarget.frame_output)!);
         RHI_Device.EndFrame(); // with an acquired image: prepare for present, submit, present
 
         s_frame_num++;
         return true;
     }
 
+    /// <summary>The main view's render resolution; its render-sized targets are recreated and its history reset.</summary>
     public static void SetResolutionRender(uint width, uint height) => SetResolutionRenderInternal(width, height, recreate: s_initialized);
+    /// <summary>The main view's output resolution (with a window it follows the swapchain).</summary>
     public static void SetResolutionOutput(uint width, uint height) => SetResolutionOutputInternal(width, height, recreate: s_initialized);
 
     private static void SetResolutionRenderInternal(uint width, uint height, bool recreate)
     {
-        if (width == s_resolution_render_width && height == s_resolution_render_height)
+        if (!SetViewResolution(s_main_view, width, height, s_main_view.State.OutputWidth, s_main_view.State.OutputHeight, recreate))
             return;
-        s_resolution_render_width  = width;
-        s_resolution_render_height = height;
         if (recreate)
-        {
-            CreateRenderTargets(true, false);
             CreateSamplers(); // the anisotropic mip bias follows the render/output ratio
-        }
     }
 
     private static void SetResolutionOutputInternal(uint width, uint height, bool recreate)
     {
-        if (width == s_resolution_output_width && height == s_resolution_output_height)
+        if (!SetViewResolution(s_main_view, s_main_view.State.RenderWidth, s_main_view.State.RenderHeight, width, height, recreate))
             return;
-        s_resolution_output_width  = width;
-        s_resolution_output_height = height;
         if (recreate)
-        {
-            CreateRenderTargets(false, true);
             CreateSamplers();
-        }
     }
 
     private static void TickAdvanceFrameConstantBufferRing()
@@ -278,66 +267,66 @@ public static partial class Renderer
         }
     }
 
-    // the frame constant buffer as uploaded this frame (tests)
-    internal static ref readonly FrameBufferData GetFrameConstantBuffer() => ref s_cb_frame;
+    // the main view's frame constant buffer as uploaded this frame (tests)
+    internal static ref readonly FrameBufferData GetFrameConstantBuffer() => ref s_main_view.State.Cb;
 
-    private static void UpdateFrameConstantBuffer(RHI_CommandList cmd)
+    private static void UpdateFrameConstantBuffer(RHI_CommandList cmd, ViewState v)
     {
-        UpdateFrameCb_CameraAndProjectionHistory();
-        UpdateFrameCb_ProjectionJitter();
-        UpdateFrameCb_ViewProjectionAndCameraFields();
-        UpdateFrameCb_ScalarFields();
+        UpdateFrameCb_CameraAndProjectionHistory(v);
+        UpdateFrameCb_ProjectionJitter(v);
+        UpdateFrameCb_ViewProjectionAndCameraFields(v);
+        UpdateFrameCb_ScalarFields(v);
 
         // Renderer.cpp:2294-2310: after a cut nothing reprojects, the previous matrices are the current ones
-        Phalanx.World.Camera? camera = GetViewCamera();
-        if (camera != s_camera_previous)
+        Phalanx.World.Camera? camera = v.View.GetCamera();
+        if (camera != v.History.CameraPrevious)
         {
             // the first camera has no history to cut, but the targets don't either
-            s_camera_cut_pending = true;
-            s_camera_previous    = camera;
+            v.History.CameraCutPending = true;
+            v.History.CameraPrevious   = camera;
         }
-        if (s_camera_cut_pending)
+        if (v.History.CameraCutPending)
         {
-            s_camera_cut_pending = false;
-            s_taau_reset_history = true;
-            s_cb_frame.view_previous                       = s_cb_frame.view;
-            s_cb_frame.projection_previous                 = s_cb_frame.projection;
-            s_cb_frame.view_projection_previous            = s_cb_frame.view_projection;
-            s_cb_frame.view_projection_previous_unjittered = s_cb_frame.view_projection_unjittered;
-            s_cb_frame.camera_position_previous            = s_cb_frame.camera_position;
-            s_cb_frame.taa_jitter_previous                 = s_cb_frame.taa_jitter_current;
-            s_cb_frame.view_projection_previous_relative   = s_cb_frame.view_projection_relative;
+            v.History.CameraCutPending = false;
+            v.History.TaauResetPending = true;
+            v.Cb.view_previous                       = v.Cb.view;
+            v.Cb.projection_previous                 = v.Cb.projection;
+            v.Cb.view_projection_previous            = v.Cb.view_projection;
+            v.Cb.view_projection_previous_unjittered = v.Cb.view_projection_unjittered;
+            v.Cb.camera_position_previous            = v.Cb.camera_position;
+            v.Cb.taa_jitter_previous                 = v.Cb.taa_jitter_current;
+            v.Cb.view_projection_previous_relative   = v.Cb.view_projection_relative;
         }
 
-        GetBuffer(Renderer_Buffer.ConstantFrame)!.Update(cmd, MemoryMarshal.AsBytes(new ReadOnlySpan<FrameBufferData>(in s_cb_frame)));
+        GetBuffer(Renderer_Buffer.ConstantFrame)!.Update(cmd, MemoryMarshal.AsBytes(new ReadOnlySpan<FrameBufferData>(in v.Cb)));
     }
 
-    private static void UpdateFrameCb_CameraAndProjectionHistory()
+    private static void UpdateFrameCb_CameraAndProjectionHistory(ViewState v)
     {
-        if (GetViewCamera() is { } camera)
+        if (v.View.GetCamera() is { } camera)
         {
-            s_cb_frame.view_previous       = s_cb_frame.view;
-            s_cb_frame.view                = camera.GetViewMatrix();
-            s_cb_frame.view_inverted       = Invert(s_cb_frame.view);
-            s_cb_frame.projection_previous = s_cb_frame.projection;
-            s_cb_frame.projection          = camera.GetProjectionMatrix();
-            s_cb_frame.projection_inverted = Invert(s_cb_frame.projection);
+            v.Cb.view_previous       = v.Cb.view;
+            v.Cb.view                = camera.GetViewMatrix();
+            v.Cb.view_inverted       = Invert(v.Cb.view);
+            v.Cb.projection_previous = v.Cb.projection;
+            v.Cb.projection          = camera.GetProjectionMatrix();
+            v.Cb.projection_inverted = Invert(v.Cb.projection);
         }
     }
 
-    private static void UpdateFrameCb_ProjectionJitter()
+    private static void UpdateFrameCb_ProjectionJitter(ViewState v)
     {
-        if (AntiAliasingUpsampling == Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau)
+        if (IsTaauActive(v.View))
         {
-            s_jitter_phase_index = (s_jitter_phase_index + 1) % TaauJitterPhaseCount;
+            v.JitterPhase = (v.JitterPhase + 1) % TaauJitterPhaseCount;
 
             // the render resolution has no dynamic scale yet (spartan: m_resolution_render * GetResolutionScale())
-            s_jitter_offset = GetTaauJitter(s_jitter_phase_index, s_resolution_render_width, s_resolution_render_height);
-            s_cb_frame.projection *= Matrix4x4.CreateTranslation(s_jitter_offset.X, s_jitter_offset.Y, 0.0f);
+            v.Jitter = GetTaauJitter(v.JitterPhase, v.RenderWidth, v.RenderHeight);
+            v.Cb.projection *= Matrix4x4.CreateTranslation(v.Jitter.X, v.Jitter.Y, 0.0f);
         }
         else
         {
-            s_jitter_offset = Vector2.Zero;
+            v.Jitter = Vector2.Zero;
         }
     }
 
@@ -366,65 +355,65 @@ public static partial class Renderer
         return new Vector2(2.0f * jx / render_width, -2.0f * jy / render_height);
     }
 
-    private static void UpdateFrameCb_ViewProjectionAndCameraFields()
+    private static void UpdateFrameCb_ViewProjectionAndCameraFields(ViewState v)
     {
-        s_cb_frame.view_projection_previous = s_cb_frame.view_projection;
-        s_cb_frame.view_projection          = s_cb_frame.view * s_cb_frame.projection;
-        s_cb_frame.view_projection_inverted = Invert(s_cb_frame.view_projection);
+        v.Cb.view_projection_previous = v.Cb.view_projection;
+        v.Cb.view_projection          = v.Cb.view * v.Cb.projection;
+        v.Cb.view_projection_inverted = Invert(v.Cb.view_projection);
 
         // the camera view translates by -camera_position, so relative to it only the rotation is left
-        Matrix4x4 view_rotation = s_cb_frame.view;
+        Matrix4x4 view_rotation = v.Cb.view;
         view_rotation.M41 = 0.0f;
         view_rotation.M42 = 0.0f;
         view_rotation.M43 = 0.0f;
-        s_cb_frame.view_projection_previous_relative = s_cb_frame.view_projection_relative;
-        s_cb_frame.view_projection_relative          = view_rotation * s_cb_frame.projection;
+        v.Cb.view_projection_previous_relative = v.Cb.view_projection_relative;
+        v.Cb.view_projection_relative          = view_rotation * v.Cb.projection;
 
-        if (GetViewCamera() is { } camera)
+        if (v.View.GetCamera() is { } camera)
         {
-            s_cb_frame.view_projection_previous_unjittered = s_cb_frame.view_projection_unjittered;
-            s_cb_frame.view_projection_unjittered          = s_cb_frame.view * camera.GetProjectionMatrix();
-            s_cb_frame.camera_near                         = camera.GetNearPlane();
-            s_cb_frame.camera_far                          = camera.GetFarPlane();
-            s_cb_frame.camera_position_previous            = s_cb_frame.camera_position;
-            s_cb_frame.camera_position                     = camera.GetEntity()!.GetPosition();
-            s_cb_frame.camera_forward                      = camera.GetEntity()!.GetForward();
-            s_cb_frame.camera_right                        = camera.GetEntity()!.GetRight();
-            s_cb_frame.camera_fov                          = camera.GetFovHorizontalRad();
-            s_cb_frame.camera_aperture                     = camera.GetAperture();
-            s_cb_frame.camera_last_movement_time           = (s_cb_frame.camera_position - s_cb_frame.camera_position_previous).LengthSquared() != 0.0f
-                ? (float)s_clock.Elapsed.TotalSeconds : s_cb_frame.camera_last_movement_time;
+            v.Cb.view_projection_previous_unjittered = v.Cb.view_projection_unjittered;
+            v.Cb.view_projection_unjittered          = v.Cb.view * camera.GetProjectionMatrix();
+            v.Cb.camera_near                         = camera.GetNearPlane();
+            v.Cb.camera_far                          = camera.GetFarPlane();
+            v.Cb.camera_position_previous            = v.Cb.camera_position;
+            v.Cb.camera_position                     = camera.GetEntity()!.GetPosition();
+            v.Cb.camera_forward                      = camera.GetEntity()!.GetForward();
+            v.Cb.camera_right                        = camera.GetEntity()!.GetRight();
+            v.Cb.camera_fov                          = camera.GetFovHorizontalRad();
+            v.Cb.camera_aperture                     = camera.GetAperture();
+            v.Cb.camera_last_movement_time           = (v.Cb.camera_position - v.Cb.camera_position_previous).LengthSquared() != 0.0f
+                ? (float)s_clock.Elapsed.TotalSeconds : v.Cb.camera_last_movement_time;
         }
     }
 
-    private static void UpdateFrameCb_ScalarFields()
+    private static void UpdateFrameCb_ScalarFields(ViewState v)
     {
         double time = s_clock.Elapsed.TotalSeconds;
-        s_cb_frame.resolution_output   = new Vector2(s_resolution_output_width, s_resolution_output_height);
-        s_cb_frame.resolution_render   = new Vector2(s_resolution_render_width, s_resolution_render_height);
-        s_cb_frame.taa_jitter_previous = s_cb_frame.taa_jitter_current;
-        s_cb_frame.taa_jitter_current  = s_jitter_offset;
-        s_cb_frame.time                = time;
-        s_cb_frame.delta_time          = (float)(time - s_time_last);
-        s_cb_frame.frame               = ++s_temporal_frame;
-        s_cb_frame.resolution_scale    = 1.0f; // GetResolutionScale(), no dynamic resolution yet
-        s_cb_frame.hdr_enabled         = RHI_Device.GetSwapChain() is { } swapchain && swapchain.IsHdr() ? 1.0f : 0.0f;
-        s_cb_frame.gamma               = Gamma;
+        v.Cb.resolution_output   = new Vector2(v.OutputWidth, v.OutputHeight);
+        v.Cb.resolution_render   = new Vector2(v.RenderWidth, v.RenderHeight);
+        v.Cb.taa_jitter_previous = v.Cb.taa_jitter_current;
+        v.Cb.taa_jitter_current  = v.Jitter;
+        v.Cb.time                = time;
+        v.Cb.delta_time          = (float)(time - v.TimeLast);
+        v.Cb.frame               = ++v.TemporalFrame;
+        v.Cb.resolution_scale    = 1.0f; // GetResolutionScale(), no dynamic resolution yet
+        v.Cb.hdr_enabled         = RHI_Device.GetSwapChain() is { } swapchain && swapchain.IsHdr() ? 1.0f : 0.0f;
+        v.Cb.gamma               = Gamma;
         // Renderer.cpp:1963-1974: the camera's exposure, 1 without one; auto exposure isn't ported, so the mode stays manual
-        s_cb_frame.camera_exposure      = GetViewCamera() is { } camera ? camera.GetExposure() : 1.0f;
-        s_cb_frame.camera_exposure_mode = 0.0f;
+        v.Cb.camera_exposure      = v.View.GetCamera() is { } camera ? camera.GetExposure() : 1.0f;
+        v.Cb.camera_exposure_mode = 0.0f;
         // Renderer.cpp:2008-2016. The ephemeris (Environment.cpp) isn't ported: the sun's angular radius is its mean
         // value (Environment.cpp:150 at 1 au), there is no moon (pointing down, nothing illuminated) and no equatorial
         // frame for the stars
-        ref readonly LightParameters sun = ref GetLightParametersSlot0();
+        ref readonly LightParameters sun = ref GetLightParametersSlot0(v);
         Vector3 sun_direction = (sun.flags & 1u) != 0 ? -Vector3.Normalize(sun.direction) : new Vector3(0.0f, -1.0f, 0.0f);
-        s_cb_frame.time_of_day    = Phalanx.World.World.GetTimeOfDay(false);
-        s_cb_frame.celestial_moon = new Vector4(0.0f, -1.0f, 0.0f, 0.0f);
-        s_cb_frame.celestial_sun  = new Vector4(sun_direction, moon_angular_radius);
-        s_cb_frame.equatorial_x   = new Vector4(1.0f, 0.0f, 0.0f, sun_angular_radius);
-        s_cb_frame.equatorial_y   = new Vector4(0.0f, 1.0f, 0.0f, 0.0f);
-        s_cb_frame.equatorial_z   = new Vector4(0.0f, 0.0f, 1.0f, 0.0f);
-        s_time_last = time;
+        v.Cb.time_of_day    = Phalanx.World.World.GetTimeOfDay(false);
+        v.Cb.celestial_moon = new Vector4(0.0f, -1.0f, 0.0f, 0.0f);
+        v.Cb.celestial_sun  = new Vector4(sun_direction, moon_angular_radius);
+        v.Cb.equatorial_x   = new Vector4(1.0f, 0.0f, 0.0f, sun_angular_radius);
+        v.Cb.equatorial_y   = new Vector4(0.0f, 1.0f, 0.0f, 0.0f);
+        v.Cb.equatorial_z   = new Vector4(0.0f, 0.0f, 1.0f, 0.0f);
+        v.TimeLast = time;
     }
 
     // spartan's Matrix::Invert of a singular matrix yields garbage, System.Numerics reports it: keep identity then

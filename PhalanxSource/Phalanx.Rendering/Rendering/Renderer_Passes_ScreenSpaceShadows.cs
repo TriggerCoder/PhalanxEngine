@@ -20,7 +20,8 @@
 //   flag); with it off no light gets bit 4 and the target is cleared to lit.
 // - The target is cleared to lit (1) when it is first used and when no light qualifies any more, once, instead of
 //   every frame (Renderer_Passes_Lighting.cpp:1210-1216): with the shared rule nothing reads a slice no light owns.
-// - No stereo (xr) path and no secondary views.
+// - No stereo (xr) path. Every view has its own target and slices (spartan: one target, no secondary views), and
+//   ViewFeatures.ScreenSpaceShadows turns them off for one view.
 // - Spartan's "todo: why do we need to flip sign?" (Renderer_Passes_Lighting.cpp:1244): bend wants the direction
 //   towards the light (bend_sss_cpu.h:59-60), an entity's forward is the direction the light travels, hence -forward.
 // Spartan's tuning is kept (bend_sss.hlsl: 256 samples, 0.005 surface thickness, contrast 4). Below about 720p a ray
@@ -45,53 +46,52 @@ public static partial class Renderer
     // Renderer_Resources.cpp:812, a slice per light
     internal const uint renderer_sss_slice_count = 4;
 
-    // the directional lights with a contact shadow this frame, in slice order (UpdateLights fills it)
-    private static readonly List<Light> s_sss_lights = new();
-    private static bool s_sss_needs_clear = true; // a new target holds garbage
-    private static bool s_sss_written;            // a light wrote a slice last frame
-    private static bool s_sss_slice_warned;
-
-    internal static IReadOnlyList<Light> GetScreenSpaceShadowLights() => s_sss_lights;
+    // the directional lights with a contact shadow this frame in the main view, in slice order (UpdateLights fills
+    // them per view: ViewState.SssLights, with the clear state in ViewHistory)
+    internal static IReadOnlyList<Light> GetScreenSpaceShadowLights() => s_main_view.State.SssLights;
 
     // the shared rule of the pass (Renderer_Passes_Lighting.cpp:1230) and the light table (Renderer.cpp:3285-3287)
-    private static bool WantsScreenSpaceShadows(Light light, bool shadows_effective) =>
+    private static bool WantsScreenSpaceShadows(ViewState view, Light light, bool shadows_effective) =>
         ScreenSpaceShadows                                &&
+        (view.View.Features & ViewFeatures.ScreenSpaceShadows) != 0 &&
         light.GetLightType() == LightType.Directional     &&
         light.GetFlag(LightFlags.Shadows)                 &&
         light.GetFlag(LightFlags.ShadowsScreenSpace)      &&
         shadows_effective                                 &&
         light.GetIntensityRadiometric() != 0.0f;
 
-    // UpdateLights: gives the light a slice when it qualifies, true when it has one
-    private static bool AssignScreenSpaceShadowSlice(Light light, bool shadows_effective)
+    // UpdateLights: gives the light a slice of the view's target when it qualifies, the slice or -1
+    private static int AssignScreenSpaceShadowSlice(ViewState view, Light light, bool shadows_effective)
     {
-        if (!WantsScreenSpaceShadows(light, shadows_effective))
-            return false;
-        if (s_sss_lights.Count == renderer_sss_slice_count)
+        if (!WantsScreenSpaceShadows(view, light, shadows_effective))
+            return -1;
+        if (view.SssLights.Count == renderer_sss_slice_count)
         {
-            if (!s_sss_slice_warned)
+            if (!view.SssSliceWarned)
                 Log.LogWarning("Render target has reached the maximum number of lights it can hold"); // Renderer_Passes_Lighting.cpp:1237
-            s_sss_slice_warned = true;
-            return false;
+            view.SssSliceWarned = true;
+            return -1;
         }
-        light.SetScreenSpaceShadowsSliceIndex((uint)s_sss_lights.Count);
-        s_sss_lights.Add(light);
-        return true;
+        int slice = view.SssLights.Count;
+        if (view.View.IsMain)
+            light.SetScreenSpaceShadowsSliceIndex((uint)slice); // the light's own field (Light.h:247) holds the main view's
+        view.SssLights.Add(light);
+        return slice;
     }
 
-    private static void Pass_ScreenSpaceShadows(RHI_CommandList cmd)
+    private static void Pass_ScreenSpaceShadows(RHI_CommandList cmd, ViewState view)
     {
         RHI_Texture tex_sss = GetRenderTargetTexture(RenderTarget.sss)!;
 
         cmd.BeginMarker("screen_space_shadows");
         {
             // lit until a light writes its slice, and lit again once the last light stops
-            bool any_light = s_sss_lights.Count > 0 && GetViewCamera() != null;
-            if (s_sss_needs_clear || (!any_light && s_sss_written))
+            bool any_light = view.SssLights.Count > 0 && view.View.GetCamera() != null;
+            if (view.History.SssNeedsClear || (!any_light && view.History.SssWritten))
             {
                 cmd.ClearTexture(tex_sss, new Phalanx.Math.Color(1.0f, 1.0f, 1.0f, 1.0f));
-                s_sss_needs_clear = false;
-                s_sss_written     = false;
+                view.History.SssNeedsClear = false;
+                view.History.SssWritten    = false;
             }
             if (!any_light)
             {
@@ -107,9 +107,10 @@ public static partial class Renderer
             cmd.SetTexture((uint)Renderer_BindingsUav.tex_sss, tex_sss, storage: true);
 
             // the camera's own view projection, without the taau jitter (spartan: GetViewCamera()->GetViewProjectionMatrix())
-            Matrix4x4 view_projection = s_cb_frame.view_projection_unjittered;
-            foreach (Light light in s_sss_lights)
+            Matrix4x4 view_projection = view.Cb.view_projection_unjittered;
+            for (int slice = 0; slice < view.SssLights.Count; slice++)
             {
+                Light light = view.SssLights[slice];
                 // bend wants the direction towards the light, the entity's forward is the direction the light travels
                 Vector4 p = Vector4.Transform(new Vector4(-light.GetEntity()!.GetForward(), 0.0f), view_projection);
 
@@ -128,7 +129,7 @@ public static partial class Renderer
                                         dispatch_list.LightCoordinate_Shader[2], dispatch_list.LightCoordinate_Shader[3])); // pass_bend_sss::light_coordinate
                 pass.Set(8, 1.0f);                                                                 // pass_bend_sss::near_depth, reverse-z
                 pass.Set(9, 0.0f);                                                                 // pass_bend_sss::far_depth
-                pass.Set(10, light.GetScreenSpaceShadowsSliceIndex());                             // pass_bend_sss::array_slice
+                pass.Set(10, (uint)slice);                                                         // pass_bend_sss::array_slice
                 pass.Set(6, new Vector2(1.0f / tex_sss.GetWidth(), 1.0f / tex_sss.GetHeight()));   // pass_bend_sss::inv_depth_texture_size
 
                 for (int dispatch_index = 0; dispatch_index < dispatch_list.DispatchCount; dispatch_index++)
@@ -140,7 +141,7 @@ public static partial class Renderer
                 }
             }
             cmd.InsertBarrierMemory(); // the light pass reads the slices
-            s_sss_written = true;
+            view.History.SssWritten = true;
         }
         cmd.EndMarker();
     }

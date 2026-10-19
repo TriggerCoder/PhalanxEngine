@@ -19,6 +19,12 @@
 // equal test is safe. The prepass culls back faces (spartan: cull None, its triangles are culled on the gpu before).
 // No hi-z yet; no gpu-driven indirect path, culling or lods; the passes have no gpu timing (no profiler yet), they
 // are markers.
+// The frame is split into shared passes and per view passes (Renderer.Views.cs): the sky and the shadow maps run once,
+// before the first view, then every rendered view runs the prepass through post processing into its own targets.
+// Spartan renders the shadow maps after the g-buffer and the async compute batch (Pass_GraphicsPhase2_ShadowsAndRT,
+// Renderer.cpp:5431); they only write the shared atlas and only the light pass reads it, so running them first gives
+// the same image, and with several views the atlas is drawn once. The transform history is committed after every
+// view (spartan: right after the opaque g-buffer, Renderer_Passes_Geometry.cpp:2022); nothing in between reads it.
 using Phalanx.Geometry;
 using System.Numerics;
 using Phalanx.Rendering.RHI;
@@ -68,28 +74,47 @@ public static partial class Renderer
         return rgba;
     }
 
+    // the frame: the shared passes once (the sky, the shadow atlas with every view's cascades), then every rendered view
     private static void ProduceFrame(RHI_CommandList cmd)
+    {
+        bool shared_done = false;
+        foreach (SceneView view in RenderedViews())
+        {
+            BeginView(cmd, view);
+            if (!shared_done)
+            {
+                // with the first view's frame constants bound (the sky bakes at its camera)
+                Pass_ComputeSky(cmd);  // Pass_ComputeBatchA (Renderer.cpp:5364-5388), see Renderer_Passes_Sky.cs
+                Pass_ShadowMaps(cmd);  // Pass_GraphicsPhase2_ShadowsAndRT (Renderer.cpp:5431), see the deviation below
+                shared_done = true;
+            }
+            ProduceView(cmd, view.State);
+            EndView();
+        }
+        Entity.CommitTransformHistory(); // Renderer_Passes_Geometry.cpp:2022, after the opaque g-buffer of every view
+    }
+
+    // one view, into its own targets
+    private static void ProduceView(RHI_CommandList cmd, ViewState view)
     {
         RHI_Texture rt_render = GetRenderTargetTexture(RenderTarget.frame_render)!;
 
-        Pass_ComputeSky(cmd);            // Pass_ComputeBatchA (Renderer.cpp:5364-5388), see Renderer_Passes_Sky.cs
-        SwapDepthHistory();
-        ClearDepthHistoryIfNeeded(cmd);
-        Pass_Depth_Prepass(cmd);
-        Pass_GBuffer(cmd);
-        Entity.CommitTransformHistory(); // Renderer_Passes_Geometry.cpp:2022, after the opaque g-buffer
-        Pass_ScreenSpaceShadows(cmd);    // Pass_ComputeBatchB (Renderer.cpp:5393-5402), see Renderer_Passes_ScreenSpaceShadows.cs
-        Pass_ShadowMaps(cmd);            // Pass_GraphicsPhase2_ShadowsAndRT (Renderer.cpp:5431)
+        CullView(view);
+        SwapDepthHistory(view);
+        ClearDepthHistoryIfNeeded(cmd, view);
+        Pass_Depth_Prepass(cmd, view);
+        Pass_GBuffer(cmd, view);
+        Pass_ScreenSpaceShadows(cmd, view); // Pass_ComputeBatchB (Renderer.cpp:5393-5402), see Renderer_Passes_ScreenSpaceShadows.cs
         Pass_Light(cmd);
         Pass_Light_Composition(cmd, rt_render);
         Pass_Light_ImageBased(cmd, rt_render);
-        Pass_AA_Upscale(cmd);
+        Pass_AA_Upscale(cmd, view);
         Pass_PostProcess(cmd);
     }
 
     // Renderer_Passes_Geometry.cpp:1463: the opaque half has no pixel shader, ReadWrite depth and clears the depth
     // (reverse-z 0); the alpha half (:1553-1570) discards with depth_prepass_alpha, loads the depth and culls None
-    private static void Pass_Depth_Prepass(RHI_CommandList cmd)
+    private static void Pass_Depth_Prepass(RHI_CommandList cmd, ViewState view)
     {
         cmd.BeginMarker("depth_prepass");
         {
@@ -103,9 +128,9 @@ public static partial class Renderer
             cmd.SetPipelineState(pso);
             cmd.SetCullMode(RHI_CullMode.Back);
             SetStandardResources(cmd);
-            Draw(cmd, s_draw_calls);
+            Draw(cmd, view.DrawCalls);
 
-            if (s_draw_calls_alpha.Count > 0)
+            if (view.DrawCallsAlpha.Count > 0)
             {
                 var pso_alpha = new RHI_PipelineState { name = "depth_prepass_alpha" };
                 pso_alpha.SetShader(RHI_Shader_Type.Vertex, GetShader(Renderer_Shader.gbuffer_v)!);
@@ -118,7 +143,7 @@ public static partial class Renderer
                 cmd.SetPipelineState(pso_alpha);
                 cmd.SetCullMode(RHI_CullMode.None);
                 SetStandardResources(cmd);
-                Draw(cmd, s_draw_calls_alpha);
+                Draw(cmd, view.DrawCallsAlpha);
             }
         }
         cmd.EndMarker();
@@ -141,7 +166,7 @@ public static partial class Renderer
         }
     }
 
-    private static void Pass_GBuffer(RHI_CommandList cmd)
+    private static void Pass_GBuffer(RHI_CommandList cmd, ViewState view)
     {
         RHI_Texture tex_color    = GetRenderTargetTexture(RenderTarget.gbuffer_color)!;
         RHI_Texture tex_normal   = GetRenderTargetTexture(RenderTarget.gbuffer_normal)!;
@@ -172,10 +197,10 @@ public static partial class Renderer
             cmd.SetPipelineState(pso);
             cmd.SetCullMode(RHI_CullMode.Back);
             SetStandardResources(cmd);
-            Draw(cmd, s_draw_calls);
+            Draw(cmd, view.DrawCalls);
 
             // the alpha half loads what the opaque half wrote and shades the cutout survivors
-            if (s_draw_calls_alpha.Count > 0)
+            if (view.DrawCallsAlpha.Count > 0)
             {
                 for (int i = 0; i < 5; i++)
                     pso.clear_color[i] = RHI_Definitions.rhi_color_load;
@@ -183,7 +208,7 @@ public static partial class Renderer
                 cmd.SetPipelineState(pso);
                 cmd.SetCullMode(RHI_CullMode.None);
                 SetStandardResources(cmd);
-                Draw(cmd, s_draw_calls_alpha);
+                Draw(cmd, view.DrawCallsAlpha);
             }
         }
         cmd.EndMarker();
@@ -250,7 +275,9 @@ public static partial class Renderer
                         Material? material = GetRenderMaterial(render);
                         if (material == null || material.IsTransparent())
                             continue;
-                        if (!light.IsInViewFrustum(render, slice.slice_index))
+                        bool in_frustum = slice.view != null ? slice.view.GetCascades(light).IsInViewFrustum(render, slice.slice_index)
+                                                             : light.IsInViewFrustum(render, slice.slice_index);
+                        if (!in_frustum)
                             continue;
 
                         if (!pso_set)

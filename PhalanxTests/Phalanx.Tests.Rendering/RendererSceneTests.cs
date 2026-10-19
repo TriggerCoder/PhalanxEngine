@@ -70,6 +70,7 @@ public partial class RendererSceneTests
         {
             Renderer.AntiAliasingUpsampling = Renderer_AntiAliasing_Upsampling.AA_Off_Upscale_Linear;
             Renderer.ImageBasedLighting  = true;
+            Renderer.ScreenSpaceShadows  = true;
             Renderer.Tonemapping         = Renderer_Tonemapping.GranTurismo7;
             Renderer.ShadowAtlasResolution = 8192;
             Renderer.Shutdown();

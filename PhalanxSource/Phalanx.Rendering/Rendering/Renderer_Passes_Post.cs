@@ -30,10 +30,6 @@ public static partial class Renderer
     internal const uint TAAU_GROUP_X = 8;
     internal const uint TAAU_GROUP_Y = 8;
 
-    // Renderer_Internal.h:340, the first taau frame has no history
-    private static bool s_taau_reset_history = true;
-    // Renderer_Internal.h, m_pass_state.depth_history_cleared: the depth history starts at the clear value
-    private static bool s_depth_history_cleared;
     private static bool s_fxaa_warned;
 
     // the dispatch of the taau pass: one 8x8 group per 8x8 output pixels (Renderer_Passes_Post.cpp:527-531)
@@ -41,19 +37,13 @@ public static partial class Renderer
         ((output_width + TAAU_GROUP_X - 1) / TAAU_GROUP_X, (output_height + TAAU_GROUP_Y - 1) / TAAU_GROUP_Y);
 
     // the depth written last frame becomes the previous depth, the prepass writes into the old previous
-    private static void SwapDepthHistory()
-    {
-        int idx_depth      = (int)RenderTarget.gbuffer_depth;
-        int idx_depth_prev = (int)RenderTarget.gbuffer_depth_previous;
-        if (s_render_targets[idx_depth] != null && s_render_targets[idx_depth_prev] != null)
-            (s_render_targets[idx_depth], s_render_targets[idx_depth_prev]) = (s_render_targets[idx_depth_prev], s_render_targets[idx_depth]);
-    }
+    private static void SwapDepthHistory(ViewState view) => view.History.Swap(RenderTarget.gbuffer_depth, RenderTarget.gbuffer_depth_previous);
 
     // new depth history must start at the near plane (reverse-z 1) so disocclusion fails closed
     // (Renderer_Passes_Geometry.cpp:1471-1479); a depth only render pass that clears and draws nothing
-    private static void ClearDepthHistoryIfNeeded(RHI_CommandList cmd)
+    private static void ClearDepthHistoryIfNeeded(RHI_CommandList cmd, ViewState view)
     {
-        if (s_depth_history_cleared)
+        if (view.History.DepthHistoryCleared)
             return;
         RHI_Texture? depth_previous = GetRenderTargetTexture(RenderTarget.gbuffer_depth_previous);
         if (depth_previous != null)
@@ -68,7 +58,7 @@ public static partial class Renderer
             cmd.SetPipelineState(pso);
             SetStandardResources(cmd);
         }
-        s_depth_history_cleared = true;
+        view.History.DepthHistoryCleared = true;
     }
 
     // Renderer_Passes_Post.cpp:402, the shared temporal upscaler reactivity (disocclusion and motion edges)
@@ -94,13 +84,13 @@ public static partial class Renderer
     }
 
     // Renderer_Passes_Post.cpp:441, frame_render (render resolution) to frame_output (output resolution)
-    private static void Pass_AA_Upscale(RHI_CommandList cmd)
+    private static void Pass_AA_Upscale(RHI_CommandList cmd, ViewState view)
     {
         RHI_Texture tex_in  = GetRenderTargetTexture(RenderTarget.frame_render)!;
         RHI_Texture tex_out = GetRenderTargetTexture(RenderTarget.frame_output)!;
 
         Renderer_AntiAliasing_Upsampling method = AntiAliasingUpsampling;
-        if (method == Renderer_AntiAliasing_Upsampling.AA_Taau_Upscale_Taau)
+        if (IsTaauActive(view.View))
         {
             Pass_Upscaler_Reactivity(cmd);
 
@@ -122,16 +112,15 @@ public static partial class Renderer
                 cmd.SetTexture((uint)Renderer_BindingsUav.tex,  tex_out, storage: true);
                 cmd.SetTexture((uint)Renderer_BindingsUav.tex2, tex_scratch, storage: true);
                 var pass = new PassBufferData();
-                pass.Set(0, s_taau_reset_history); // pass_taau::reset_history
+                pass.Set(0, view.History.TaauResetPending); // pass_taau::reset_history
                 pass.Set(1, true);                 // pass_taau::write_history, mono
                 cmd.PushConstants(pass);
                 (uint x, uint y) = GetTaauDispatch(tex_out.GetWidth(), tex_out.GetHeight());
                 cmd.Dispatch(x, y);
 
                 // protect the new history from post-processing; the old history becomes scratch.
-                (s_render_targets[(int)RenderTarget.taau_history], s_render_targets[(int)RenderTarget.frame_output_2]) =
-                    (s_render_targets[(int)RenderTarget.frame_output_2], s_render_targets[(int)RenderTarget.taau_history]);
-                s_taau_reset_history = false;
+                view.History.Swap(RenderTarget.taau_history, RenderTarget.frame_output_2);
+                view.History.TaauResetPending = false;
             }
             cmd.EndMarker();
             return;

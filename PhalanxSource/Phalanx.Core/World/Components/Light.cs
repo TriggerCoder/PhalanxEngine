@@ -53,13 +53,6 @@ public enum LightFlags : uint
 [Serializable]
 public class Light : Component
 {
-    // directional matrix parameters (Light.cpp:39-44)
-    const float cascade_near_extent = 64.0f;
-    const float cascade_far_extent = 2000.0f;
-    const float cascade_depth_behind = 2000.0f;
-    const float cascade_depth_ahead = 8000.0f;
-    const float cascade_depth = cascade_depth_behind + cascade_depth_ahead;
-    const float cascade_far_max_extent = float.MaxValue;
     private LightIntensity m_intensity = LightIntensity.bulb_500_watt;
     private float m_intensity_lumens_lux = 2600.0f;
     private LightFlags m_flags = 0;
@@ -214,8 +207,9 @@ public class Light : Component
                 return Color.LightDirectSunlight;
         }
     }
-    // Light::Tick (Light.cpp:142-180) updates the matrices when the light or the camera moved; here every tick, the
-    // renderer also refreshes them after it packs the atlas (the directional snapping reads the atlas rectangles)
+    // Light::Tick (Light.cpp:142-180) updates the matrices when the light or the camera moved; here every tick. A
+    // directional light's cascades follow the camera, so they belong to the views: the renderer computes them per view
+    // after it packs the atlas (Phalanx.Rendering DirectionalCascades), the light's own matrices stay identity
     public override void Tick()
     {
         UpdateMatrices();
@@ -234,41 +228,9 @@ public class Light : Component
         switch (m_light_type)
         {
             case LightType.Directional:
-            {
-                Camera? camera = World.GetCamera();
-                if (camera is null)
-                    return;
-
-                // both cascades follow the camera, most of the depth sits ahead so the ground stays in range when flying
-                Vector3 cameraPos = camera.GetEntity().GetPosition();
-                Vector3 lightForward = GetEntity().GetForward();
-                position = cameraPos - lightForward * cascade_depth_behind;
-                // spartan uses world up unconditionally, a sun pointing straight up or down collapses the basis
-                // (phalanx: the entity's up then, see the renderer-6 notes)
-                Vector3 up = MathF.Abs(Vector3.Dot(lightForward, MathEx.Vector3.Up)) > 0.9999f ? GetEntity().GetUp() : MathEx.Vector3.Up;
-                m_matrix_view[0] = Matrix4x4.CreateLookAtLeftHanded(position, cameraPos, up);
-                m_matrix_view[1] = m_matrix_view[0];
-
-                // move the light in world units per texel to avoid shimmering
-                {
-                    // compute shadow extents (both fixed sizes)
-                    Span<float> extents = stackalloc float[2] { cascade_near_extent, cascade_far_extent };
-                    float atlasWidth = (float)RenderView.GetRenderTarget(Renderer_RenderTarget.shadow_atlas).GetWidth();
-
-                    for (int i = 0; i < 2; i++)
-                    {
-                        float rectWidth = m_atlas_rectangles[i].Width;                   // cascade rectangle width in atlas
-                        if (rectWidth <= 0.0f)
-                            continue; // not packed yet: spartan divides by zero here and snaps to nan
-                        float atlasScale = rectWidth / atlasWidth;                      // proportion of atlas used by cascade
-                        float effectiveRes = atlasWidth * atlasScale;                   // effective resolution for cascade
-                        float texelSizeWorld = (2.0f * extents[i]) / effectiveRes;      // world units per texel
-                        m_matrix_view[i].M41 = MathEx.Round(m_matrix_view[i].M41 / texelSizeWorld) * texelSizeWorld; // snap X
-                        m_matrix_view[i].M42 = MathEx.Round(m_matrix_view[i].M42 / texelSizeWorld) * texelSizeWorld; // snap Y
-                        // z-translation (M43) remains unchanged for orthographic projection
-                    }
-                }
-            }
+                // the cascades follow the camera of each view: the renderer computes them per view
+                // (Phalanx.Rendering DirectionalCascades), the light keeps identity matrices
+                m_matrix_view[0] = m_matrix_view[1] = Matrix4x4.Identity;
             break;
             case LightType.Point:
             {
@@ -302,22 +264,8 @@ public class Light : Component
         switch (m_light_type)
         {
             case LightType.Directional:
-            {
-                // near cascade (tight, camera following)
-                m_matrix_projection[0] = Matrix4x4Extensions.CreateOrthoOffCenterLH(
-                        -cascade_near_extent, cascade_near_extent,
-                        -cascade_near_extent, cascade_near_extent,
-                        cascade_depth, 0.0f);
-
-                // far cascade (camera following, fixed size, bigger than near cascade)
-                m_matrix_projection[1] = Matrix4x4Extensions.CreateOrthoOffCenterLH(
-                        -cascade_far_extent, cascade_far_extent,
-                        -cascade_far_extent, cascade_far_extent,
-                        cascade_depth, 0.0f);
-
-                m_frustums[0] = new Frustum(m_matrix_view[0], m_matrix_projection[0]);
-                m_frustums[1] = new Frustum(m_matrix_view[1], m_matrix_projection[1]);
-            }
+                // per view, see UpdateViewMatrix
+                m_matrix_projection[0] = m_matrix_projection[1] = Matrix4x4.Identity;
             break;
             case LightType.Area:
             {
@@ -717,10 +665,10 @@ public class Light : Component
     }
     public float GetAreaHeight() { return m_area_height; }
 
-    // matrices
+    // matrices (identity for a directional light, its cascades are per view)
     public Matrix4x4 GetViewProjectionMatrix(uint index) { return m_matrix_view[index] * m_matrix_projection[index]; } // Light.h:183
 
-    // frustum
+    // frustum (point, spot and area lights; a directional light's cascades are tested per view)
     public bool IsInViewFrustum(Render renderable, uint array_index)
     {
         BoundingBox bounding_box = renderable.GetBoundingBox();

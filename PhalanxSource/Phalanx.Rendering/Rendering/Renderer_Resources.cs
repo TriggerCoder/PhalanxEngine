@@ -32,6 +32,9 @@
 //   amount depending on when it last crossed a step, and the lags show as stepped contour bands behind the shadow.
 //   rgba16f has 11 significant bits, the steps fall to 0.05%.
 // - sss (the screen space shadows, :812; upstream :873) has no RHI_Texture_ConcurrentSharing either.
+// - The camera dependent targets (g-buffer, light buffers, frame_render, the reactivity mask, depth and its history,
+//   sss, frame_output, frame_output_2, taau_history) are per view and created in Renderer.Views.cs (CreateViewTargets)
+//   through the render target pool; this file creates the shared ones (shadow atlas, sky and luts).
 // - frame_output has one mip (spartan: a full chain with per-mip views, for the bloom and auto exposure
 //   downsamples); RHI_Texture_ConcurrentSharing is dropped, there is no async compute yet.
 using Phalanx.Rendering.RHI;
@@ -66,7 +69,9 @@ public static partial class Renderer
     private static float s_mip_bias = float.MaxValue;
     private static bool s_bindless_samplers_dirty;
 
-    internal static Texture? GetRenderTargetTexture(RenderTarget type) => s_render_targets[(int)type];
+    // a per view target resolves to the view being rendered (the main view outside a frame), see Renderer.Views.cs
+    internal static Texture? GetRenderTargetTexture(RenderTarget type) =>
+        ViewState.IsViewTarget(type) ? ActiveViewState.GetTarget(type) : s_render_targets[(int)type];
     internal static Texture? GetStandardTexture(Renderer_StandardTexture type) => s_standard_textures[(int)type];
     internal static RHI_Sampler? GetSampler(Renderer_Sampler type) => s_samplers[(int)type];
     internal static RHI_Buffer? GetBuffer(Renderer_Buffer type) => s_buffers[(int)type];
@@ -117,8 +122,10 @@ public static partial class Renderer
 
         // anisotropic (negative mip bias when upscaling to keep textures sharp)
         float mip_bias_new = 0.0f;
-        if (s_resolution_output_width > s_resolution_render_width)
-            mip_bias_new = MathF.Log2((float)s_resolution_render_width / s_resolution_output_width) - 1.0f;
+        // one sampler for every view: the main view's ratio
+        ViewState main = s_main_view.State;
+        if (main.OutputWidth > main.RenderWidth)
+            mip_bias_new = MathF.Log2((float)main.RenderWidth / main.OutputWidth) - 1.0f;
         if (mip_bias_new != s_mip_bias)
         {
             s_mip_bias = mip_bias_new;
@@ -128,75 +135,21 @@ public static partial class Renderer
         s_bindless_samplers_dirty = true;
     }
 
-    private static void CreateRenderTargets(bool create_render, bool create_output)
+    // the frame's shared targets; the per view ones (g-buffer, light buffers, history, frame_output) are created by
+    // CreateViewTargets (Renderer.Views.cs)
+    private static void CreateRenderTargets()
     {
-        const RHI_Texture_Flags flags = RHI_Texture_Flags.RHI_Texture_Uav | RHI_Texture_Flags.RHI_Texture_Srv | RHI_Texture_Flags.RHI_Texture_Rtv | RHI_Texture_Flags.RHI_Texture_ClearBlit;
-        void Replace(RenderTarget type, uint width, uint height, RHI_Format format = RHI_Format.R16G16B16A16_Float)
+        // shadow atlas (Renderer_Resources.cpp:842), d32, independent of the resolution: created once
+        Texture? atlas = s_render_targets[(int)RenderTarget.shadow_atlas];
+        if (atlas == null || atlas.GetWidth() != ShadowAtlasResolution)
         {
-            s_render_targets[(int)type]?.Dispose(); // the deletion queue keeps it alive for frames in flight
-            s_render_targets[(int)type] = new Texture(RHI_Texture_Type.Type2D, width, height, 1, 1, format, flags, type.ToString());
-            RenderView.SetRenderTargetSize(type, width, height);
-        }
-
-        // g-buffer (Renderer_Resources.cpp:758-766)
-        void GBuffer(RenderTarget type, RHI_Format format)
-        {
-            const RHI_Texture_Flags gbuffer_flags = RHI_Texture_Flags.RHI_Texture_Rtv | RHI_Texture_Flags.RHI_Texture_Srv | RHI_Texture_Flags.RHI_Texture_ClearBlit;
-            s_render_targets[(int)type]?.Dispose();
-            s_render_targets[(int)type] = new Texture(RHI_Texture_Type.Type2D, s_resolution_render_width, s_resolution_render_height, 1, 1, format, gbuffer_flags, type.ToString());
-            RenderView.SetRenderTargetSize(type, s_resolution_render_width, s_resolution_render_height);
-        }
-
-        if (create_render)
-        {
-            GBuffer(RenderTarget.gbuffer_color,    RHI_Format.R8G8B8A8_Unorm);
-            GBuffer(RenderTarget.gbuffer_normal,   RHI_Format.R16G16B16A16_Float);
-            GBuffer(RenderTarget.gbuffer_material, RHI_Format.R8G8B8A8_Unorm);
-            GBuffer(RenderTarget.gbuffer_emissive, RHI_Format.R11G11B10_Float);
-            GBuffer(RenderTarget.gbuffer_velocity, RHI_Format.R16G16B16A16_Float);
-            Replace(RenderTarget.dlss_reactivity, s_resolution_render_width, s_resolution_render_height, RHI_Format.R8G8B8A8_Unorm);
-            GBuffer(RenderTarget.gbuffer_depth,    RHI_Format.D32_Float);
-            // the temporal passes test disocclusion against the prior depth (:770); it starts cleared, see Pass_Depth_Prepass
-            GBuffer(RenderTarget.gbuffer_depth_previous, RHI_Format.D32_Float);
-            s_depth_history_cleared = false;
-            Replace(RenderTarget.frame_render, s_resolution_render_width, s_resolution_render_height);
-            // light (Renderer_Resources.cpp:809-810), rgba16f instead of r11g11b10, see the deviation in the header
-            Replace(RenderTarget.light_diffuse,  s_resolution_render_width, s_resolution_render_height, LightBufferFormat);
-            Replace(RenderTarget.light_specular, s_resolution_render_width, s_resolution_render_height, LightBufferFormat);
-
-            // screen space shadows (Renderer_Resources.cpp:812, upstream :873), a slice per light, without
-            // RHI_Texture_ConcurrentSharing (no async compute)
-            s_render_targets[(int)RenderTarget.sss]?.Dispose();
-            s_render_targets[(int)RenderTarget.sss] = new Texture(RHI_Texture_Type.Type2DArray, s_resolution_render_width, s_resolution_render_height, renderer_sss_slice_count, 1,
-                RHI_Format.R16_Float, RHI_Texture_Flags.RHI_Texture_Uav | RHI_Texture_Flags.RHI_Texture_Srv | RHI_Texture_Flags.RHI_Texture_ClearBlit, "sss");
-            RenderView.SetRenderTargetSize(RenderTarget.sss, s_resolution_render_width, s_resolution_render_height);
-            s_sss_needs_clear = true;
-
-            // shadow atlas (Renderer_Resources.cpp:842), d32, independent of the resolution: created once
-            Texture? atlas = s_render_targets[(int)RenderTarget.shadow_atlas];
-            if (atlas == null || atlas.GetWidth() != ShadowAtlasResolution)
-            {
-                atlas?.Dispose();
-                s_render_targets[(int)RenderTarget.shadow_atlas] = new Texture(RHI_Texture_Type.Type2D, ShadowAtlasResolution, ShadowAtlasResolution, 1, 1, RHI_Format.D32_Float,
-                    RHI_Texture_Flags.RHI_Texture_Rtv | RHI_Texture_Flags.RHI_Texture_Srv | RHI_Texture_Flags.RHI_Texture_ClearBlit, "shadow_atlas");
-                RenderView.SetRenderTargetSize(RenderTarget.shadow_atlas, ShadowAtlasResolution, ShadowAtlasResolution);
-            }
-        }
-        if (create_output)
-        {
-            // Renderer_Resources.cpp:848-849, frame_output_2 is the post process ping-pong target
-            Replace(RenderTarget.frame_output,   s_resolution_output_width, s_resolution_output_height);
-            // :866, the mono history; Pass_AA_Upscale swaps it with frame_output_2 every taau frame, so both need the
-            // same size and format. Both are rgba32f (spartan: rgba16f), see the deviation in the header.
-            RHI_Format history_format = TaauHistoryFormat;
-            Replace(RenderTarget.frame_output_2, s_resolution_output_width, s_resolution_output_height, history_format);
-            Replace(RenderTarget.taau_history,   s_resolution_output_width, s_resolution_output_height, history_format);
+            atlas?.Dispose();
+            s_render_targets[(int)RenderTarget.shadow_atlas] = new Texture(RHI_Texture_Type.Type2D, ShadowAtlasResolution, ShadowAtlasResolution, 1, 1, RHI_Format.D32_Float,
+                RHI_Texture_Flags.RHI_Texture_Rtv | RHI_Texture_Flags.RHI_Texture_Srv | RHI_Texture_Flags.RHI_Texture_ClearBlit, "shadow_atlas");
+            RenderView.SetRenderTargetSize(RenderTarget.shadow_atlas, ShadowAtlasResolution, ShadowAtlasResolution);
         }
 
         CreateSkyRenderTargets();
-
-        // new targets hold no history (Renderer.cpp:1720, SetResolution resets it with the targets)
-        s_taau_reset_history = true;
     }
 
     private static void CreateShaders()
@@ -323,6 +276,7 @@ public static partial class Renderer
             Array.Clear(items);
         }
         DisposeAll(s_render_targets);
+        s_target_pool.Dispose();
         DisposeAll(s_standard_textures);
         DisposeAll(s_samplers);
         DisposeAll(s_buffers);
