@@ -8,7 +8,8 @@ namespace Phalanx.Bench;
 
 // The cpu benchmark of the entity store (PhalanxEngine-entities-s1.md, measured numbers): no gpu, the world's store,
 // the stress mode's three batched behaviours, the transform pass, the per view culling, structural changes and the
-// class side (behaviour dispatch, the incremental world lists). Run it in Release:
+// class side (behaviour dispatch, the incremental world lists), and the per view culling again with the views' 2 pixel
+// contribution cull (PhalanxEngine-entities-s3-subpixel.md). Run it in Release:
 //   dotnet run -c Release --project PhalanxTests/Phalanx.Bench [-- counts...]   (default 10000 100000 1000000 2000000)
 // The second table (PhalanxEngine-entities-s2.md) is the shadow culling of the stress mode's lights, two sun cascades
 // and six point light faces, with the s1 settings (the cascades' side planes only, no range, no size threshold, the
@@ -87,7 +88,7 @@ public static class Program
         int[] counts = args.Length > 0 ? args.Select(a => int.Parse(a, CultureInfo.InvariantCulture)).ToArray() : new[] { 10000, 100000, 1000000, 2000000 };
         World.World.SetMainThread();
         Console.WriteLine($"Phalanx.Bench: {Environment.ProcessorCount} logical cores, {RuntimeInformation()}, Vector256 {System.Runtime.Intrinsics.Vector256.IsHardwareAccelerated}");
-        Console.WriteLine("entities | spawn ms | bytes/entity | update+late ms (3 behaviours) | rotate only ms | transforms ms | tick ms | allocated B/tick | hierarchy sync ms (25% children) | cull 1/2/4 views ms | destroy+spawn 10k ms");
+        Console.WriteLine("entities | spawn ms | bytes/entity | update+late ms (3 behaviours) | rotate only ms | transforms ms | tick ms | allocated B/tick | hierarchy sync ms (25% children) | cull 1/2/4 views ms | with the 2 px contribution cull ms | destroy+spawn 10k ms");
         foreach (int count in counts)
             RunStore(count);
         Console.WriteLine("entities | shadow cull s1 ms (casters) | shadow cull s2 ms (casters) | transforms 10% moving ms | dirty groups 10% moving MB | all moving MB");
@@ -271,9 +272,11 @@ public static class Program
             request.SetFrustum(new Frustum(view, projection));
             requests.Add(request);
         }
-        string cull = string.Join("/", new[] { 1, 2, 4 }.Select(n =>
+        string Cull(float min_pixels) => string.Join("/", new[] { 1, 2, 4 }.Select(n =>
         {
             List<InstanceCullRequest> subset = requests.Take(n).ToList();
+            foreach (InstanceCullRequest r in subset)
+                r.MinPixels = min_pixels;
             store.CullInstances(subset);
             return F(Median(9, () =>
             {
@@ -282,6 +285,18 @@ public static class Program
                     store.FinishCull(r);
             }));
         }));
+        string cull = Cull(0.0f);
+        // the views' contribution cull (Renderer.MinPixelSize, 2 pixels of a 1920 x 1080 render) and what it keeps
+        for (int v = 0; v < requests.Count; v++)
+        {
+            var eye = new Vector3(0, 6, -20);
+            Vector3 forward = Vector3.Transform(Vector3.UnitZ, Quaternion.CreateFromYawPitchRoll(v * 0.8f, 0.32f, 0));
+            requests[v].SetContribution(Matrix4x4.CreateLookAtLeftHanded(eye, eye + forward, Vector3.UnitY) * Matrix4x4Extensions.CreatePerspectiveFieldOfViewLH(1.0f, 16.0f / 9.0f, 0.1f, 2000.0f),
+                                        new Vector2(1920, 1080), 2.0f);
+        }
+        int frustum_kept = requests[0].Total;
+        string contribution = Cull(2.0f);
+        contribution += $" ({requests[0].Total} of {frustum_kept} kept)";
 
         // structural changes: 10k random destroys then 10k spawns
         int churn = System.Math.Min(10000, count / 2);
@@ -319,7 +334,7 @@ public static class Program
             store.SyncTransforms();
         });
 
-        Console.WriteLine($"{count,8} | {F(spawn_ms),8} | {bytes,12:0} | {F(update),29} | {F(rotate),14} | {F(transforms),13} | {F(tick),7} | {allocated,16} | {F(full_sync),32} | {cull,19} | {F(structural),20}");
+        Console.WriteLine($"{count,8} | {F(spawn_ms),8} | {bytes,12:0} | {F(update),29} | {F(rotate),14} | {F(transforms),13} | {F(tick),7} | {allocated,16} | {F(full_sync),32} | {cull,19} | {contribution,34} | {F(structural),20}");
         World.World.ClearScene();
     }
 

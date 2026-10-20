@@ -9,6 +9,12 @@
 //   instances_previous[slot] (TAAU velocity) (mode 2). The batch's DrawData entry carries its material and uv transform.
 // - An entity whose OnPreDraw hides it is left out of that view's list; one that sets a material or uv transform gets
 //   its own exact DrawData entry and DrawCall for that view, drawn in an override batch, and stays out of the packed one.
+// - Each view also leaves out the store entities whose bounding sphere is smaller than MinPixelSize pixels of its
+//   render resolution (not its output one), measured with its unjittered view projection: spartan's contribution cull
+//   (EntityStore.Culling.cs, Phalanx.Math.ScreenContribution, with the deviations listed there). Such an entity isn't
+//   drawn in that view, so it gets no OnPreDraw there (the existing rule: only the entities a view draws are called
+//   back), it stays enabled and its instance is uploaded as before (the velocity of the frame it comes back is right),
+//   and the shadow slices don't use it (they keep ShadowCasterMinTexels). InstancingStats.Views counts it per view.
 // - Shadow slices cull the store like views (every layer, casters only), each with its own caster volume
 //   (SetShadowCasterLimits): a cascade tests its side planes and its far plane (the near one, toward the light, is
 //   dropped: casters between the light and the slice still shadow it), a point or spot face its frustum and the
@@ -77,11 +83,16 @@ public static partial class Renderer
         public static long UploadedBytes;
         public static int UploadRegions;
         public static int ShadowSkippedSmall; // store casters the sub-texel threshold left out, summed over the slices
+        /// <summary>Per view of the frame, in draw order: the store instances it draws (VisibleInstances is their sum)
+        /// and those the contribution cull (MinPixelSize) left out of it.</summary>
+        public static readonly List<ViewInstanceStats> Views = new();
         /// <summary>Per shadow slice of the frame, in slice order: its light, its slice (cascade or face) index, the
         /// store casters it draws and those the sub-texel threshold left out of it. ShadowInstances and
         /// ShadowSkippedSmall are their sums, so an entity is counted once per slice it is drawn in or left out of.</summary>
         public static readonly List<ShadowSliceStats> ShadowSlices = new();
     }
+
+    public readonly record struct ViewInstanceStats(int Drawn, int SkippedSubpixel);
 
     public readonly record struct ShadowSliceStats(LightType Light, uint Slice, int Drawn, int SkippedSubTexel);
 
@@ -213,8 +224,15 @@ public static partial class Renderer
             InstanceCullRequest request = view.State.Instances;
             Camera? camera = view.GetCamera();
             request.HasFrustum = false;
+            request.MinPixels  = 0.0f; // without a camera nothing is culled
             if (camera != null)
-                request.SetFrustum(new Phalanx.Math.Frustum(camera.GetViewMatrix(), camera.GetProjectionMatrix()));
+            {
+                Matrix4x4 view_matrix = camera.GetViewMatrix(), projection = camera.GetProjectionMatrix();
+                request.SetFrustum(new Phalanx.Math.Frustum(view_matrix, projection));
+                // the unjittered view projection (the frame constants' view_projection_unjittered) at the view's
+                // render resolution, not its output one
+                request.SetContribution(view_matrix * projection, new Vector2(view.State.RenderWidth, view.State.RenderHeight), MinPixelSize);
+            }
             request.Mask          = GetCullMask(view);
             request.ShadowCasters = false;
             request.Callbacks     = true;
@@ -228,9 +246,16 @@ public static partial class Renderer
             {
                 request.CallbackRows.Clear();
                 request.Extras.Clear();
+                request.RowsSkippedSmall = 0;
             }
         InstancingStats.CullMs = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
     }
+
+    /// <summary>Store entities whose bounding sphere projects to less than this many pixels of a view's render
+    /// resolution on both axes aren't drawn in that view (spartan's contribution cull, CULL_CONTRIBUTION_MESH_PX = 2;
+    /// each entity's threshold is dithered down to half of it; EntityStore.Culling.cs; --min-pixel-size). 0 draws them
+    /// all. Shadow slices keep their own ShadowCasterMinTexels.</summary>
+    public static float MinPixelSize { get; set; } = 2.0f;
 
     // a view's store entities with IPreDraw / IOnBecameVisible behaviours, then its lists (PrepareViews, per view)
     private static void RunStorePreDraw(SceneView view, int view_index)
@@ -736,6 +761,7 @@ public static partial class Renderer
         s_frame_slot_count = 0;
         InstancingStats.Batches = InstancingStats.VisibleInstances = InstancingStats.ShadowInstances = 0;
         InstancingStats.ShadowSlices.Clear();
+        InstancingStats.Views.Clear();
         foreach (SceneView view in s_prepared_views)
         {
             ViewState s = view.State;
@@ -743,7 +769,9 @@ public static partial class Renderer
             s.DrawsAlpha.Clear();
             AddExactDraws(s.DrawCalls, s.Draws, shadow: false);
             AddExactDraws(s.DrawCallsAlpha, s.DrawsAlpha, shadow: false);
+            int visible = InstancingStats.VisibleInstances;
             AddPackedDraws(s.Instances, s.Draws, s.DrawsAlpha, shadow: false);
+            InstancingStats.Views.Add(new ViewInstanceStats(InstancingStats.VisibleInstances - visible, s.Instances.RowsSkippedSmall));
         }
         for (int i = 0; i < s_shadow_slices.Count; i++)
         {

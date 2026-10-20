@@ -41,7 +41,9 @@ namespace Phalanx.Editor;
 //   add --shadows <on|off> to switch every light's shadows (LightFlags.Shadows, default on), --sun-shadows <on|off> and
 //     --point-light-shadows <on|off> for the sun's and the --point-light's alone; --shadow-min-texels <n> leaves store
 //     entities smaller than n texels of a shadow cascade or face out of it (Renderer.ShadowCasterMinTexels, default 1,
-//     0 keeps every caster); --gpu-timing <on|off> times the passes on the gpu for the stress mode's console line
+//     0 keeps every caster); --min-pixel-size <px> leaves store entities whose bounding sphere is smaller than px pixels
+//     of the render resolution out of the camera views (Renderer.MinPixelSize, spartan's contribution cull, default 2,
+//     each entity's threshold dithered down to half of it; 0 draws them all); --gpu-timing <on|off> times the passes on the gpu for the stress mode's console line
 //     (default on)
 //   device lost suspects, each switches one thing off: --serialize-frames <on|off> waits for the gpu at the end of
 //     every frame so frames never overlap (default off); --descriptor-eviction <on|off> keeps every cached descriptor
@@ -149,6 +151,17 @@ public static class Program
                 return 1;
             }
             Renderer.ShadowCasterMinTexels = min_texels;
+        }
+
+        int min_pixels_arg = Array.IndexOf(args, "--min-pixel-size");
+        if (min_pixels_arg >= 0)
+        {
+            if (min_pixels_arg + 1 >= args.Length || !float.TryParse(args[min_pixels_arg + 1], NumberStyles.Float, CultureInfo.InvariantCulture, out float min_pixels) || !(min_pixels >= 0.0f) || float.IsInfinity(min_pixels))
+            {
+                Console.Error.WriteLine("--min-pixel-size: expected a number of pixels, 0 or more, such as 2 (0 draws every entity)");
+                return 1;
+            }
+            Renderer.MinPixelSize = min_pixels;
         }
 
         int max_instances_arg = Array.IndexOf(args, "--max-instances-per-draw");

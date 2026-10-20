@@ -600,6 +600,17 @@ public sealed partial class EntityStore
         var extent = new Vector3(c.Bounds[3 * n + row], c.Bounds[4 * n + row], c.Bounds[5 * n + row]);
         return new BoundingBox(center - extent, center + extent);
     }
+
+    /// <summary>The bounding sphere the views' contribution cull measures, as of the last transform sync: the world
+    /// center of the mesh aabb and its |extent| times the largest world scale (renderable entities; empty otherwise).</summary>
+    public Sphere GetCullSphere(EntityId id)
+    {
+        EntityChunk c = Locate(id, out int row);
+        if (c.Bounds == null)
+            return new Sphere(Vector3.Zero, 0.0f);
+        int n = c.Capacity;
+        return new Sphere(new Vector3(c.Bounds[row], c.Bounds[n + row], c.Bounds[2 * n + row]), c.Bounds[6 * n + row]);
+    }
     #endregion
 
     #region FACADES ================================================================================================

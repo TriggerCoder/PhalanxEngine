@@ -31,6 +31,7 @@ public partial class RendererSceneTests
     {
         Run(() =>
         {
+            Renderer.MinPixelSize = 0.0f; // the small cubes are about 2 pixels of the 64 x 64 view, at the contribution threshold
             Scene scene = CreateScene(Vector4.One);
             scene.cube.SetActive(false);
             Entity sun = World.World.CreateEntity();

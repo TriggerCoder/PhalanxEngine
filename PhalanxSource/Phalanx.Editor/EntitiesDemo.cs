@@ -175,6 +175,17 @@ internal static class EntitiesDemo
 
         public Report(int count) { m_count = count; }
 
+        // the last frame's store instances per view, in draw order: "[view 0: 412345, subpixel 1076825]", what each
+        // view draws and what its contribution cull (--min-pixel-size) left out of it. The visible total is the sum
+        private static string FormatViews()
+        {
+            var text = new System.Text.StringBuilder("[");
+            IReadOnlyList<Renderer.ViewInstanceStats> views = Renderer.InstancingStats.Views;
+            for (int i = 0; i < views.Count; i++)
+                text.Append(i > 0 ? "; " : "").Append(FormattableString.Invariant($"view {i}: {views[i].Drawn}, subpixel {views[i].SkippedSubpixel}"));
+            return text.Append(']').ToString();
+        }
+
         // the last frame's shadow casters per light, its slices in order: "[sun 20480+0 (0+2000000 sub-texel), point
         // 140213+...]", what each cascade or face draws and what the sub-texel threshold left out of it. The shadow
         // total is the sum of the drawn numbers, an entity counts once per slice it is drawn in
@@ -233,7 +244,7 @@ internal static class EntitiesDemo
                 FormattableString.Invariant($"entities {m_count}: {m_frames / seconds:0.0} fps, frame {m_frame_ms / n:0.00} ms (max {m_frame_max:0.00}) | ") +
                 FormattableString.Invariant($"world tick {m_tick / n:0.00} ms (fixed {m_fixed / n:0.00}, update {m_update / n:0.00}, late {m_late / n:0.00}, class {m_class / n:0.00}, playback {m_playback / n:0.00}, transforms {m_transforms / n:0.00}) | ") +
                 FormattableString.Invariant($"render cull {m_cull / n:0.00} ms, shadow cull {m_shadow_cull / n:0.00} ms, lists {m_lists / n:0.00} ms, upload {m_upload / n:0.00} ms ({m_uploaded / n / 1048576.0:0.0} MB in {m_regions / n:0} regions), gpu wait {m_wait / n:0.00} ms | ") +
-                FormattableString.Invariant($"visible {Renderer.InstancingStats.VisibleInstances}, shadow {Renderer.InstancingStats.ShadowInstances} {FormatShadowSlices()}, batches {Renderer.InstancingStats.Batches}, draws {Renderer.InstancingStats.Draws} | ") +
+                FormattableString.Invariant($"visible {Renderer.InstancingStats.VisibleInstances} {FormatViews()}, shadow {Renderer.InstancingStats.ShadowInstances} {FormatShadowSlices()}, batches {Renderer.InstancingStats.Batches}, draws {Renderer.InstancingStats.Draws} | ") +
                 FormattableString.Invariant($"memory {GC.GetTotalMemory(false) / 1048576.0:0} MB managed, {Environment.WorkingSet / 1048576.0:0} MB working set"));
             (int gpu_frames, double gpu_ms, IReadOnlyList<(string Pass, double Ms)> passes) = RenderDevice.TakeGpuTimings();
             if (gpu_frames > 0)

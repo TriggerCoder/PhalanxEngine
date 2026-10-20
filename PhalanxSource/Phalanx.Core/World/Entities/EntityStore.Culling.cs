@@ -8,6 +8,13 @@
 // measured by the diameter of the row's aabb sphere, against a fixed texel size (orthographic cascades) or against
 // the distance to the light (perspective faces). A shadow that small is a sub-texel speckle that flickers as the
 // caster moves (the rasterizer covers a texel centre or not).
+// View requests also leave out the rows too small to matter on screen: spartan's contribution cull (instance_cull.hlsl:
+// 106-108, sphere_contributes in common_culling.hlsl:198, CULL_CONTRIBUTION_MESH_PX = 2), a row whose bounding sphere
+// (column 6 of the bounds: the mesh aabb's |extent| times the largest world scale, spartan's lod_aabb_diag * 0.5 *
+// max_world_scale, so a spinning cube keeps its size) projects to less than MinPixels on both axes of the view's
+// render resolution (Phalanx.Math.ScreenContribution), tested 8 at a time after the planes. A row it leaves out isn't
+// in the lists nor in CallbackRows (no OnPreDraw: not drawn, like a frustum culled one); it stays enabled and keeps
+// updating and its instance keeps being uploaded, so the frame it comes back its previous transform is last frame's.
 // Spartan @ 4c07baa culls each Render once against the camera (Render::UpdateFrustumAndDistanceCulling,
 // Render.cpp:417-475), its instanced renderables on the gpu (the instance cull, Renderer.cpp:3814-4051) and its shadow
 // casters on the gpu per slice (shadow_cull.hlsl:56-90: the 4 side planes of a cascade, 6 planes of a face, a
@@ -16,6 +23,15 @@
 //   dropped: the volume is extruded toward the light, casters between the light and the cascade still shadow it;
 //   spartan drops both), a range sphere for point and spot lights, and the sub-texel threshold, which spartan doesn't
 //   have (Renderer.ShadowCasterMinTexels, 0 turns it off).
+// - The contribution cull runs on the cpu per view (spartan's on the gpu in the instance cull), with the unjittered
+//   view projection where spartan's uses buffer_frame.view_projection, the jittered one: the taau jitter (up to half a
+//   pixel) would move a sphere's measure from frame to frame and make the ones near the threshold flicker.
+// - Each row's threshold is MinPixels times ScreenContribution.DitherScale of its instance slot, a fixed hash in
+//   [0.5, 1): spartan's hard cut at 2 pixels becomes a band from 1 to 2 pixels over which a dense field thins out
+//   gradually instead of ending at a sharp ring, and nothing spartan keeps is left out. No hysteresis (it would need
+//   per view per entity state): with the unjittered matrix and the rotation invariant sphere an entity's measure only
+//   changes as it or the camera moves, so it crosses its threshold once, not every frame.
+// - Chunks aren't skipped whole by it (a chunk's merged aabb has no single projected size): every row is tested.
 using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
@@ -45,8 +61,13 @@ internal sealed class InstanceCullRequest
     public float MinDiameter;
     public float MinDiameterPerDistance;
     public Vector3 SizeEye;
+    // views: spartan's contribution cull (Phalanx.Math.ScreenContribution), rows whose bounding sphere projects to
+    // less than MinPixels (times the row's dither scale) on both axes of ContributionResolution are left out; 0 is off
+    public float MinPixels;
+    public Matrix4x4 ContributionViewProjection;
+    public Vector2 ContributionResolution;
     internal int ChunksSkippedSmall; // chunks skipped whole by the size threshold (stats and tests)
-    internal int RowsSkippedSmall;   // casters left out by it (those of the skipped chunks included)
+    internal int RowsSkippedSmall;   // rows left out by the size thresholds (those of the skipped chunks included)
     public uint Mask = uint.MaxValue;
     public bool ShadowCasters;   // only rows that cast shadows
     public bool Callbacks;       // rows with facade callbacks go to CallbackRows instead of the lists
@@ -74,7 +95,16 @@ internal sealed class InstanceCullRequest
         for (int i = 0; i < 6; i++)
             Planes[i] = frustum.GetPlane(i);
         HasSphere = false;
-        MinDiameter = MinDiameterPerDistance = 0.0f;
+        MinDiameter = MinDiameterPerDistance = MinPixels = 0.0f;
+    }
+
+    /// <summary>The views' contribution cull: the unjittered view projection, the render resolution, the threshold in
+    /// pixels (0 turns it off).</summary>
+    public void SetContribution(in Matrix4x4 view_projection, Vector2 resolution, float min_pixels)
+    {
+        ContributionViewProjection = view_projection;
+        ContributionResolution     = resolution;
+        MinPixels                  = resolution.X > 0.0f && resolution.Y > 0.0f ? min_pixels : 0.0f;
     }
 
     /// <summary>A callback row that the view draws after all, in its batch's list (after the culled ones).</summary>
@@ -264,6 +294,13 @@ public sealed partial class EntityStore
         return false;
     }
 
+    // the contribution cull of one row, the vector loop's formula
+    internal static bool RowContributes(InstanceCullRequest request, Vector3 center, float radius, uint slot)
+    {
+        float pixels = Phalanx.Math.ScreenContribution.SpherePixels(request.ContributionViewProjection, center, radius, request.ContributionResolution);
+        return pixels >= request.MinPixels * Phalanx.Math.ScreenContribution.DitherScale(slot);
+    }
+
     private static float BoxDistanceSquared(Vector3 center, Vector3 extent, Vector3 point)
     {
         Vector3 d = Vector3.Max(Vector3.Abs(point - center) - extent, Vector3.Zero);
@@ -292,6 +329,8 @@ public sealed partial class EntityStore
         float[] b = chunk.Bounds!;
         bool sphere = request.HasSphere;
         bool small_ortho = request.MinDiameter > 0.0f, small_perspective = request.MinDiameterPerDistance > 0.0f;
+        bool contribution = request.MinPixels > 0.0f;
+        uint[] row_slots = chunk.Slot!;
         int skipped_small = 0;
         int i = 0;
         if (Vector256.IsHardwareAccelerated)
@@ -318,6 +357,19 @@ public sealed partial class EntityStore
             // diameter = 2 |extent|: diameter^2 = 4 |extent|^2
             Vector256<float> min_d2 = Vector256.Create(request.MinDiameter * request.MinDiameter * 0.25f);
             Vector256<float> k2 = Vector256.Create(request.MinDiameterPerDistance * request.MinDiameterPerDistance * 0.25f);
+            // the contribution cull: the clip axes x, y, w of the view projection, their lengths, half the resolution
+            ref readonly Matrix4x4 vp = ref request.ContributionViewProjection;
+            Vector256<float> vx_x = Vector256.Create(vp.M11), vx_y = Vector256.Create(vp.M21), vx_z = Vector256.Create(vp.M31), vx_t = Vector256.Create(vp.M41);
+            Vector256<float> vy_x = Vector256.Create(vp.M12), vy_y = Vector256.Create(vp.M22), vy_z = Vector256.Create(vp.M32), vy_t = Vector256.Create(vp.M42);
+            Vector256<float> vw_x = Vector256.Create(vp.M14), vw_y = Vector256.Create(vp.M24), vw_z = Vector256.Create(vp.M34), vw_t = Vector256.Create(vp.M44);
+            Vector256<float> len_x = Vector256.Create(new Vector3(vp.M11, vp.M21, vp.M31).Length());
+            Vector256<float> len_y = Vector256.Create(new Vector3(vp.M12, vp.M22, vp.M32).Length());
+            Vector256<float> len_w = Vector256.Create(new Vector3(vp.M14, vp.M24, vp.M34).Length());
+            Vector256<float> half_w = Vector256.Create(request.ContributionResolution.X * 0.5f), half_h = Vector256.Create(request.ContributionResolution.Y * 0.5f);
+            Vector256<float> min_px = Vector256.Create(request.MinPixels), one = Vector256.Create(1.0f);
+            Vector256<float> dither = Vector256.Create(Phalanx.Math.ScreenContribution.DitherRange * (1.0f / 16777216.0f));
+            Vector256<uint> golden = Vector256.Create(0x9E3779B9u);
+            ref uint slot_ref = ref MemoryMarshal.GetArrayDataReference(row_slots);
             nuint cs = (nuint)n;
             for (; i + 8 <= count; i += 8)
             {
@@ -325,7 +377,7 @@ public sealed partial class EntityStore
                 uint bits = ~Vector256.Equals(Vector256.LoadUnsafe(ref layer_ref, o) & mask, Vector256<uint>.Zero).ExtractMostSignificantBits() & 0xFFu;
                 if (bits == 0)
                     continue;
-                if (request.HasFrustum || sphere || small_ortho || small_perspective)
+                if (request.HasFrustum || sphere || small_ortho || small_perspective || contribution)
                 {
                     Vector256<float> cx = Vector256.LoadUnsafe(ref bounds, o), cy = Vector256.LoadUnsafe(ref bounds, o + cs), cz = Vector256.LoadUnsafe(ref bounds, o + 2 * cs);
                     Vector256<float> ex = Vector256.LoadUnsafe(ref bounds, o + 3 * cs), ey = Vector256.LoadUnsafe(ref bounds, o + 4 * cs), ez = Vector256.LoadUnsafe(ref bounds, o + 5 * cs);
@@ -348,10 +400,32 @@ public sealed partial class EntityStore
                         outside |= Vector256.GreaterThan(dx * dx + dy * dy + dz * dz, sphere_r2);
                     }
                     uint culled = outside.ExtractMostSignificantBits();
-                    if (small_ortho || small_perspective)
+                    if (small_ortho || small_perspective || contribution)
                     {
                         Vector256<float> radius2 = ex * ex + ey * ey + ez * ez;
                         Vector256<float> small = Vector256<float>.Zero;
+                        if (contribution)
+                        {
+                            // ScreenContribution.ProjectSphereNdc, 8 at a time: behind the camera is out, across the
+                            // near plane is in, otherwise the larger side of the ndc rectangle in pixels
+                            Vector256<float> r = Vector256.LoadUnsafe(ref bounds, o + 6 * cs);
+                            Vector256<float> clip_x = vx_x * cx + vx_y * cy + vx_z * cz + vx_t;
+                            Vector256<float> clip_y = vy_x * cx + vy_y * cy + vy_z * cz + vy_t;
+                            Vector256<float> clip_w = vw_x * cx + vw_y * cy + vw_z * cz + vw_t;
+                            Vector256<float> rx = r * len_x, ry = r * len_y, rw = r * len_w;
+                            Vector256<float> w_close = clip_w - rw, w_far = clip_w + rw;
+                            Vector256<float> behind = Vector256.LessThanOrEqual(w_far, Vector256<float>.Zero);
+                            Vector256<float> valid = Vector256.GreaterThan(w_close, Vector256<float>.Zero);
+                            Vector256<float> inv_close = one / w_close, inv_far = one / w_far;
+                            Vector256<float> xl = clip_x - rx, xh = clip_x + rx, yl = clip_y - ry, yh = clip_y + ry;
+                            Vector256<float> xlc = xl * inv_close, xlf = xl * inv_far, xhc = xh * inv_close, xhf = xh * inv_far;
+                            Vector256<float> ylc = yl * inv_close, ylf = yl * inv_far, yhc = yh * inv_close, yhf = yh * inv_far;
+                            Vector256<float> size_x = (Vector256.Max(Vector256.Max(xlc, xlf), Vector256.Max(xhc, xhf)) - Vector256.Min(Vector256.Min(xlc, xlf), Vector256.Min(xhc, xhf))) * half_w;
+                            Vector256<float> size_y = (Vector256.Max(Vector256.Max(ylc, ylf), Vector256.Max(yhc, yhf)) - Vector256.Min(Vector256.Min(ylc, ylf), Vector256.Min(yhc, yhf))) * half_h;
+                            Vector256<uint> hash = Vector256.ShiftRightLogical(Vector256.LoadUnsafe(ref slot_ref, o) * golden, 8);
+                            Vector256<float> threshold = min_px * (one - Vector256.ConvertToSingle(hash.AsInt32()) * dither);
+                            small |= behind | (valid & Vector256.LessThan(Vector256.Max(size_x, size_y), threshold));
+                        }
                         if (small_ortho)
                             small |= Vector256.LessThan(radius2, min_d2);
                         if (small_perspective)
@@ -385,7 +459,8 @@ public sealed partial class EntityStore
                 continue;
             if (sphere && BoxDistanceSquared(center, extent, request.SphereCenter) > request.SphereRadius * request.SphereRadius)
                 continue;
-            if ((small_ortho || small_perspective) && TooSmall(request, 2.0f * extent.Length(), BoxDistanceSquared(center, extent, request.SizeEye)))
+            if (((small_ortho || small_perspective) && TooSmall(request, 2.0f * extent.Length(), BoxDistanceSquared(center, extent, request.SizeEye)))
+                || (contribution && !RowContributes(request, center, b[6 * n + i], row_slots[i])))
             {
                 skipped_small++;
                 continue;

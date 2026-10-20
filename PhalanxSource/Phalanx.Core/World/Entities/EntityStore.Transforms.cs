@@ -248,11 +248,13 @@ public sealed partial class EntityStore
         PackedTransform[] instances = Instances;
         uint[] stamps = SlotGroupStamp;
         Vector3 lc = default, le = default;
+        float lr = 0.0f;
         if (b != null)
         {
             RenderBatches.Info batch = RenderBatches.GetInfo(chunk.Archetype.Key.Batch);
             lc = batch.LocalCenter;
             le = batch.LocalExtent * (1.0f + BoundsSlack);
+            lr = batch.LocalExtent.Length();
         }
         bool whole = start == 0 && end == chunk.Count;
         bool stamp_all = chunk.Dirty; // otherwise only the rows set restamp (the others of the range don't change)
@@ -268,6 +270,7 @@ public sealed partial class EntityStore
             Vector256<uint> stamp = Vector256.Create(version);
             Vector256<float> cx = Vector256.Create(lc.X), cy = Vector256.Create(lc.Y), cz = Vector256.Create(lc.Z);
             Vector256<float> ex = Vector256.Create(le.X), ey = Vector256.Create(le.Y), ez = Vector256.Create(le.Z);
+            Vector256<float> er = Vector256.Create(lr);
             Vector256<float> min_x = Vector256.Create(float.MaxValue), min_y = min_x, min_z = min_x;
             Vector256<float> max_x = Vector256.Create(float.MinValue), max_y = max_x, max_z = max_x;
             Vector256<float> max_r2 = Vector256<float>.Zero;
@@ -300,6 +303,7 @@ public sealed partial class EntityStore
                 Vector256<float> bez = ex * Vector256.Abs(m13) + ey * Vector256.Abs(m23) + ez * Vector256.Abs(m33);
                 bx.StoreUnsafe(ref bounds, o); by.StoreUnsafe(ref bounds, o + c); bz.StoreUnsafe(ref bounds, o + 2 * c);
                 bex.StoreUnsafe(ref bounds, o + 3 * c); bey.StoreUnsafe(ref bounds, o + 4 * c); bez.StoreUnsafe(ref bounds, o + 5 * c);
+                (er * Vector256.Max(Vector256.Max(Vector256.Abs(sx), Vector256.Abs(sy)), Vector256.Abs(sz))).StoreUnsafe(ref bounds, o + 6 * c);
                 min_x = Vector256.Min(min_x, bx - bex); min_y = Vector256.Min(min_y, by - bey); min_z = Vector256.Min(min_z, bz - bez);
                 max_x = Vector256.Max(max_x, bx + bex); max_y = Vector256.Max(max_y, by + bey); max_z = Vector256.Max(max_z, bz + bez);
                 max_r2 = Vector256.Max(max_r2, bex * bex + bey * bey + bez * bez);
@@ -388,6 +392,7 @@ public sealed partial class EntityStore
     {
         RenderBatches.Info batch = RenderBatches.GetInfo(chunk.Archetype.Key.Batch);
         Vector3 lc = batch.LocalCenter, le = batch.LocalExtent * (1.0f + BoundsSlack);
+        float lr = batch.LocalExtent.Length();
         int n = chunk.Capacity;
         float[] w = chunk.World, b = chunk.Bounds!;
         for (int i = start; i < end; i++)
@@ -400,6 +405,8 @@ public sealed partial class EntityStore
             b[3 * n + i] = le.X * MathF.Abs(m11) + le.Y * MathF.Abs(m21) + le.Z * MathF.Abs(m31);
             b[4 * n + i] = le.X * MathF.Abs(m12) + le.Y * MathF.Abs(m22) + le.Z * MathF.Abs(m32);
             b[5 * n + i] = le.X * MathF.Abs(m13) + le.Y * MathF.Abs(m23) + le.Z * MathF.Abs(m33);
+            float scale2 = MathF.Max(MathF.Max(m11 * m11 + m12 * m12 + m13 * m13, m21 * m21 + m22 * m22 + m23 * m23), m31 * m31 + m32 * m32 + m33 * m33);
+            b[6 * n + i] = lr * MathF.Sqrt(scale2);
         }
     }
 

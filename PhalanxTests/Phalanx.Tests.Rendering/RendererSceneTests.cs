@@ -73,6 +73,7 @@ public partial class RendererSceneTests
             Renderer.ScreenSpaceShadows  = true;
             Renderer.Tonemapping         = Renderer_Tonemapping.GranTurismo7;
             Renderer.ShadowAtlasResolution = 8192;
+            Renderer.MinPixelSize = 2.0f;
             Renderer.Shutdown();
             World.World.ClearScene();
         }

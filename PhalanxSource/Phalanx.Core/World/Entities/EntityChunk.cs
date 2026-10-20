@@ -77,7 +77,9 @@ internal sealed class EntityChunk
     public const int MaxCapacity     = 16384;
     public const int InitialCapacity = 64;
     public const int WorldColumns    = 12; // the 3x4 world matrix: m11 m12 m13 m21 m22 m23 m31 m32 m33 m41 m42 m43
-    public const int BoundsColumns   = 6;  // world aabb: center xyz, extents xyz
+    // world aabb: center xyz, extents xyz; then the radius of the bounding sphere the views' contribution cull
+    // measures (spartan's |local aabb extent| * largest world scale, which a rotation doesn't change)
+    public const int BoundsColumns   = 7;
 
     public readonly Archetype Archetype;
     public int Capacity;

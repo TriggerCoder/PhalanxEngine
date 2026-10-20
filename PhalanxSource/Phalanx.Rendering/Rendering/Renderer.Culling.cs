@@ -7,6 +7,11 @@
 //   intersects the view camera's frustum and its Render.RenderLayers share a bit with the view's cull mask (its
 //   SceneView.CullMask and its camera's Camera.CullMask together; Godot's render layers and cull mask, not in
 //   spartan). No distance culling (max_distance_render), occlusion or lod selection yet.
+// - Renderables smaller than Renderer.MinPixelSize pixels of the view's render resolution are left out too (and not
+//   called back): spartan's contribution cull, which its gpu instance cull applies to every draw, instanced or not
+//   (instance_cull.hlsl:62-108), measured like the store's entities (the mesh aabb's center under the matrix, its
+//   |extent| times the largest scale, the unjittered view projection, the threshold dithered per entity by its object
+//   id; EntityStore.Culling.cs). The shadow maps keep every caster.
 // - The shadow maps are shared by the views and draw every caster, whatever its layers or the views' frustums.
 // - IPreDraw.OnPreDraw (the Unity idea of a per camera callback, not in spartan) runs on the main thread after a
 //   view culled, before any view draws: every view of the frame is culled and called back first, then the uploads
@@ -26,6 +31,9 @@ public static partial class Renderer
         public Entity entity;
         public Render render;
         public BoundingBox box;
+        public Vector3 sphere_center; // the contribution cull's sphere: the mesh aabb's center under the matrix and
+        public float sphere_radius;   // its |extent| times the largest scale (spartan's instance_cull.hlsl:83-85)
+        public float dither;          // ScreenContribution.DitherScale of the entity's object id
     }
     private static readonly List<CullCandidate> s_cull_candidates = new();
     // the views culled for this frame, in draw order
@@ -86,7 +94,17 @@ public static partial class Renderer
             if (!entity.GetActive() || entity.GetComponent<Render>() is not Render render || render.GetMesh() == null || render.GetIndexCount() == 0)
                 continue;
             // the box as of now: Render.Tick refreshes its own one in the world tick, before late transform changes
-            s_cull_candidates.Add(new CullCandidate { entity = entity, render = render, box = render.GetBoundingBoxMesh() * entity.GetMatrix() });
+            Matrix4x4 matrix = entity.GetMatrix();
+            BoundingBox mesh_box = render.GetBoundingBoxMesh();
+            float scale2 = MathF.Max(MathF.Max(new Vector3(matrix.M11, matrix.M12, matrix.M13).LengthSquared(), new Vector3(matrix.M21, matrix.M22, matrix.M23).LengthSquared()),
+                                     new Vector3(matrix.M31, matrix.M32, matrix.M33).LengthSquared());
+            s_cull_candidates.Add(new CullCandidate
+            {
+                entity = entity, render = render, box = mesh_box * matrix,
+                sphere_center = Vector3.Transform(mesh_box.GetCenter(), matrix),
+                sphere_radius = mesh_box.GetExtents().Length() * MathF.Sqrt(scale2),
+                dither        = ScreenContribution.DitherScale((uint)entity.GetObjectId() ^ (uint)(entity.GetObjectId() >> 32)),
+            });
         }
     }
 
@@ -105,6 +123,11 @@ public static partial class Renderer
         // spartan's Frustum (Frustum.cpp:30-31) the planes come from c3 + c2 and c3 - c2, which with the reverse-z
         // projection are a plane through the camera and the near plane: there is no far plane culling.
         Frustum frustum = camera != null ? new Frustum(camera.GetViewMatrix(), camera.GetProjectionMatrix()) : default;
+        // the contribution cull of the store's entities (Renderer.Instancing.cs), the same sphere measure and threshold
+        float min_pixels = camera != null && s.RenderWidth > 0 && s.RenderHeight > 0 ? MinPixelSize : 0.0f;
+        Matrix4x4 view_projection = camera != null ? camera.GetViewMatrix() * camera.GetProjectionMatrix() : Matrix4x4.Identity;
+        var resolution = new Vector2(s.RenderWidth, s.RenderHeight);
+        s.WorldSkippedSubpixel = 0;
         foreach (CullCandidate candidate in s_cull_candidates)
         {
             if ((candidate.render.RenderLayers & mask) == 0)
@@ -112,6 +135,11 @@ public static partial class Renderer
             // without a camera there is no frustum (the frame constants keep identity), nothing is frustum culled
             if (camera != null && !frustum.IsVisible(candidate.box.GetCenter(), candidate.box.GetExtents()))
                 continue;
+            if (min_pixels > 0.0f && !ScreenContribution.SphereContributes(view_projection, candidate.sphere_center, candidate.sphere_radius, resolution, min_pixels * candidate.dither))
+            {
+                s.WorldSkippedSubpixel++;
+                continue;
+            }
             s.Visible.Add(candidate.render, -1);
         }
     }

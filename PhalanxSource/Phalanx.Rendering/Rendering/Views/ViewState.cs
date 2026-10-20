@@ -44,6 +44,7 @@ internal sealed class ViewState
     public readonly Dictionary<Render, int> Visible = new(ReferenceEqualityComparer.Instance);
     public readonly List<ViewDrawOverrides> Overrides = new();
     public int OverrideCount;
+    public int WorldSkippedSubpixel; // world entities the contribution cull (Renderer.MinPixelSize) left out this frame
 
     // what this view draws: the frame's draws it culled in, with its overrides
     public readonly List<Renderer.DrawCall> DrawCalls      = new();

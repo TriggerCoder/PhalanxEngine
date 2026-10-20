@@ -45,6 +45,7 @@ public partial class RendererSceneTests
     {
         RunValidated(() =>
         {
+            Renderer.MinPixelSize = 0.0f; // the slot list must grow: every small cube drawn, none left out as sub-pixel
             Scene scene = CreateScene(Vector4.One);
             scene.cube.SetActive(false);
             Entity sun = World.World.CreateEntity();
